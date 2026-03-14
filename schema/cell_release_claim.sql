@@ -63,9 +63,9 @@ DELIMITER ;
 -- Parameters:
 --   p_max_age_minutes - Claims older than this are expired (default: 30)
 
-DROP PROCEDURE IF EXISTS cell_expire_stale_claims //
-
 DELIMITER //
+
+DROP PROCEDURE IF EXISTS cell_expire_stale_claims //
 
 CREATE PROCEDURE cell_expire_stale_claims(
     IN p_max_age_minutes INT

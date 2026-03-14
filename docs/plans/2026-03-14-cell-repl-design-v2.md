@@ -151,16 +151,28 @@ eval loop because it doesn't run the eval loop — SQL does.
 
 ### Multiple Pistons
 
-Any number of LLMs can connect. The procedure handles assignment atomically:
+Any number of LLMs can connect. The procedure handles assignment atomically
+via the `cell_claims` table (see `schema/cell_claims.sql`):
 
 ```sql
 -- Inside cell_eval_step:
-SELECT id INTO ready_id FROM ready_cells
-WHERE program_id = ? AND state = 'declared'
-LIMIT 1 FOR UPDATE;
+-- 1. Find first unclaimed ready cell
+SELECT id INTO v_cell_id FROM ready_cells
+WHERE program_id = ? AND id NOT IN (SELECT cell_id FROM cell_claims)
+LIMIT 1;
 
-UPDATE cells SET state = 'computing' WHERE id = ready_id;
+-- 2. Atomic claim via INSERT IGNORE (first piston wins, others get ROW_COUNT=0)
+INSERT IGNORE INTO cell_claims (cell_id, piston_id, claimed_at)
+VALUES (v_cell_id, p_piston_id, NOW());
+
+-- 3. If ROW_COUNT() = 1, we won the claim → UPDATE state and dispatch
+-- 4. If ROW_COUNT() = 0, another piston got it → try next ready cell
 ```
+
+Dolt has no `SELECT FOR UPDATE` (row-level locking). The `cell_claims` table
+provides equivalent atomicity: the PRIMARY KEY on `cell_id` ensures only one
+piston can claim a given cell. `INSERT IGNORE` makes contention non-fatal —
+losing pistons silently skip to the next cell.
 
 Two LLMs calling simultaneously get different cells. Confluence guarantees the
 result is the same regardless of who evaluates what.
@@ -290,7 +302,9 @@ with the following adaptations:
 - `oracles` table: unchanged — `oracle_type`, `assertion`, `condition_expr`
 - `ready_cells` VIEW: unchanged — already correctly computes Cell readiness
 - `trace` table: unchanged — with `DoltIgnoreTrace` for performance
+- NEW: `cell_claims` table — atomic multi-piston claiming (`schema/cell_claims.sql`)
 - NEW: stored procedures (`cell_pour`, `cell_eval_step`, `cell_submit`, `cell_status`)
+- NEW: `cell_release_claim`, `cell_expire_stale_claims` — claim lifecycle management
 - NEW: hard cell views (`cell_*` created by crystallization)
 
 ---

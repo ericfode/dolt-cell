@@ -1,0 +1,15 @@
+⊢ source
+  yield text ≡ Hello, how are you today?
+  yield target_lang ≡ Spanish
+
+⊢ translate
+  given source→text
+  given source→target_lang
+  yield translated
+  ∴ Translate «text» into «target_lang».
+
+⊢ back_translate
+  given translate→translated
+  yield round_trip
+  ∴ Translate «translated» back into English.
+  ⊨ round_trip preserves the meaning of the original text

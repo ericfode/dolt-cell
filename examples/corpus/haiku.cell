@@ -1,0 +1,9 @@
+⊢ topic
+  yield subject ≡ autumn leaves
+
+⊢ compose
+  given topic→subject
+  yield poem
+  ∴ Write a haiku about «subject».
+  ⊨ poem has exactly three lines
+  ⊨ poem follows 5-7-5 syllable pattern

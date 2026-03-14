@@ -1,0 +1,14 @@
+⊢ data
+  yield items ≡ [4, 1, 7, 3, 9, 2]
+
+⊢ sort
+  given data→items
+  yield sorted
+  ∴ Sort «items» in ascending order.
+  ⊨ sorted is a permutation of items
+  ⊨ sorted is in ascending order
+
+⊢ report
+  given sort→sorted
+  yield summary
+  ∴ Write a one-sentence summary of the sort result.

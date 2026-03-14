@@ -112,6 +112,32 @@ func cmdRun(db *sql.DB, progID string) {
 			continue // next cell
 
 		case "dispatch":
+			// If it's a hard cell with sql: body that the procedure couldn't handle,
+			// execute the SQL here, freeze the yield directly, and continue
+			if bodyType.String == "hard" && strings.HasPrefix(body.String, "sql:") {
+				sqlQuery := strings.TrimPrefix(body.String, "sql:")
+				yields := getYieldFields(db, progID, cellName.String)
+				var result string
+				err := db.QueryRow(sqlQuery).Scan(&result)
+				if err != nil {
+					fmt.Printf("  ✗ %s SQL error: %v\n", cellName.String, err)
+					// Reset cell to declared so it can be retried
+					mustExec(db, "UPDATE cells SET state = 'declared' WHERE id = ?", cellID.String)
+					continue
+				}
+				fmt.Printf("  ■ %s = %s (sql)\n", cellName.String, trunc(result, 60))
+				// Use cell_submit to freeze properly through the procedure
+				for _, y := range yields {
+					r, msg, serr := submitYieldCall(db, progID, cellName.String, y, result)
+					if serr != nil {
+						fmt.Printf("  ✗ submit %s.%s: %v\n", cellName.String, y, serr)
+					} else if r != "ok" {
+						fmt.Printf("  ✗ %s.%s: %s\n", cellName.String, y, msg)
+					}
+				}
+				continue
+			}
+
 			// Soft cell — resolve inputs and print the prompt for the piston
 			inputs := resolveInputs(db, progID, cellName.String)
 			prompt := interpolateBody(body.String, inputs)
@@ -270,6 +296,40 @@ func cmdReset(db *sql.DB, progID string) {
 	}
 	db.Exec("CALL DOLT_COMMIT('-Am', ?)", "reset: "+progID)
 	fmt.Printf("✓ Reset %s\n", progID)
+}
+
+// submitYieldCall calls cell_submit and returns the result without side effects
+func submitYieldCall(db *sql.DB, progID, cellName, field, value string) (string, string, error) {
+	mustExec(db, "SET @@dolt_transaction_commit = 0")
+	rows, err := db.Query("CALL cell_submit(?, ?, ?, ?)", progID, cellName, field, value)
+	if err != nil {
+		return "", "", err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return "error", "no result", nil
+	}
+	var result, message, fn sql.NullString
+	rows.Scan(&result, &message, &fn)
+	return result.String, message.String, nil
+}
+
+// submitYieldDirect submits a yield without triggering cmdRun recursion
+func submitYieldDirect(db *sql.DB, progID, cellName, field, value string) {
+	mustExec(db, "SET @@dolt_transaction_commit = 0")
+	rows, err := db.Query("CALL cell_submit(?, ?, ?, ?)", progID, cellName, field, value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  submit %s.%s: %v\n", cellName, field, err)
+		return
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var result, message, fn sql.NullString
+		rows.Scan(&result, &message, &fn)
+		if result.String != "ok" {
+			fmt.Printf("  ✗ %s.%s: %s\n", cellName, field, message.String)
+		}
+	}
 }
 
 // --- helpers ---

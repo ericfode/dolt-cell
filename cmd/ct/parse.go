@@ -254,7 +254,7 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 
 	// Givens
 	for _, g := range c.givens {
-		gID := fmt.Sprintf("g-%s-%s", c.name, g.sourceField)
+		gID := fmt.Sprintf("g-%s-%s-%s", c.name, g.sourceCell, g.sourceField)
 		opt := "FALSE"
 		if g.optional {
 			opt = "TRUE"

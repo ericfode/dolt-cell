@@ -34,7 +34,8 @@ oracles(id VARCHAR(64), cell_id VARCHAR(64), oracle_type VARCHAR(16),
 | `∴∴ TEXT` | Stem cell body (permanently soft) | body_type='stem', body=TEXT (with «» refs kept) |
 | `⊢∘ NAME × N` | Iteration: expand to N chained cells | See iteration rules below |
 | `⊢= TEXT` | Hard cell body | body_type='hard', body=TEXT |
-| `⊨ TEXT` | Oracle assertion | INSERT into oracles |
+| `⊨ TEXT` | Oracle assertion (auto-classified) | INSERT into oracles |
+| `⊨~ TEXT` | Semantic oracle (always semantic) | INSERT into oracles: oracle_type='semantic' |
 
 ## ID Convention
 
@@ -145,6 +146,21 @@ format validation, or meaning. Examples:
 - "X is one of positive, negative, or neutral" → semantic
 
 When in doubt, use 'semantic' with condition_expr=NULL.
+
+## Judge Cell Generation (Semantic Oracles)
+
+For each semantic oracle (`⊨~` or auto-classified semantic), generate an
+additional **judge stem cell** in the output. The judge:
+
+- Name: `{cellname}-judge-{n}` (n = 1-indexed oracle position)
+- body_type: 'stem'
+- body: `Judge whether «field» satisfies: "ASSERTION". Answer YES or NO on the first line, followed by a brief explanation.`
+- given: takes the original cell's yield(s) as input
+- yield: `verdict`
+- oracle: `verdict is not empty` (deterministic, not_empty)
+
+For iteration cells with semantic oracles, generate a judge per iteration
+step AND wire each judge's verdict as an optional given into the next step.
 
 ## Example
 

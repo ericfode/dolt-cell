@@ -1,0 +1,9 @@
+⊢ context
+  yield schema ≡ cells(id, program_id, name, body_type, body, state), givens(id, cell_id, source_cell, source_field, is_optional), yields(id, cell_id, field_name, value_text, is_frozen), oracles(id, cell_id, oracle_type, assertion, condition_expr), cell_claims(cell_id, piston_id, claimed_at), ready_cells VIEW (cells with all non-optional givens frozen)
+  yield runtime ≡ Go + Dolt (MySQL wire protocol). Hard cells freeze inline. Soft cells dispatch to LLM pistons. Oracles checked on submit. Atomic claiming via INSERT IGNORE on cell_claims.
+
+⊢ find-ready
+  given context→schema
+  yield implementation
+  ∴ Write a Go function `findReady(db *sql.DB, progID string) (cellID, cellName, body, bodyType string, err error)` that finds the first ready unclaimed cell. Query the ready_cells VIEW excluding cells already in cell_claims. Use the schema in «schema». Return the cell details or sql.ErrNoRows if none ready.
+  ⊨ implementation is not empty

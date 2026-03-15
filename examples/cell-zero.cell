@@ -1,0 +1,52 @@
+⊢ context
+  yield schema ≡ cells(id, program_id, name, body_type, body, state), givens(id, cell_id, source_cell, source_field, is_optional), yields(id, cell_id, field_name, value_text, is_frozen), oracles(id, cell_id, oracle_type, assertion, condition_expr), cell_claims(cell_id, piston_id, claimed_at), ready_cells VIEW (cells with all non-optional givens frozen)
+  yield runtime ≡ Go + Dolt (MySQL wire protocol). Hard cells freeze inline. Soft cells dispatch to LLM pistons. Oracles checked on submit. Atomic claiming via INSERT IGNORE on cell_claims.
+
+⊢ find-ready
+  given context→schema
+  yield implementation
+  ∴ Write a Go function `findReady(db *sql.DB, progID string) (cellID, cellName, body, bodyType string, err error)` that finds the first ready unclaimed cell. Query the ready_cells VIEW excluding cells already in cell_claims. Use the schema in «schema». Return the cell's details or sql.ErrNoRows if none ready. Keep it minimal — no retries, no loops.
+  ⊨ implementation is not empty
+
+⊢ claim-cell
+  given context→schema
+  given find-ready→implementation
+  yield implementation
+  ∴ Write a Go function `claimCell(db *sql.DB, cellID, pistonID string) (bool, error)` that atomically claims a cell using INSERT IGNORE into cell_claims. Return true if this piston won the claim, false if another piston got it. Reference «schema» for table structure. Build on the approach from find-ready: «implementation».
+  ⊨ implementation is not empty
+
+⊢ eval-hard
+  given context→schema
+  given context→runtime
+  yield implementation
+  ∴ Write a Go function `evalHard(db *sql.DB, cellID, cellName, body, pistonID string) error` that evaluates a hard cell inline. Handle literal: prefix (freeze all yields with the literal value) and sql: prefix (execute the query, submit result). Update cell state, clean up claims, write trace. Use «schema» and «runtime» for context.
+  ⊨ implementation is not empty
+
+⊢ eval-soft
+  given context→runtime
+  yield implementation
+  ∴ Write a Go function `evalSoft(db *sql.DB, cellID, cellName, body, pistonID string) error` that marks a soft cell as computing, writes a trace entry, and commits. This is the dispatch step — the piston will read the cell's prompt and think. The function just marks the cell as claimed and computing per «runtime».
+  ⊨ implementation is not empty
+
+⊢ check-oracles
+  given context→schema
+  yield implementation
+  ∴ Write a Go function `checkOracles(db *sql.DB, cellID, progID, value string) (pass bool, msg string)` that checks deterministic oracles for a cell. Handle condition_expr types: not_empty, is_json_array, length_matches:CELL. Use «schema» for oracle table structure. Return whether all passed and a message on failure.
+  ⊨ implementation is not empty
+
+⊢ submit-yield
+  given context→schema
+  given check-oracles→implementation
+  yield implementation
+  ∴ Write a Go function `submitYield(db *sql.DB, progID, cellName, fieldName, value, pistonID string) (result, msg string)` that writes a yield value, checks oracles (using the approach from «implementation»), freezes if all yields done, cleans up claims, commits. Return "ok" or "oracle_fail" with message.
+  ⊨ implementation is not empty
+
+⊢ eval-loop
+  given find-ready→implementation
+  given claim-cell→implementation
+  given eval-hard→implementation
+  given eval-soft→implementation
+  given submit-yield→implementation
+  yield implementation
+  ∴ Write a Go function `evalLoop(db *sql.DB, progID, pistonID string, scanner *bufio.Scanner) error` that ties together find-ready, claim-cell, eval-hard, eval-soft, and submit-yield into the full eval loop. Loop until complete or quiescent. For soft cells, read input from scanner. Handle oracle retries (max 3). Print step-by-step status. Build on the implementations from: «implementation» (each given provides one function).
+  ⊨ implementation is not empty

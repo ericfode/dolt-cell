@@ -13,6 +13,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -1044,8 +1046,9 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 
 			if strings.HasPrefix(body.String, "literal:") {
 				literalVal := strings.TrimPrefix(body.String, "literal:")
+				// Only freeze yields that aren't already frozen (pre-frozen by pour SQL for multi-yield hard cells)
 				db.Exec(
-					"UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ?",
+					"UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ? AND is_frozen = FALSE",
 					literalVal, cellID.String)
 				db.Exec(
 					"UPDATE cells SET state = 'frozen', computing_since = NULL, assigned_piston = NULL WHERE id = ?",

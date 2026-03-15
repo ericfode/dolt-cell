@@ -658,6 +658,19 @@ type watchDataMsg struct {
 
 type tickRefresh struct{}
 
+type navKind int
+
+const (
+	navProgram navKind = iota
+	navCell
+)
+
+type navItem struct {
+	kind    navKind
+	prog    string
+	cellIdx int // index into m.cells (-1 for program headers)
+}
+
 type watchModel struct {
 	db        *sql.DB
 	progID    string
@@ -673,7 +686,7 @@ type watchModel struct {
 	lastFetch time.Time
 	collapsed map[string]bool // program-level collapse
 	expanded  map[string]bool // cell-level yield expand (key: "prog/cell")
-	cursor    int             // index into visible cells
+	cursor    int             // index into navItems()
 	ready     bool
 }
 
@@ -695,46 +708,36 @@ var (
 	}
 )
 
-// visibleCells returns cells in display order, skipping collapsed programs.
-func (m watchModel) visibleCells() []watchCell {
-	var out []watchCell
+// navItems builds the flat list of navigable items (program headers + cells).
+func (m watchModel) navItems() []navItem {
+	var items []navItem
 	for _, prog := range m.progOrder {
-		if m.collapsed[prog] {
-			continue
-		}
-		for _, c := range m.cells {
-			if c.prog == prog {
-				out = append(out, c)
+		items = append(items, navItem{kind: navProgram, prog: prog, cellIdx: -1})
+		if !m.collapsed[prog] {
+			for i, c := range m.cells {
+				if c.prog == prog {
+					items = append(items, navItem{kind: navCell, prog: prog, cellIdx: i})
+				}
 			}
 		}
 	}
-	return out
+	return items
 }
 
 // clampCursor keeps cursor in bounds after data refresh.
 func (m *watchModel) clampCursor() {
-	vis := m.visibleCells()
-	if m.cursor >= len(vis) {
-		m.cursor = len(vis) - 1
+	items := m.navItems()
+	if m.cursor >= len(items) {
+		m.cursor = len(items) - 1
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
 }
 
-// cursorCellKey returns the expand-map key for the cell at cursor.
-func (m watchModel) cursorCellKey() string {
-	vis := m.visibleCells()
-	if m.cursor < 0 || m.cursor >= len(vis) {
-		return ""
-	}
-	c := vis[m.cursor]
-	return c.prog + "/" + c.name
-}
-
-// cursorLine computes which line in renderContent the cursor cell is on.
+// cursorLine computes which line in renderContent the cursor item is on.
 func (m watchModel) cursorLine() int {
-	vis := m.visibleCells()
+	items := m.navItems()
 	line := 0
 	if m.err != nil {
 		line++ // error line
@@ -744,24 +747,17 @@ func (m watchModel) cursorLine() int {
 		line++ // blank
 	}
 
-	cellIdx := 0
-	visIdx := 0
-	for _, prog := range m.progOrder {
-		line++ // every program gets a header line
-		if m.collapsed[prog] {
-			continue
+	for i, item := range items {
+		if i == m.cursor {
+			return line
 		}
-		for visIdx < len(vis) && vis[visIdx].prog == prog {
-			if cellIdx == m.cursor {
-				return line
-			}
-			line++ // cell line
-			c := vis[visIdx]
+		line++ // this item's line
+		// If it's an expanded cell, count yield lines too
+		if item.kind == navCell {
+			c := m.cells[item.cellIdx]
 			if m.expanded[c.prog+"/"+c.name] {
 				line += len(c.yields)
 			}
-			cellIdx++
-			visIdx++
 		}
 	}
 	return line
@@ -900,13 +896,13 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		items := m.navItems()
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 
 		case "j", "down":
-			vis := m.visibleCells()
-			if m.cursor < len(vis)-1 {
+			if m.cursor < len(items)-1 {
 				m.cursor++
 			}
 			m.viewport.SetContent(m.renderContent())
@@ -922,17 +918,27 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "enter", " ":
-			// Toggle expand/collapse for cell at cursor
-			key := m.cursorCellKey()
-			if key != "" {
-				m.expanded[key] = !m.expanded[key]
+			if m.cursor >= 0 && m.cursor < len(items) {
+				item := items[m.cursor]
+				switch item.kind {
+				case navProgram:
+					// Toggle program collapse
+					m.collapsed[item.prog] = !m.collapsed[item.prog]
+					m.clampCursor()
+				case navCell:
+					// Toggle cell yield expand
+					c := m.cells[item.cellIdx]
+					key := c.prog + "/" + c.name
+					m.expanded[key] = !m.expanded[key]
+				}
 				m.viewport.SetContent(m.renderContent())
 				m.ensureCursorVisible()
 			}
 			return m, nil
 
 		case "e":
-			// Expand all cells
+			// Expand all: uncollapse programs + expand all cell yields
+			m.collapsed = make(map[string]bool)
 			for _, c := range m.cells {
 				m.expanded[c.prog+"/"+c.name] = true
 			}
@@ -940,21 +946,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "c":
-			// Collapse all cells
+			// Collapse all cell yields (programs stay as-is)
 			m.expanded = make(map[string]bool)
 			m.viewport.SetContent(m.renderContent())
-			return m, nil
-
-		case "tab":
-			// Toggle program-level collapse for current cell's program
-			key := m.cursorCellKey()
-			if key != "" {
-				prog := m.visibleCells()[m.cursor].prog
-				m.collapsed[prog] = !m.collapsed[prog]
-				m.clampCursor()
-				m.viewport.SetContent(m.renderContent())
-				m.ensureCursorVisible()
-			}
 			return m, nil
 		}
 	}
@@ -1000,32 +994,32 @@ func (m watchModel) renderContent() string {
 		buf.WriteString("\n")
 	}
 
-	vis := m.visibleCells()
-	cellIdx := 0
-	visIdx := 0
+	items := m.navItems()
 
-	for _, prog := range m.progOrder {
-		// Program header — always rendered even when collapsed
-		counts := m.programs[prog]
-		status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
-		if counts[0] == counts[1] {
-			status = doneStyle.Render("DONE")
-		}
-		collapseIcon := "▾"
-		if m.collapsed[prog] {
-			collapseIcon = "▸"
-		}
-		buf.WriteString(progStyle.Render(fmt.Sprintf("━━ %s %s", collapseIcon, prog)))
-		buf.WriteString(fmt.Sprintf(" (%s) ━━\n", status))
-
-		if m.collapsed[prog] {
-			continue
+	for i, item := range items {
+		isCursor := i == m.cursor
+		prefix := "  "
+		if isCursor {
+			prefix = cursorStyle.Render("▸ ")
 		}
 
-		// Cells for this program
-		for visIdx < len(vis) && vis[visIdx].prog == prog {
-			c := vis[visIdx]
-			isCursor := cellIdx == m.cursor
+		switch item.kind {
+		case navProgram:
+			counts := m.programs[item.prog]
+			status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
+			if counts[0] == counts[1] {
+				status = doneStyle.Render("DONE")
+			}
+			collapseIcon := "▾"
+			if m.collapsed[item.prog] {
+				collapseIcon = "▸"
+			}
+			buf.WriteString(prefix)
+			buf.WriteString(progStyle.Render(fmt.Sprintf("━━ %s %s", collapseIcon, item.prog)))
+			buf.WriteString(fmt.Sprintf(" (%s) ━━\n", status))
+
+		case navCell:
+			c := m.cells[item.cellIdx]
 			cellKey := c.prog + "/" + c.name
 			isExpanded := m.expanded[cellKey]
 
@@ -1040,11 +1034,6 @@ func (m watchModel) renderContent() string {
 				icon = style.Render(icon)
 			}
 
-			prefix := "  "
-			if isCursor {
-				prefix = cursorStyle.Render("▸ ")
-			}
-
 			arrow := "▸"
 			if isExpanded {
 				arrow = "▾"
@@ -1053,7 +1042,7 @@ func (m watchModel) renderContent() string {
 				arrow = " "
 			}
 
-			line := fmt.Sprintf("%s%s %s %-20s %s", prefix, arrow, icon, c.name, c.state)
+			line := fmt.Sprintf("%s  %s %s %-20s %s", prefix, arrow, icon, c.name, c.state)
 			if len(c.yields) > 0 && !isExpanded {
 				line += footerStyle.Render(fmt.Sprintf("  [%d yields]", len(c.yields)))
 			}
@@ -1062,18 +1051,16 @@ func (m watchModel) renderContent() string {
 			if isExpanded {
 				for _, y := range c.yields {
 					if y.bottom {
-						buf.WriteString(fmt.Sprintf("        %s = %s\n", y.field, bottomValStyle.Render("⊥")))
+						buf.WriteString(fmt.Sprintf("          %s = %s\n", y.field, bottomValStyle.Render("⊥")))
 					} else if y.frozen && y.value != "" {
-						buf.WriteString(fmt.Sprintf("        %s = %s\n", y.field, frozenValStyle.Render(trunc(y.value, maxVal))))
+						buf.WriteString(fmt.Sprintf("          %s = %s\n", y.field, frozenValStyle.Render(trunc(y.value, maxVal))))
 					} else if y.value != "" {
-						buf.WriteString(fmt.Sprintf("        %s ~ %s\n", y.field, pendValStyle.Render(trunc(y.value, maxVal))))
+						buf.WriteString(fmt.Sprintf("          %s ~ %s\n", y.field, pendValStyle.Render(trunc(y.value, maxVal))))
 					} else {
-						buf.WriteString(fmt.Sprintf("        %s   %s\n", y.field, footerStyle.Render("—")))
+						buf.WriteString(fmt.Sprintf("          %s   %s\n", y.field, footerStyle.Render("—")))
 					}
 				}
 			}
-			cellIdx++
-			visIdx++
 		}
 	}
 
@@ -1109,7 +1096,7 @@ func (m watchModel) View() tea.View {
 
 	// Footer
 	pct := m.viewport.ScrollPercent() * 100
-	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · enter expand · e/c all · tab prog · q quit  %3.0f%%", pct)))
+	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · enter toggle · e expand all · c collapse all · q quit  %3.0f%%", pct)))
 
 	v := tea.NewView(buf.String())
 	v.AltScreen = true

@@ -167,14 +167,22 @@ func parseCellFile(text string) []parsedCell {
 				o.oracleType = "deterministic"
 				o.condExpr = "is_json_array"
 			} else if strings.Contains(lower, "permutation of") {
-				// Extract source cell from "X is a permutation of Y"
-				// The source cell is the word after "of"
+				// Extract the referenced field name, then find the source cell
+				// "sorted is a permutation of items" → field "items" → given data→items → cell "data"
 				idx := strings.Index(lower, "permutation of ")
 				if idx >= 0 {
 					rest := assertion[idx+len("permutation of "):]
-					srcCell := strings.Fields(rest)[0]
+					refField := strings.Fields(rest)[0]
+					// Look up which given provides this field
+					srcCellName := refField // fallback to field name
+					for _, g := range cur.givens {
+						if g.sourceField == refField {
+							srcCellName = g.sourceCell
+							break
+						}
+					}
 					o.oracleType = "deterministic"
-					o.condExpr = "length_matches:" + srcCell
+					o.condExpr = "length_matches:" + srcCellName
 				}
 			}
 			cur.oracles = append(cur.oracles, o)

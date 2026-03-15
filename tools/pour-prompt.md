@@ -57,8 +57,11 @@ syntax: `given data→items` means source_cell='data', source_field='items'.
 
 2. **Soft cell**: Has a `∴` body.
    - body_type = 'soft'
-   - body = the text after `∴` (preserve `«»` references)
+   - body = the text after `∴`
    - state = 'declared'
+   - CRITICAL: Preserve `«»` guillemet references EXACTLY as written.
+     `∴ Sort «items» in ascending order.` → body='Sort «items» in ascending order.'
+     Do NOT strip, replace, or expand guillemets. They are runtime interpolation markers.
 
 3. **Hard cell (computed)**: Has a `⊢=` body.
    - body_type = 'hard'
@@ -113,6 +116,7 @@ CALL DOLT_COMMIT('-Am', 'pour: sort-proof');
 
 Note: source_cell='data' (cell name), NOT 'sp-data' (cell ID).
 Note: "ascending order" is semantic, "permutation" is deterministic (length_matches).
+Note: body='Sort «items» in ascending order.' — guillemets «» are preserved verbatim.
 
 ## Output Format
 

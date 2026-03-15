@@ -351,6 +351,7 @@ func pourViaPiston(db *sql.DB, name, cellFile string, data []byte) {
 			"Read %s for the full parsing rules and schema. "+
 				"Parse the Cell program named «name» from turnstyle syntax in «text» "+
 				"into SQL INSERTs for the Retort schema. The program_id in all INSERTs must be '%s'. "+
+				"CRITICAL: Preserve «guillemets» exactly as written in soft cell bodies — they are runtime interpolation markers. "+
 				"Output ONLY valid SQL. No markdown fences. No commentary. "+
 				"Start with USE retort; and end with CALL DOLT_COMMIT('-Am', 'pour: %s');",
 			promptPath, name, name)

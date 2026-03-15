@@ -18,6 +18,8 @@ Usage:
   ct repl                                             Watch mode: claim any ready cell, run forever
   ct repl <program-id>                                Run one program to completion
   ct repl <name> <file.cell>                          Pour program, then run to completion
+  ct watch                                            Live dashboard: all programs, all cells (2s refresh)
+  ct watch <program-id>                               Live dashboard for one program
   ct pour <name> <file.cell>                          Load a program
   ct run <program-id>                                 Eval loop: hard cells inline, soft cells print prompt
   ct submit <program-id> <cell> <field> <value>       Submit a soft cell result
@@ -59,6 +61,12 @@ func main() {
 	switch cmd {
 	case "repl":
 		cmdRepl(db, args)
+	case "watch":
+		progID := ""
+		if len(args) > 0 {
+			progID = args[0]
+		}
+		cmdWatch(db, progID)
 	case "pour":
 		need(args, 2, "ct pour <name> <file.cell>")
 		cmdPour(db, args[0], args[1])
@@ -415,6 +423,153 @@ func trunc(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// ===================================================================
+// Watch: live dashboard
+// ===================================================================
+
+func cmdWatch(db *sql.DB, progID string) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+
+	clear := "\033[H\033[2J" // ANSI clear screen + cursor home
+
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println()
+			return
+		default:
+		}
+
+		var buf strings.Builder
+
+		// Query all cells (optionally filtered by program)
+		var cellRows *sql.Rows
+		var err error
+		if progID != "" {
+			cellRows, err = db.Query(`
+				SELECT c.program_id, c.name, c.state, c.body_type,
+				       y.field_name, y.value_text, y.is_frozen, y.is_bottom
+				FROM cells c
+				LEFT JOIN yields y ON y.cell_id = c.id
+				WHERE c.program_id = ?
+				ORDER BY c.program_id, c.name, y.field_name`, progID)
+		} else {
+			cellRows, err = db.Query(`
+				SELECT c.program_id, c.name, c.state, c.body_type,
+				       y.field_name, y.value_text, y.is_frozen, y.is_bottom
+				FROM cells c
+				LEFT JOIN yields y ON y.cell_id = c.id
+				ORDER BY c.program_id, c.name, y.field_name`)
+		}
+		if err != nil {
+			fmt.Fprintf(&buf, "  error: %v\n", err)
+			fmt.Print(clear + buf.String())
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Collect stats
+		type yieldInfo struct {
+			field, value string
+			frozen, bottom bool
+		}
+		type cellInfo struct {
+			prog, name, state, bodyType string
+			yields                      []yieldInfo
+		}
+		var cells []cellInfo
+		var cur *cellInfo
+		programs := make(map[string][2]int) // prog -> [total, frozen]
+
+		for cellRows.Next() {
+			var prog, name, state, bodyType sql.NullString
+			var fn, val sql.NullString
+			var frozen, bottom sql.NullBool
+			cellRows.Scan(&prog, &name, &state, &bodyType, &fn, &val, &frozen, &bottom)
+
+			key := prog.String + "/" + name.String
+			if cur == nil || (cur.prog+"/"+cur.name) != key {
+				if cur != nil {
+					cells = append(cells, *cur)
+				}
+				cur = &cellInfo{
+					prog: prog.String, name: name.String,
+					state: state.String, bodyType: bodyType.String,
+				}
+				counts := programs[prog.String]
+				counts[0]++
+				if state.String == "frozen" {
+					counts[1]++
+				}
+				programs[prog.String] = counts
+			}
+			if fn.Valid {
+				yi := yieldInfo{field: fn.String}
+				if val.Valid {
+					yi.value = val.String
+				}
+				if frozen.Valid {
+					yi.frozen = frozen.Bool
+				}
+				if bottom.Valid {
+					yi.bottom = bottom.Bool
+				}
+				cur.yields = append(cur.yields, yi)
+			}
+		}
+		if cur != nil {
+			cells = append(cells, *cur)
+		}
+		cellRows.Close()
+
+		// Render
+		now := time.Now().Format("15:04:05")
+		buf.WriteString(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs\n\n", now, len(programs)))
+
+		lastProg := ""
+		for _, c := range cells {
+			if c.prog != lastProg {
+				counts := programs[c.prog]
+				status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
+				if counts[0] == counts[1] {
+					status = "DONE"
+				}
+				buf.WriteString(fmt.Sprintf("━━ %s (%s) ━━\n", c.prog, status))
+				lastProg = c.prog
+			}
+
+			icon := map[string]string{
+				"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
+			}[c.state]
+			if icon == "" {
+				icon = "?"
+			}
+
+			buf.WriteString(fmt.Sprintf("  %s %-20s %s\n", icon, c.name, c.state))
+
+			for _, y := range c.yields {
+				if y.bottom {
+					buf.WriteString(fmt.Sprintf("      %s = ⊥\n", y.field))
+				} else if y.frozen && y.value != "" {
+					buf.WriteString(fmt.Sprintf("      %s = %s\n", y.field, trunc(y.value, 60)))
+				} else if y.value != "" {
+					buf.WriteString(fmt.Sprintf("      %s ~ %s\n", y.field, trunc(y.value, 60)))
+				} else {
+					buf.WriteString(fmt.Sprintf("      %s   —\n", y.field))
+				}
+			}
+		}
+
+		if len(cells) == 0 {
+			buf.WriteString("  (no programs)\n")
+		}
+
+		fmt.Print(clear + buf.String())
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // ===================================================================

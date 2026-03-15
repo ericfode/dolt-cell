@@ -3,9 +3,12 @@ package main
 // Phase B: deterministic parser for core .cell turnstyle syntax.
 // Falls back to stem cell parser (Phase A) for anything it can't handle.
 //
-// Handles: ⊢, given, given?, yield, yield ≡, ∴, ∴∴, ⊢=, ⊨, ⊢∘
-// Does NOT handle: multi-line bodies (∴ spanning lines), guard clauses,
-// spawners (⊢⊢), or any syntax not in the v0.1 spec.
+// Handles: ⊢, given, given?, yield, yield ≡, ∴, ∴∴, ⊢=, ⊨, ⊨~, ⊢∘
+// Does NOT handle: guard clauses, spawners (⊢⊢), or any syntax not in
+// the v0.1 spec.
+//
+// Semantic oracles (⊨~ or auto-classified) generate judge stem cells:
+// a separate cell that takes the original output and yields a verdict.
 
 import (
 	"fmt"
@@ -154,6 +157,16 @@ func parseCellFile(text string) []parsedCell {
 			continue
 		}
 
+		// Explicit semantic oracle: ⊨~ TEXT (always semantic, never auto-classified)
+		if strings.HasPrefix(trimmed, "⊨~ ") {
+			assertion := strings.TrimPrefix(trimmed, "⊨~ ")
+			cur.oracles = append(cur.oracles, parsedOracle{
+				assertion:  assertion,
+				oracleType: "semantic",
+			})
+			continue
+		}
+
 		// Oracle: ⊨ TEXT (must check before continuation lines)
 		if strings.HasPrefix(trimmed, "⊨ ") {
 			assertion := strings.TrimPrefix(trimmed, "⊨ ")
@@ -225,11 +238,12 @@ func cellsToSQL(programID string, cells []parsedCell) string {
 
 	for _, c := range cells {
 		if c.iterate > 0 {
-			// Expand ⊢∘ iteration
+			// Expand ⊢∘ iteration (judge cells generated per-iteration)
 			expandIteration(&sb, programID, prefix, c)
 			continue
 		}
 		writeCell(&sb, programID, prefix, c)
+		writeJudgeCells(&sb, programID, prefix, c)
 	}
 
 	sb.WriteString(fmt.Sprintf("CALL DOLT_COMMIT('-Am', 'pour: %s');\n", programID))
@@ -343,6 +357,51 @@ func expandIteration(sb *strings.Builder, programID, prefix string, c parsedCell
 		}
 
 		writeCell(sb, programID, prefix, iter)
+		writeJudgeCells(sb, programID, prefix, iter)
+	}
+}
+
+// writeJudgeCells generates stem cell judges for each semantic oracle on a cell.
+// Each judge takes the original cell's yields as input and produces a verdict.
+func writeJudgeCells(sb *strings.Builder, programID, prefix string, c parsedCell) {
+	for i, o := range c.oracles {
+		if o.oracleType != "semantic" {
+			continue
+		}
+
+		judgeName := fmt.Sprintf("%s-judge-%d", c.name, i+1)
+		// Build guillemet references for all yields
+		var refs []string
+		for _, y := range c.yields {
+			refs = append(refs, "«"+y.fieldName+"»")
+		}
+		refStr := strings.Join(refs, ", ")
+		if refStr == "" {
+			refStr = "«output»"
+		}
+
+		judgeBody := fmt.Sprintf(
+			"Judge whether %s satisfies: \"%s\". Answer YES or NO on the first line, followed by a brief explanation.",
+			refStr, o.assertion)
+
+		// Judge takes all yields from the original cell as input
+		var givens []parsedGiven
+		for _, y := range c.yields {
+			givens = append(givens, parsedGiven{
+				sourceCell:  c.name,
+				sourceField: y.fieldName,
+			})
+		}
+
+		judge := parsedCell{
+			name:     judgeName,
+			bodyType: "stem",
+			body:     judgeBody,
+			givens:   givens,
+			yields:   []parsedYield{{fieldName: "verdict"}},
+			oracles:  []parsedOracle{{assertion: "verdict is not empty", oracleType: "deterministic", condExpr: "not_empty"}},
+		}
+		writeCell(sb, programID, prefix, judge)
 	}
 }
 

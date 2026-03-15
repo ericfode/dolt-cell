@@ -1,6 +1,6 @@
 ⊢ context
   yield schema ≡ cells(id, program_id, name, body_type[soft|stem|hard], body, state[declared|computing|frozen|bottom]), givens(cell_id, source_cell, source_field, is_optional), yields(cell_id, field_name, value_text, is_frozen), oracles(cell_id, oracle_type[deterministic|semantic], assertion, condition_expr[not_empty|is_json_array|length_matches:CELL]), cell_claims(cell_id, piston_id), ready_cells VIEW
-  yield syntax ≡ ⊢ NAME = cell, given X→Y = dependency, yield NAME = output, yield NAME ≡ VALUE = hard literal, ∴ TEXT = soft body, ∴∴ TEXT = stem body (permanently soft), ⊢= TEXT = hard computed, ⊨ TEXT = oracle, ⊢∘ NAME × N = iteration (expands to N chained cells)
+  yield syntax ≡ ⊢ NAME = cell, given X→Y = dependency, yield NAME = output, yield NAME ≡ VALUE = hard literal, ∴ TEXT = soft body, ∴∴ TEXT = stem body (permanently soft), ⊢= TEXT = hard computed, ⊨ TEXT = oracle (auto-classified), ⊨~ TEXT = semantic oracle (always semantic, generates judge stem cell), ⊢∘ NAME × N = iteration (expands to N chained cells)
 
 ⊢ pour
   given context→schema

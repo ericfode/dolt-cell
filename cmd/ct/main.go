@@ -588,7 +588,9 @@ type watchModel struct {
 	spinner   spinner.Model
 	fetching  bool
 	lastFetch time.Time
-	collapsed map[string]bool
+	collapsed map[string]bool // program-level collapse
+	expanded  map[string]bool // cell-level yield expand (key: "prog/cell")
+	cursor    int             // index into visible cells
 	ready     bool
 }
 
@@ -597,6 +599,7 @@ var (
 	doneStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
 	progStyle      = lipgloss.NewStyle().Bold(true)
 	footerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	cursorStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	frozenValStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	pendValStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	bottomValStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
@@ -608,6 +611,74 @@ var (
 		"bottom":    lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
 	}
 )
+
+// visibleCells returns cells in display order, skipping collapsed programs.
+func (m watchModel) visibleCells() []watchCell {
+	var out []watchCell
+	for _, prog := range m.progOrder {
+		if m.collapsed[prog] {
+			continue
+		}
+		for _, c := range m.cells {
+			if c.prog == prog {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+// clampCursor keeps cursor in bounds after data refresh.
+func (m *watchModel) clampCursor() {
+	vis := m.visibleCells()
+	if m.cursor >= len(vis) {
+		m.cursor = len(vis) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
+// cursorCellKey returns the expand-map key for the cell at cursor.
+func (m watchModel) cursorCellKey() string {
+	vis := m.visibleCells()
+	if m.cursor < 0 || m.cursor >= len(vis) {
+		return ""
+	}
+	c := vis[m.cursor]
+	return c.prog + "/" + c.name
+}
+
+// cursorLine computes which line in renderContent the cursor cell is on.
+func (m watchModel) cursorLine() int {
+	vis := m.visibleCells()
+	line := 0
+	if m.err != nil {
+		line++ // error line
+		if !m.lastFetch.IsZero() {
+			line++ // last-ok line
+		}
+		line++ // blank
+	}
+
+	cellIdx := 0
+	lastProg := ""
+	for _, c := range vis {
+		if c.prog != lastProg {
+			line++ // program header
+			lastProg = c.prog
+		}
+		if cellIdx == m.cursor {
+			return line
+		}
+		line++ // cell line
+		if m.expanded[c.prog+"/"+c.name] {
+			line += len(c.yields)
+		}
+		cellIdx++
+	}
+	return line
+}
 
 func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, error) {
 	var rows *sql.Rows
@@ -713,6 +784,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		m.clampCursor()
 		if m.ready {
 			m.viewport.SetContent(m.renderContent())
 		}
@@ -744,15 +816,58 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
-		case "c":
-			if len(m.collapsed) == 0 {
-				for _, p := range m.progOrder {
-					m.collapsed[p] = true
-				}
-			} else {
-				m.collapsed = make(map[string]bool)
+
+		case "j", "down":
+			vis := m.visibleCells()
+			if m.cursor < len(vis)-1 {
+				m.cursor++
 			}
 			m.viewport.SetContent(m.renderContent())
+			m.ensureCursorVisible()
+			return m, nil
+
+		case "k", "up":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+			m.viewport.SetContent(m.renderContent())
+			m.ensureCursorVisible()
+			return m, nil
+
+		case "enter", " ":
+			// Toggle expand/collapse for cell at cursor
+			key := m.cursorCellKey()
+			if key != "" {
+				m.expanded[key] = !m.expanded[key]
+				m.viewport.SetContent(m.renderContent())
+				m.ensureCursorVisible()
+			}
+			return m, nil
+
+		case "e":
+			// Expand all cells
+			for _, c := range m.cells {
+				m.expanded[c.prog+"/"+c.name] = true
+			}
+			m.viewport.SetContent(m.renderContent())
+			return m, nil
+
+		case "c":
+			// Collapse all cells
+			m.expanded = make(map[string]bool)
+			m.viewport.SetContent(m.renderContent())
+			return m, nil
+
+		case "tab":
+			// Toggle program-level collapse for current cell's program
+			key := m.cursorCellKey()
+			if key != "" {
+				prog := m.visibleCells()[m.cursor].prog
+				m.collapsed[prog] = !m.collapsed[prog]
+				m.clampCursor()
+				m.viewport.SetContent(m.renderContent())
+				m.ensureCursorVisible()
+			}
 			return m, nil
 		}
 	}
@@ -764,15 +879,19 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	// Update viewport (handles j/k/up/down/pgup/pgdn scrolling)
-	if m.ready {
-		m.viewport, cmd = m.viewport.Update(msg)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-	}
-
 	return m, tea.Batch(cmds...)
+}
+
+// ensureCursorVisible scrolls the viewport to keep the cursor line on screen.
+func (m *watchModel) ensureCursorVisible() {
+	cl := m.cursorLine()
+	vpH := m.viewport.Height()
+	off := m.viewport.YOffset()
+	if cl < off {
+		m.viewport.SetYOffset(cl)
+	} else if cl >= off+vpH {
+		m.viewport.SetYOffset(cl - vpH + 1)
+	}
 }
 
 func (m watchModel) renderContent() string {
@@ -796,55 +915,74 @@ func (m watchModel) renderContent() string {
 		buf.WriteString("\n")
 	}
 
-	for _, prog := range m.progOrder {
-		counts := m.programs[prog]
-		status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
-		if counts[0] == counts[1] {
-			status = doneStyle.Render("DONE")
-		}
-		collapse := ""
-		if m.collapsed[prog] {
-			collapse = " ▸"
-		} else {
-			collapse = " ▾"
-		}
-		buf.WriteString(progStyle.Render(fmt.Sprintf("━━%s %s", collapse, prog)))
-		buf.WriteString(fmt.Sprintf(" (%s) ━━\n", status))
+	vis := m.visibleCells()
+	cellIdx := 0
+	lastProg := ""
 
-		if m.collapsed[prog] {
-			continue
+	for _, c := range vis {
+		// Program header (once per program)
+		if c.prog != lastProg {
+			counts := m.programs[c.prog]
+			status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
+			if counts[0] == counts[1] {
+				status = doneStyle.Render("DONE")
+			}
+			buf.WriteString(progStyle.Render(fmt.Sprintf("━━ %s", c.prog)))
+			buf.WriteString(fmt.Sprintf(" (%s) ━━\n", status))
+			lastProg = c.prog
 		}
 
-		for _, c := range m.cells {
-			if c.prog != prog {
-				continue
-			}
+		// Cell line
+		isCursor := cellIdx == m.cursor
+		cellKey := c.prog + "/" + c.name
+		isExpanded := m.expanded[cellKey]
 
-			icons := map[string]string{
-				"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
-			}
-			icon := icons[c.state]
-			if icon == "" {
-				icon = "?"
-			}
-			if style, ok := iconStyles[c.state]; ok {
-				icon = style.Render(icon)
-			}
+		icons := map[string]string{
+			"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
+		}
+		icon := icons[c.state]
+		if icon == "" {
+			icon = "?"
+		}
+		if style, ok := iconStyles[c.state]; ok {
+			icon = style.Render(icon)
+		}
 
-			buf.WriteString(fmt.Sprintf("  %s %-20s %s\n", icon, c.name, c.state))
+		// Cursor marker and expand indicator
+		prefix := "  "
+		if isCursor {
+			prefix = cursorStyle.Render("▸ ")
+		}
 
+		arrow := "▸"
+		if isExpanded {
+			arrow = "▾"
+		}
+		if len(c.yields) == 0 {
+			arrow = " "
+		}
+
+		line := fmt.Sprintf("%s%s %s %-20s %s", prefix, arrow, icon, c.name, c.state)
+		if len(c.yields) > 0 && !isExpanded {
+			line += footerStyle.Render(fmt.Sprintf("  [%d yields]", len(c.yields)))
+		}
+		buf.WriteString(line + "\n")
+
+		// Yields (only when expanded)
+		if isExpanded {
 			for _, y := range c.yields {
 				if y.bottom {
-					buf.WriteString(fmt.Sprintf("      %s = %s\n", y.field, bottomValStyle.Render("⊥")))
+					buf.WriteString(fmt.Sprintf("        %s = %s\n", y.field, bottomValStyle.Render("⊥")))
 				} else if y.frozen && y.value != "" {
-					buf.WriteString(fmt.Sprintf("      %s = %s\n", y.field, frozenValStyle.Render(trunc(y.value, maxVal))))
+					buf.WriteString(fmt.Sprintf("        %s = %s\n", y.field, frozenValStyle.Render(trunc(y.value, maxVal))))
 				} else if y.value != "" {
-					buf.WriteString(fmt.Sprintf("      %s ~ %s\n", y.field, pendValStyle.Render(trunc(y.value, maxVal))))
+					buf.WriteString(fmt.Sprintf("        %s ~ %s\n", y.field, pendValStyle.Render(trunc(y.value, maxVal))))
 				} else {
-					buf.WriteString(fmt.Sprintf("      %s   %s\n", y.field, footerStyle.Render("—")))
+					buf.WriteString(fmt.Sprintf("        %s   %s\n", y.field, footerStyle.Render("—")))
 				}
 			}
 		}
+		cellIdx++
 	}
 
 	if len(m.cells) == 0 && m.err == nil {
@@ -879,7 +1017,7 @@ func (m watchModel) View() tea.View {
 
 	// Footer
 	pct := m.viewport.ScrollPercent() * 100
-	buf.WriteString(footerStyle.Render(fmt.Sprintf("  ↑/↓ scroll · c collapse · q quit  %3.0f%%", pct)))
+	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · enter expand · e/c all · tab prog · q quit  %3.0f%%", pct)))
 
 	v := tea.NewView(buf.String())
 	v.AltScreen = true
@@ -892,6 +1030,7 @@ func cmdWatch(db *sql.DB, progID string) {
 		db:        db,
 		progID:    progID,
 		collapsed: make(map[string]bool),
+		expanded:  make(map[string]bool),
 		spinner:   s,
 	})
 	if _, err := p.Run(); err != nil {

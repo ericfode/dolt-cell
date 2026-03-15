@@ -573,18 +573,35 @@ type watchDataMsg struct {
 	err      error
 }
 
+type tickRefresh struct{}
+
 type watchModel struct {
-	db       *sql.DB
-	progID   string
-	cells    []watchCell
-	programs map[string][2]int
-	err      error
+	db        *sql.DB
+	progID    string
+	cells     []watchCell
+	programs  map[string][2]int
+	progOrder []string
+	err       error
+	width     int
+	height    int
+	viewport  viewport.Model
+	spinner   spinner.Model
+	fetching  bool
+	lastFetch time.Time
+	collapsed map[string]bool
+	ready     bool
 }
 
 var (
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	doneStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
-	iconStyles  = map[string]lipgloss.Style{
+	headerStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	doneStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
+	progStyle      = lipgloss.NewStyle().Bold(true)
+	footerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	frozenValStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+	pendValStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	bottomValStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	errStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+	iconStyles     = map[string]lipgloss.Style{
 		"frozen":    lipgloss.NewStyle().Foreground(lipgloss.Color("4")),
 		"computing": lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
 		"declared":  lipgloss.NewStyle().Foreground(lipgloss.Color("7")),
@@ -670,84 +687,199 @@ func (m watchModel) fetchCmd() tea.Cmd {
 }
 
 func (m watchModel) Init() tea.Cmd {
-	return m.fetchCmd()
+	return tea.Batch(m.fetchCmd(), m.spinner.Tick)
 }
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
 	case watchDataMsg:
-		m.cells = msg.cells
-		m.programs = msg.programs
-		m.err = msg.err
+		m.fetching = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.cells = msg.cells
+			m.programs = msg.programs
+			m.err = nil
+			m.lastFetch = time.Now()
+			// Build ordered program list
+			m.progOrder = m.progOrder[:0]
+			seen := make(map[string]bool)
+			for _, c := range m.cells {
+				if !seen[c.prog] {
+					m.progOrder = append(m.progOrder, c.prog)
+					seen[c.prog] = true
+				}
+			}
+		}
+		if m.ready {
+			m.viewport.SetContent(m.renderContent())
+		}
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickRefresh{} })
+
 	case tickRefresh:
+		m.fetching = true
 		return m, m.fetchCmd()
+
+	case tea.WindowSizeMsg:
+		headerH := 2 // header + blank line
+		footerH := 1 // footer line
+		m.width = msg.Width
+		m.height = msg.Height
+		if !m.ready {
+			m.viewport = viewport.New(
+				viewport.WithWidth(msg.Width),
+				viewport.WithHeight(msg.Height-headerH-footerH),
+			)
+			m.viewport.SetContent(m.renderContent())
+			m.ready = true
+		} else {
+			m.viewport.SetWidth(msg.Width)
+			m.viewport.SetHeight(msg.Height - headerH - footerH)
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "c":
+			if len(m.collapsed) == 0 {
+				for _, p := range m.progOrder {
+					m.collapsed[p] = true
+				}
+			} else {
+				m.collapsed = make(map[string]bool)
+			}
+			m.viewport.SetContent(m.renderContent())
+			return m, nil
 		}
 	}
-	return m, nil
+
+	// Update spinner
+	var cmd tea.Cmd
+	m.spinner, cmd = m.spinner.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	// Update viewport (handles j/k/up/down/pgup/pgdn scrolling)
+	if m.ready {
+		m.viewport, cmd = m.viewport.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+
+	return m, tea.Batch(cmds...)
 }
 
-type tickRefresh struct{}
-
-func (m watchModel) View() tea.View {
+func (m watchModel) renderContent() string {
 	var buf strings.Builder
 
+	maxVal := m.width - 12
+	if maxVal < 20 {
+		maxVal = 20
+	}
+	if maxVal > 120 {
+		maxVal = 120
+	}
+
 	if m.err != nil {
-		buf.WriteString(fmt.Sprintf("  error: %v\n", m.err))
-		return tea.NewView(buf.String())
+		buf.WriteString(errStyle.Render(fmt.Sprintf("  error: %v", m.err)))
+		buf.WriteString("\n")
+		if !m.lastFetch.IsZero() {
+			buf.WriteString(footerStyle.Render(fmt.Sprintf("  last ok: %s", m.lastFetch.Format("15:04:05"))))
+			buf.WriteString("\n")
+		}
+		buf.WriteString("\n")
 	}
 
-	now := time.Now().Format("15:04:05")
-	buf.WriteString(headerStyle.Render(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs", now, len(m.programs))))
-	buf.WriteString("\n\n")
+	for _, prog := range m.progOrder {
+		counts := m.programs[prog]
+		status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
+		if counts[0] == counts[1] {
+			status = doneStyle.Render("DONE")
+		}
+		collapse := ""
+		if m.collapsed[prog] {
+			collapse = " ▸"
+		} else {
+			collapse = " ▾"
+		}
+		buf.WriteString(progStyle.Render(fmt.Sprintf("━━%s %s", collapse, prog)))
+		buf.WriteString(fmt.Sprintf(" (%s) ━━\n", status))
 
-	lastProg := ""
-	for _, c := range m.cells {
-		if c.prog != lastProg {
-			counts := m.programs[c.prog]
-			status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
-			if counts[0] == counts[1] {
-				status = doneStyle.Render("DONE")
+		if m.collapsed[prog] {
+			continue
+		}
+
+		for _, c := range m.cells {
+			if c.prog != prog {
+				continue
 			}
-			buf.WriteString(fmt.Sprintf("━━ %s (%s) ━━\n", c.prog, status))
-			lastProg = c.prog
-		}
 
-		icons := map[string]string{
-			"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
-		}
-		icon := icons[c.state]
-		if icon == "" {
-			icon = "?"
-		}
-		if style, ok := iconStyles[c.state]; ok {
-			icon = style.Render(icon)
-		}
+			icons := map[string]string{
+				"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
+			}
+			icon := icons[c.state]
+			if icon == "" {
+				icon = "?"
+			}
+			if style, ok := iconStyles[c.state]; ok {
+				icon = style.Render(icon)
+			}
 
-		buf.WriteString(fmt.Sprintf("  %s %-20s %s\n", icon, c.name, c.state))
+			buf.WriteString(fmt.Sprintf("  %s %-20s %s\n", icon, c.name, c.state))
 
-		for _, y := range c.yields {
-			if y.bottom {
-				buf.WriteString(fmt.Sprintf("      %s = ⊥\n", y.field))
-			} else if y.frozen && y.value != "" {
-				buf.WriteString(fmt.Sprintf("      %s = %s\n", y.field, trunc(y.value, 60)))
-			} else if y.value != "" {
-				buf.WriteString(fmt.Sprintf("      %s ~ %s\n", y.field, trunc(y.value, 60)))
-			} else {
-				buf.WriteString(fmt.Sprintf("      %s   —\n", y.field))
+			for _, y := range c.yields {
+				if y.bottom {
+					buf.WriteString(fmt.Sprintf("      %s = %s\n", y.field, bottomValStyle.Render("⊥")))
+				} else if y.frozen && y.value != "" {
+					buf.WriteString(fmt.Sprintf("      %s = %s\n", y.field, frozenValStyle.Render(trunc(y.value, maxVal))))
+				} else if y.value != "" {
+					buf.WriteString(fmt.Sprintf("      %s ~ %s\n", y.field, pendValStyle.Render(trunc(y.value, maxVal))))
+				} else {
+					buf.WriteString(fmt.Sprintf("      %s   %s\n", y.field, footerStyle.Render("—")))
+				}
 			}
 		}
 	}
 
-	if len(m.cells) == 0 {
+	if len(m.cells) == 0 && m.err == nil {
 		buf.WriteString("  (no programs)\n")
 	}
 
-	buf.WriteString("\n  Press q to quit.\n")
+	return buf.String()
+}
+
+func (m watchModel) View() tea.View {
+	if !m.ready {
+		v := tea.NewView("  Loading...")
+		v.AltScreen = true
+		return v
+	}
+
+	var buf strings.Builder
+
+	// Header
+	now := time.Now().Format("15:04:05")
+	spin := ""
+	if m.fetching {
+		spin = " " + m.spinner.View()
+	}
+	buf.WriteString(headerStyle.Render(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs", now, len(m.programs))))
+	buf.WriteString(spin)
+	buf.WriteString("\n")
+
+	// Viewport (scrollable content)
+	buf.WriteString(m.viewport.View())
+	buf.WriteString("\n")
+
+	// Footer
+	pct := m.viewport.ScrollPercent() * 100
+	buf.WriteString(footerStyle.Render(fmt.Sprintf("  ↑/↓ scroll · c collapse · q quit  %3.0f%%", pct)))
 
 	v := tea.NewView(buf.String())
 	v.AltScreen = true
@@ -755,7 +887,13 @@ func (m watchModel) View() tea.View {
 }
 
 func cmdWatch(db *sql.DB, progID string) {
-	p := tea.NewProgram(watchModel{db: db, progID: progID})
+	s := spinner.New()
+	p := tea.NewProgram(watchModel{
+		db:        db,
+		progID:    progID,
+		collapsed: make(map[string]bool),
+		spinner:   s,
+	})
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "watch error: %v\n", err)
 		os.Exit(1)

@@ -19,6 +19,18 @@
 --     cell_claims, pistons
 --   - Views: ready_cells, cell_program_status
 --
+-- DOLT WORKAROUND: Uses session variables (@_*) instead of DECLARE variables.
+-- Dolt (as of v1.83) has bugs where DECLARE variables are not resolved in
+-- INSERT VALUES, UPDATE SET, and SELECT INTO contexts within stored procedures.
+-- Session variables work around this limitation.
+--
+-- The REPL (ct repl) uses Go-native SQL instead of calling these procedures,
+-- which is the preferred approach. These procedures exist for the piston
+-- system prompt (LLM pistons call them via dolt sql).
+--
+-- Installation: Cannot use `dolt sql < procedures.sql` (DELIMITER not supported).
+-- Use a MySQL client or the Go installer: `go run tools/install-procedures.go`
+--
 -- Bead: do-ylj
 
 -- ============================================================================

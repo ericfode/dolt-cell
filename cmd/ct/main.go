@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -285,16 +288,136 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 	}
 	fmt.Printf("Pouring %s from %s (%d bytes)...\n", name, cellFile, len(data))
 
+	// Backward compat: if .sql file exists, use it directly
 	sqlFile := strings.TrimSuffix(cellFile, ".cell") + ".sql"
-	sqlData, err := os.ReadFile(sqlFile)
-	if err != nil {
-		fatal("pour requires %s (cell_pour Phase A coming soon)", sqlFile)
+	if sqlData, err := os.ReadFile(sqlFile); err == nil {
+		if _, err := db.Exec(string(sqlData)); err != nil {
+			if !strings.Contains(err.Error(), "nothing to commit") {
+				fatal("pour: %v", err)
+			}
+		}
+		var n int
+		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&n)
+		fmt.Printf("✓ %s: %d cells\n", name, n)
+		return
 	}
-	if _, err := db.Exec(string(sqlData)); err != nil {
-		// Ignore "nothing to commit" — the data was inserted but DOLT_COMMIT
-		// had nothing new (auto-committed by Dolt)
+
+	// No .sql file — create a pour-program and let the piston parse it
+	pourViaPiston(db, name, cellFile, data)
+}
+
+// pourViaPiston creates a content-addressed 2-cell pour-program in Retort.
+// The piston evaluates the parse cell (reads pour-prompt.md, produces SQL).
+// ct polls until the sql yield freezes, then executes the SQL.
+func pourViaPiston(db *sql.DB, name, cellFile string, data []byte) {
+	// Content-addressed program ID
+	h := sha256.Sum256(data)
+	hash8 := hex.EncodeToString(h[:4])
+	pourProg := fmt.Sprintf("pour-%s-%s", name, hash8)
+
+	// Check if already parsed (cache hit)
+	parseID := pourProg + "-parse"
+	var cachedSQL sql.NullString
+	err := db.QueryRow(
+		"SELECT y.value_text FROM yields y WHERE y.cell_id = ? AND y.field_name = 'sql' AND y.is_frozen = 1",
+		parseID).Scan(&cachedSQL)
+	if err == nil && cachedSQL.Valid && cachedSQL.String != "" {
+		fmt.Printf("  cache hit: %s already parsed\n", pourProg)
+		pourExecSQL(db, name, cachedSQL.String)
+		return
+	}
+
+	// Check if pour-program already exists (maybe piston is still working on it)
+	var existing int
+	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", pourProg).Scan(&existing)
+
+	if existing == 0 {
+		// Create the 2-cell pour-program
+		sourceID := pourProg + "-source"
+		sourceText := string(data)
+
+		// Resolve pour-prompt.md path relative to the .cell file
+		promptPath, _ := filepath.Abs(filepath.Join(filepath.Dir(cellFile), "..", "tools", "pour-prompt.md"))
+		// Fallback: try relative to cwd
+		if _, err := os.Stat(promptPath); err != nil {
+			promptPath = "tools/pour-prompt.md"
+			if _, err := os.Stat(promptPath); err != nil {
+				// Last resort: absolute path
+				promptPath = "/home/nixos/gt/doltcell/crew/helix/tools/pour-prompt.md"
+			}
+		}
+
+		parseBody := fmt.Sprintf(
+			"Read %s for the full parsing rules and schema. "+
+				"Parse the Cell program named «name» from turnstyle syntax in «text» "+
+				"into SQL INSERTs for the Retort schema. The program_id in all INSERTs must be '%s'. "+
+				"Output ONLY valid SQL. No markdown fences. No commentary. "+
+				"Start with USE retort; and end with CALL DOLT_COMMIT('-Am', 'pour: %s');",
+			promptPath, name, name)
+
+		// INSERT source cell (hard, literal — text goes in yields not body)
+		db.Exec(
+			"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, 'source', 'hard', 'literal:_', 'declared')",
+			sourceID, pourProg)
+		// Source yields: text (the .cell contents) and name (the program name)
+		db.Exec(
+			"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'text', ?, TRUE, NOW())",
+			"y-"+pourProg+"-source-text", sourceID, sourceText)
+		db.Exec(
+			"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'name', ?, TRUE, NOW())",
+			"y-"+pourProg+"-source-name", sourceID, name)
+		// Freeze source immediately (it's a literal)
+		db.Exec("UPDATE cells SET state = 'frozen' WHERE id = ?", sourceID)
+
+		// INSERT parse cell (soft, depends on source)
+		db.Exec(
+			"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, 'parse', 'soft', ?, 'declared')",
+			parseID, pourProg, parseBody)
+		db.Exec(
+			"INSERT INTO givens (id, cell_id, source_cell, source_field) VALUES (?, ?, 'source', 'text')",
+			"g-"+pourProg+"-parse-text", parseID)
+		db.Exec(
+			"INSERT INTO givens (id, cell_id, source_cell, source_field) VALUES (?, ?, 'source', 'name')",
+			"g-"+pourProg+"-parse-name", parseID)
+		db.Exec(
+			"INSERT INTO yields (id, cell_id, field_name) VALUES (?, ?, 'sql')",
+			"y-"+pourProg+"-parse-sql", parseID)
+		db.Exec(
+			"INSERT INTO oracles (id, cell_id, oracle_type, assertion, condition_expr) VALUES (?, ?, 'deterministic', 'sql is not empty', 'not_empty')",
+			"o-"+pourProg+"-parse-1", parseID)
+
+		db.Exec("CALL DOLT_COMMIT('-Am', ?)", "pour-program: "+pourProg)
+		fmt.Printf("  created pour-program %s (2 cells)\n", pourProg)
+	}
+
+	// Poll for the parse.sql yield to freeze
+	fmt.Printf("  ⏳ waiting for piston to parse %s...\n", name)
+	for i := 0; i < 120; i++ { // 120 × 2s = 4 minutes
+		var sqlVal sql.NullString
+		err := db.QueryRow(
+			"SELECT y.value_text FROM yields y WHERE y.cell_id = ? AND y.field_name = 'sql' AND y.is_frozen = 1",
+			parseID).Scan(&sqlVal)
+		if err == nil && sqlVal.Valid && sqlVal.String != "" {
+			fmt.Printf("  ✓ piston produced SQL (%d bytes)\n", len(sqlVal.String))
+			pourExecSQL(db, name, sqlVal.String)
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	fatal("timeout: piston did not parse %s within 4 minutes (is a piston running?)", name)
+}
+
+// pourExecSQL executes piston-generated SQL to load a program into Retort.
+func pourExecSQL(db *sql.DB, name, sqlText string) {
+	// Clean up: remove markdown fences if piston included them
+	sqlText = strings.ReplaceAll(sqlText, "```sql", "")
+	sqlText = strings.ReplaceAll(sqlText, "```", "")
+	sqlText = strings.TrimSpace(sqlText)
+
+	if _, err := db.Exec(sqlText); err != nil {
 		if !strings.Contains(err.Error(), "nothing to commit") {
-			fatal("pour: %v", err)
+			fatal("pour exec: %v\nSQL was:\n%s", err, trunc(sqlText, 500))
 		}
 	}
 

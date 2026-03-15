@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS cells (
     program_id      VARCHAR(64) NOT NULL,
     name            VARCHAR(128) NOT NULL,
     body_type       VARCHAR(8) NOT NULL DEFAULT 'soft',
-    body            VARCHAR(4096),
+    body            TEXT,
     state           VARCHAR(16) NOT NULL DEFAULT 'declared',
     model_hint      VARCHAR(32),
     claimed_by      VARCHAR(64),

@@ -7,7 +7,7 @@ Parse the following Cell program into SQL INSERT statements for the Retort schem
 ```sql
 -- cells: one row per cell declaration
 cells(id VARCHAR(64), program_id VARCHAR(64), name VARCHAR(128),
-      body_type VARCHAR(8), body VARCHAR(4096), state VARCHAR(16))
+      body_type VARCHAR(8), body TEXT, state VARCHAR(16))
 
 -- givens: one row per input dependency
 givens(id VARCHAR(64), cell_id VARCHAR(64), source_cell VARCHAR(64),

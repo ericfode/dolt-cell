@@ -22,7 +22,9 @@ import (
 const usage = `ct — Cell Tool (plumbing for Cell runtime pistons)
 
 Usage:
-  ct next                                              Claim next ready cell, print prompt, exit (for pistons)
+  ct piston                                            Autonomous piston loop (ct next → think → ct submit)
+  ct piston <program-id>                              Piston for one program
+  ct next                                              Claim next ready cell, print prompt, exit
   ct next <program-id>                                Claim from specific program
   ct watch                                            Live dashboard: all programs, all cells (2s refresh)
   ct watch <program-id>                               Live dashboard for one program
@@ -65,6 +67,12 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
+	case "piston":
+		progID := ""
+		if len(args) > 0 {
+			progID = args[0]
+		}
+		cmdPiston(db, progID)
 	case "next":
 		progID := ""
 		if len(args) > 0 {
@@ -364,9 +372,9 @@ func pourViaPiston(db *sql.DB, name, cellFile string, data []byte) {
 		// Freeze source immediately (it's a literal)
 		db.Exec("UPDATE cells SET state = 'frozen' WHERE id = ?", sourceID)
 
-		// INSERT parse cell (soft, depends on source)
+		// INSERT parse cell (stem — permanently soft parser, never crystallizes)
 		db.Exec(
-			"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, 'parse', 'soft', ?, 'declared')",
+			"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, 'parse', 'stem', ?, 'declared')",
 			parseID, pourProg, parseBody)
 		db.Exec(
 			"INSERT INTO givens (id, cell_id, source_cell, source_field) VALUES (?, ?, 'source', 'text')",
@@ -543,6 +551,130 @@ func trunc(s string, n int) string {
 	return s[:n] + "..."
 }
 
+func fmtDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+func progressBar(done, total, width int) string {
+	if total == 0 {
+		return ""
+	}
+	filled := width * done / total
+	if filled > width {
+		filled = width
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	return bar
+}
+
+// ===================================================================
+// Piston: autonomous eval loop (ct next → think → ct submit)
+// ===================================================================
+//
+// ct piston              — loop forever, any program
+// ct piston <program-id> — loop for one program
+//
+// For LLM pistons (polecats), this is the main entry point. It calls
+// ct next internally, prints the cell prompt to stdout, reads the
+// piston's answer from a callback mechanism (the LLM session uses
+// bash to call ct submit), and loops.
+//
+// But since the piston IS the LLM session running this command, and
+// the LLM can't read its own stdout mid-stream, the piston loop is
+// actually: print instructions → exit → LLM calls ct submit → LLM
+// calls ct piston again. Ralph mode handles the cycling.
+//
+// For simplicity, ct piston is a wrapper that:
+// 1. Registers once
+// 2. Loops: ct next (inline) → if soft, prints prompt and STOPS
+// 3. The LLM reads the prompt, thinks, calls ct submit externally
+// 4. Then calls ct piston again (or ralph mode restarts it)
+//
+// This means ct piston is really "ct next but with piston registration
+// and heartbeat, and it keeps crunching hard cells until it hits a
+// soft cell or quiescent."
+
+func cmdPiston(db *sql.DB, progID string) {
+	pistonID := fmt.Sprintf("piston-%d", time.Now().UnixNano()%100000000)
+
+	// Register
+	db.Exec("DELETE FROM pistons WHERE id = ?", pistonID)
+	db.Exec(
+		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
+		pistonID, progID)
+
+	defer func() {
+		db.Exec(
+			"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE assigned_piston = ? AND state = 'computing'",
+			pistonID)
+		db.Exec("DELETE FROM cell_claims WHERE piston_id = ?", pistonID)
+		db.Exec("UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
+	}()
+
+	// Crunch through hard cells, stop at first soft cell or quiescent
+	step := 0
+	for {
+		step++
+		db.Exec("UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
+
+		es := replEvalStep(db, progID, pistonID)
+
+		switch es.action {
+		case "complete":
+			fmt.Println("COMPLETE")
+			return
+
+		case "quiescent":
+			fmt.Println("QUIESCENT")
+			return
+
+		case "evaluated":
+			// Hard cell frozen — keep going
+			fmt.Printf("HARD: %s/%s frozen\n", es.progID, es.cellName)
+			continue
+
+		case "dispatch":
+			// Soft cell — print prompt and STOP so the LLM can think
+			inputs := resolveInputs(db, es.progID, es.cellName)
+			prompt := interpolateBody(es.body, inputs)
+			yields := getYieldFields(db, es.progID, es.cellName)
+			oracles := replGetOracles(db, es.cellID)
+
+			fmt.Printf("PROGRAM: %s\n", es.progID)
+			fmt.Printf("CELL: %s\n", es.cellName)
+			fmt.Printf("CELL_ID: %s\n", es.cellID)
+			fmt.Printf("BODY_TYPE: %s\n", es.bodyType)
+			fmt.Printf("PISTON: %s\n", pistonID)
+
+			for k, v := range inputs {
+				if !strings.Contains(k, "→") {
+					continue
+				}
+				fmt.Printf("GIVEN: %s ≡ %s\n", k, v)
+			}
+
+			fmt.Printf("BODY: %s\n", prompt)
+
+			for _, y := range yields {
+				fmt.Printf("YIELD: %s\n", y)
+			}
+			for _, o := range oracles {
+				fmt.Printf("ORACLE: %s\n", o)
+			}
+			for _, y := range yields {
+				fmt.Printf("SUBMIT: ct submit %s %s %s '<value>'\n", es.progID, es.cellName, y)
+			}
+			return // STOP — LLM thinks and calls ct submit
+		}
+	}
+}
+
 // ===================================================================
 // Next: claim one cell, print prompt, exit (piston interface)
 // ===================================================================
@@ -647,6 +779,9 @@ type watchYield struct {
 
 type watchCell struct {
 	prog, name, state, bodyType string
+	body                        string
+	computingSince              *time.Time
+	assignedPiston              string
 	yields                      []watchYield
 }
 
@@ -700,6 +835,8 @@ var (
 	pendValStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	bottomValStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	errStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+	barDoneStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	barTodoStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	iconStyles     = map[string]lipgloss.Style{
 		"frozen":    lipgloss.NewStyle().Foreground(lipgloss.Color("4")),
 		"computing": lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
@@ -766,21 +903,15 @@ func (m watchModel) cursorLine() int {
 func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, error) {
 	var rows *sql.Rows
 	var err error
+	q := `SELECT c.program_id, c.name, c.state, c.body_type, c.body,
+	             c.computing_since, c.assigned_piston,
+	             y.field_name, y.value_text, y.is_frozen, y.is_bottom
+	      FROM cells c
+	      LEFT JOIN yields y ON y.cell_id = c.id`
 	if progID != "" {
-		rows, err = db.Query(`
-			SELECT c.program_id, c.name, c.state, c.body_type,
-			       y.field_name, y.value_text, y.is_frozen, y.is_bottom
-			FROM cells c
-			LEFT JOIN yields y ON y.cell_id = c.id
-			WHERE c.program_id = ?
-			ORDER BY c.program_id, c.name, y.field_name`, progID)
+		rows, err = db.Query(q+" WHERE c.program_id = ? ORDER BY c.program_id, c.name, y.field_name", progID)
 	} else {
-		rows, err = db.Query(`
-			SELECT c.program_id, c.name, c.state, c.body_type,
-			       y.field_name, y.value_text, y.is_frozen, y.is_bottom
-			FROM cells c
-			LEFT JOIN yields y ON y.cell_id = c.id
-			ORDER BY c.program_id, c.name, y.field_name`)
+		rows, err = db.Query(q + " ORDER BY c.program_id, c.name, y.field_name")
 	}
 	if err != nil {
 		return nil, nil, err
@@ -792,10 +923,13 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, 
 	programs := make(map[string][2]int)
 
 	for rows.Next() {
-		var prog, name, state, bodyType sql.NullString
+		var prog, name, state, bodyType, body, piston sql.NullString
+		var compSince sql.NullTime
 		var fn, val sql.NullString
 		var frozen, bottom sql.NullBool
-		rows.Scan(&prog, &name, &state, &bodyType, &fn, &val, &frozen, &bottom)
+		rows.Scan(&prog, &name, &state, &bodyType, &body,
+			&compSince, &piston,
+			&fn, &val, &frozen, &bottom)
 
 		key := prog.String + "/" + name.String
 		if cur == nil || (cur.prog+"/"+cur.name) != key {
@@ -805,6 +939,11 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, 
 			cur = &watchCell{
 				prog: prog.String, name: name.String,
 				state: state.String, bodyType: bodyType.String,
+				body: body.String, assignedPiston: piston.String,
+			}
+			if compSince.Valid {
+				t := compSince.Time
+				cur.computingSince = &t
 			}
 			counts := programs[prog.String]
 			counts[0]++
@@ -1006,9 +1145,13 @@ func (m watchModel) renderContent() string {
 		switch item.kind {
 		case navProgram:
 			counts := m.programs[item.prog]
-			status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
-			if counts[0] == counts[1] {
-				status = doneStyle.Render("DONE")
+			done, total := counts[1], counts[0]
+			filled := 8 * done / max(total, 1)
+			barStr := barDoneStyle.Render(strings.Repeat("█", filled)) +
+				barTodoStyle.Render(strings.Repeat("░", 8-filled))
+			status := fmt.Sprintf("%s %d/%d", barStr, done, total)
+			if done == total && total > 0 {
+				status = barDoneStyle.Render("████████") + " " + doneStyle.Render("DONE")
 			}
 			collapseIcon := "▾"
 			if m.collapsed[item.prog] {
@@ -1016,18 +1159,33 @@ func (m watchModel) renderContent() string {
 			}
 			buf.WriteString(prefix)
 			buf.WriteString(progStyle.Render(fmt.Sprintf("━━ %s %s", collapseIcon, item.prog)))
-			buf.WriteString(fmt.Sprintf(" (%s) ━━\n", status))
+			buf.WriteString(fmt.Sprintf(" %s ━━\n", status))
 
 		case navCell:
 			c := m.cells[item.cellIdx]
 			cellKey := c.prog + "/" + c.name
 			isExpanded := m.expanded[cellKey]
 
-			icons := map[string]string{
-				"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
-			}
-			icon := icons[c.state]
-			if icon == "" {
+			// Hard/soft-aware state icons
+			var icon string
+			switch c.state {
+			case "frozen":
+				icon = "■"
+			case "bottom":
+				icon = "⊥"
+			case "computing":
+				if c.bodyType == "soft" {
+					icon = "◈"
+				} else {
+					icon = "▶"
+				}
+			case "declared":
+				if c.bodyType == "soft" {
+					icon = "◇"
+				} else {
+					icon = "○"
+				}
+			default:
 				icon = "?"
 			}
 			if style, ok := iconStyles[c.state]; ok {
@@ -1042,7 +1200,13 @@ func (m watchModel) renderContent() string {
 				arrow = " "
 			}
 
-			line := fmt.Sprintf("%s  %s %s %-20s %s", prefix, arrow, icon, c.name, c.state)
+			// State label with elapsed time for computing cells
+			stateLabel := c.state
+			if c.state == "computing" && c.computingSince != nil {
+				stateLabel += " " + fmtDuration(time.Since(*c.computingSince))
+			}
+
+			line := fmt.Sprintf("%s  %s %s %-20s %s", prefix, arrow, icon, c.name, stateLabel)
 			if len(c.yields) > 0 && !isExpanded {
 				line += footerStyle.Render(fmt.Sprintf("  [%d yields]", len(c.yields)))
 			}

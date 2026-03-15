@@ -1,0 +1,21 @@
+⊢ prompt
+  yield topic ≡ Explain why content-addressable storage matters for version control, in 3 sentences.
+
+⊢ draft
+  given prompt→topic
+  yield text
+  ∴∴ Write a first draft responding to «topic». Be concise but substantive.
+  ⊨ text is not empty
+
+⊢∘ refine × 3
+  given draft→text
+  yield text
+  ∴∴ Improve «text». Make it clearer, more precise, and more compelling. Keep the same length (3 sentences). Return only the improved text, no commentary.
+  ⊨ text is not empty
+
+⊢ judge
+  given draft→text
+  given refine-3→text
+  yield verdict
+  ∴∴ Compare the original draft «text» with the refined version «text». Which is better and why? One paragraph.
+  ⊨ verdict is not empty

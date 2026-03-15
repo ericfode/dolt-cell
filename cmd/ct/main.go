@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -14,8 +15,9 @@ import (
 const usage = `ct — Cell Tool (plumbing for Cell runtime pistons)
 
 Usage:
-  ct repl <program-id>                                Interactive Read-Eval-Put-Print-Loop
-  ct repl <name> <file.cell>                          Pour program, then REPL
+  ct repl                                             Watch mode: claim any ready cell, run forever
+  ct repl <program-id>                                Run one program to completion
+  ct repl <name> <file.cell>                          Pour program, then run to completion
   ct pour <name> <file.cell>                          Load a program
   ct run <program-id>                                 Eval loop: hard cells inline, soft cells print prompt
   ct submit <program-id> <cell> <field> <value>       Submit a soft cell result
@@ -56,7 +58,6 @@ func main() {
 
 	switch cmd {
 	case "repl":
-		need(args, 1, "ct repl <program-id> | ct repl <name> <file.cell>")
 		cmdRepl(db, args)
 	case "pour":
 		need(args, 2, "ct pour <name> <file.cell>")
@@ -420,95 +421,147 @@ func trunc(s string, n int) string {
 // REPL: Read-Eval-Put-Print-Loop
 // ===================================================================
 //
-// The REPL drives a Cell program interactively. Hard cells auto-freeze.
-// Soft cells pause for input — the piston (you or an LLM) evaluates
-// and types the yield value. Oracle failures prompt for revision.
+// Two modes:
+//   ct repl                    Watch mode — claim any ready cell, run forever
+//   ct repl <program-id>      Run one program to completion
+//   ct repl <name> <file.cell> Pour then run one program
 //
-// Output follows the document-is-state rendering from the interaction
-// loop design (do-rpc).
+// Watch mode: the piston loops forever, picking up any ready cell from
+// any program. Heartbeats every cycle. Sleeps 2s on quiescent. Exits
+// cleanly on Ctrl-C or stdin EOF.
 
 func cmdRepl(db *sql.DB, args []string) {
-	var progID string
+	var progID string // empty = watch mode (any program)
 	switch {
+	case len(args) == 0:
+		// watch mode
 	case len(args) == 2 && strings.HasSuffix(args[1], ".cell"):
 		cmdPour(db, args[0], args[1])
 		progID = args[0]
 	case len(args) == 1:
 		progID = args[0]
 	default:
-		fatal("usage: ct repl <program-id> | ct repl <name> <file.cell>")
+		fatal("usage: ct repl | ct repl <program-id> | ct repl <name> <file.cell>")
 	}
 
-	// Register piston
 	pistonID := fmt.Sprintf("piston-%d", time.Now().UnixNano()%100000000)
-	mustExec(db, "SET @@dolt_transaction_commit = 0")
-	if _, err := db.Exec("CALL piston_register(?, ?, NULL)", pistonID, progID); err != nil {
-		fatal("piston_register: %v", err)
-	}
+	watch := progID == ""
+
+	// Register piston (program_id = '' for watch mode)
+	db.Exec("DELETE FROM pistons WHERE id = ?", pistonID)
+	db.Exec(
+		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
+		pistonID, progID)
+
+	// Clean shutdown on Ctrl-C
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	stopping := false
+	go func() {
+		<-sigCh
+		stopping = true
+	}()
+
 	defer func() {
-		mustExec(db, "SET @@dolt_transaction_commit = 0")
-		db.Exec("CALL piston_deregister(?)", pistonID)
+		db.Exec(
+			"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE assigned_piston = ? AND state = 'computing'",
+			pistonID)
+		db.Exec("DELETE FROM cell_claims WHERE piston_id = ?", pistonID)
+		db.Exec("UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
 		fmt.Printf("\n  piston %s deregistered\n", pistonID)
 	}()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	eofHit := false
 
-	// Print program header
-	total, frozen, ready := replCellCounts(db, progID)
-	replBar(fmt.Sprintf("%s  ·  %d cells  ·  %d/%d frozen  ·  %d ready",
-		progID, total, frozen, total, ready))
-	fmt.Println()
-	replDocState(db, progID)
+	// Print header
+	if watch {
+		fmt.Printf("  piston %s watching for cells...\n", pistonID)
+	} else {
+		total, frozen, ready := replCellCounts(db, progID)
+		replBar(fmt.Sprintf("%s  ·  %d cells  ·  %d/%d frozen  ·  %d ready",
+			progID, total, frozen, total, ready))
+		fmt.Println()
+		replDocState(db, progID)
+	}
 
 	step := 0
 	start := time.Now()
+	lastPrint := "" // dedup "waiting" messages
 
-	for {
+	for !stopping && !eofHit {
 		step++
 
-		// Go-native eval step (Dolt stored procs have variable scoping bugs)
+		// Heartbeat
+		db.Exec("UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
+
 		es := replEvalStep(db, progID, pistonID)
 
 		switch es.action {
 		case "complete":
+			// Single-program mode: program finished
 			elapsed := time.Since(start)
-			total, frozen, _ = replCellCounts(db, progID)
+			total, frozen, _ := replCellCounts(db, progID)
 			fmt.Println()
 			replBar(fmt.Sprintf("%s  ·  DONE  ·  %d/%d frozen  ·  %.1fs total",
 				progID, frozen, total, elapsed.Seconds()))
 			fmt.Println()
 			replDocState(db, progID)
-			return
+			if !watch {
+				return
+			}
+			// In watch mode, a single program completing just means keep going
+			lastPrint = ""
 
 		case "quiescent":
-			elapsed := time.Since(start)
-			total, frozen, _ = replCellCounts(db, progID)
-			fmt.Println()
-			replBar(fmt.Sprintf("%s  ·  quiescent  ·  %d/%d frozen  ·  %.1fs",
-				progID, frozen, total, elapsed.Seconds()))
-			fmt.Println()
-			replDocState(db, progID)
-			return
+			if !watch {
+				// Single-program mode: exit
+				elapsed := time.Since(start)
+				total, frozen, _ := replCellCounts(db, progID)
+				fmt.Println()
+				replBar(fmt.Sprintf("%s  ·  quiescent  ·  %d/%d frozen  ·  %.1fs",
+					progID, frozen, total, elapsed.Seconds()))
+				fmt.Println()
+				replDocState(db, progID)
+				return
+			}
+			// Watch mode: wait and retry
+			msg := fmt.Sprintf("  ⏳ waiting for cells... (%s)", time.Now().Format("15:04:05"))
+			if msg != lastPrint {
+				fmt.Printf("\r%s", msg)
+				lastPrint = msg
+			}
+			step-- // don't increment step on idle
+			time.Sleep(2 * time.Second)
 
 		case "evaluated":
-			// Hard cell auto-frozen
-			total, frozen, _ = replCellCounts(db, progID)
-			replStepSep(step, es.cellName, 0, 0)
+			lastPrint = ""
+			label := es.cellName
+			if watch {
+				label = es.progID + "/" + es.cellName
+			}
+			replStepSep(step, label, 0, 0)
 			fmt.Printf("  ■ %s frozen (hard)\n", es.cellName)
-			fmt.Printf("\n  %s  ·  %d/%d frozen\n", progID, frozen, total)
+			total, frozen, _ := replCellCounts(db, es.progID)
+			fmt.Printf("\n  %s  ·  %d/%d frozen\n", es.progID, frozen, total)
 
 		case "dispatch":
-			// Soft cell — the REPL core: Read-Eval-Put-Print
-			inputs := resolveInputs(db, progID, es.cellName)
+			lastPrint = ""
+			pid := es.progID
+			inputs := resolveInputs(db, pid, es.cellName)
 			prompt := interpolateBody(es.body, inputs)
-			yields := getYieldFields(db, progID, es.cellName)
+			yields := getYieldFields(db, pid, es.cellName)
 			oracles := replGetOracles(db, es.cellID)
 
-			fmt.Println()
-			replStepSep(step, es.cellName, 0, 0)
+			label := es.cellName
+			if watch {
+				label = pid + "/" + es.cellName
+			}
 
-			// Print resolved inputs
+			fmt.Println()
+			replStepSep(step, label, 0, 0)
+
 			for k, v := range inputs {
 				if !strings.Contains(k, "→") {
 					continue
@@ -516,41 +569,38 @@ func cmdRepl(db *sql.DB, args []string) {
 				replAnnot(fmt.Sprintf("  given %s ≡ %s", k, trunc(v, 40)), "✓ resolved")
 			}
 
-			// Print cell body
 			fmt.Printf("  ∴ %s\n", prompt)
 
-			// Print oracle assertions
 			for _, o := range oracles {
 				fmt.Printf("  ⊨ %s\n", o)
 			}
 
-			// Eval-Put loop: read input, submit, handle oracle retries
 		yieldLoop:
 			for _, y := range yields {
 				for attempt := 1; attempt <= 3; attempt++ {
 					if attempt > 1 {
 						fmt.Println()
-						replStepSep(step, es.cellName, attempt, 3)
+						replStepSep(step, label, attempt, 3)
 						fmt.Printf("  ∴ %s\n", prompt)
 						fmt.Printf("  ⚡ revise and resubmit\n")
 					}
 
-					// Read: prompt for yield value
 					fmt.Printf("\n  yield %s ≡ ", y)
 					value := replReadValue(scanner)
 					if value == "" {
+						if !scanner.Scan() && scanner.Err() == nil {
+							eofHit = true
+						}
 						fmt.Println("(empty input, skipping)")
 						continue yieldLoop
 					}
-					fmt.Println() // newline after typed value
+					fmt.Println()
 
-					// Put: submit to Dolt (Go-native)
 					replAnnot(
 						fmt.Sprintf("  yield %s ≡ %s", y, trunc(value, 40)),
 						"→ submitting")
-					result, msg := replSubmit(db, progID, es.cellName, y, value)
+					result, msg := replSubmit(db, pid, es.cellName, y, value)
 
-					// Print: show result
 					switch result {
 					case "ok":
 						replAnnot(
@@ -575,9 +625,8 @@ func cmdRepl(db *sql.DB, args []string) {
 				}
 			}
 
-			// Status after step
-			total, frozen, _ = replCellCounts(db, progID)
-			fmt.Printf("\n  %s  ·  %d/%d frozen\n", progID, frozen, total)
+			total, frozen, _ := replCellCounts(db, pid)
+			fmt.Printf("\n  %s  ·  %d/%d frozen\n", pid, frozen, total)
 		}
 	}
 }
@@ -585,38 +634,52 @@ func cmdRepl(db *sql.DB, args []string) {
 // evalStepResult holds the result of a Go-native eval step.
 type evalStepResult struct {
 	action   string // complete, quiescent, evaluated, dispatch
+	progID   string // which program this cell belongs to
 	cellID   string
 	cellName string
 	body     string
 	bodyType string
 }
 
-// replEvalStep implements cell_eval_step in Go (bypasses Dolt stored procedure
-// variable scoping bugs). Finds the next ready cell, claims it atomically,
-// and either auto-freezes hard cells or dispatches soft cells to the piston.
+// replEvalStep finds the next ready cell and claims it. When progID is empty,
+// scans ALL programs (watch mode). Returns the action and cell info.
 func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
-	// Check if program is complete
-	var remaining int
-	db.QueryRow(
-		"SELECT COUNT(*) FROM cells WHERE program_id = ? AND state NOT IN ('frozen', 'bottom')",
-		progID).Scan(&remaining)
-	if remaining == 0 {
-		return evalStepResult{action: "complete"}
+	// Single-program mode: check if that program is complete
+	if progID != "" {
+		var remaining int
+		db.QueryRow(
+			"SELECT COUNT(*) FROM cells WHERE program_id = ? AND state NOT IN ('frozen', 'bottom')",
+			progID).Scan(&remaining)
+		if remaining == 0 {
+			return evalStepResult{action: "complete", progID: progID}
+		}
 	}
 
 	// Find and claim a ready cell (atomic via INSERT IGNORE)
 	for attempt := 0; attempt < 50; attempt++ {
-		var cellID, cellName, body, bodyType sql.NullString
+		var cellID, cellProgID, cellName, body, bodyType sql.NullString
 		var modelHint sql.NullString
-		err := db.QueryRow(`
-			SELECT rc.id, rc.name, rc.body, rc.body_type, rc.model_hint
-			FROM ready_cells rc
-			WHERE rc.program_id = ?
-			  AND rc.id NOT IN (SELECT cell_id FROM cell_claims)
-			LIMIT 1`, progID).Scan(&cellID, &cellName, &body, &bodyType, &modelHint)
+		var err error
+
+		if progID != "" {
+			err = db.QueryRow(`
+				SELECT rc.id, rc.program_id, rc.name, rc.body, rc.body_type, rc.model_hint
+				FROM ready_cells rc
+				WHERE rc.program_id = ?
+				  AND rc.id NOT IN (SELECT cell_id FROM cell_claims)
+				LIMIT 1`, progID).Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &modelHint)
+		} else {
+			err = db.QueryRow(`
+				SELECT rc.id, rc.program_id, rc.name, rc.body, rc.body_type, rc.model_hint
+				FROM ready_cells rc
+				WHERE rc.id NOT IN (SELECT cell_id FROM cell_claims)
+				LIMIT 1`).Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &modelHint)
+		}
 		if err != nil {
 			break // no ready cells
 		}
+
+		pid := cellProgID.String
 
 		// Atomic claim
 		res, err := db.Exec(
@@ -627,7 +690,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 		}
 		n, _ := res.RowsAffected()
 		if n == 0 {
-			continue // another piston got it
+			continue
 		}
 
 		// Claimed! Handle hard vs soft
@@ -638,17 +701,12 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 
 			if strings.HasPrefix(body.String, "literal:") {
 				literalVal := strings.TrimPrefix(body.String, "literal:")
-
-				// Freeze ALL existing yields with the literal value
 				db.Exec(
 					"UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ?",
 					literalVal, cellID.String)
-
-				// Freeze the cell
 				db.Exec(
 					"UPDATE cells SET state = 'frozen', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
 					cellID.String)
-
 				db.Exec("DELETE FROM cell_claims WHERE cell_id = ?", cellID.String)
 				db.Exec(
 					"UPDATE pistons SET cells_completed = cells_completed + 1, last_heartbeat = NOW() WHERE id = ?",
@@ -659,9 +717,8 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 				db.Exec("CALL DOLT_COMMIT('-Am', ?)", "cell: freeze hard cell "+cellName.String)
 
 			} else if strings.HasPrefix(body.String, "sql:") {
-				// Execute SQL hard cell
 				sqlQuery := strings.TrimSpace(strings.TrimPrefix(body.String, "sql:"))
-				yields := getYieldFields(db, progID, cellName.String)
+				yields := getYieldFields(db, pid, cellName.String)
 				var result string
 				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
 					fmt.Printf("  ✗ %s SQL error: %v\n", cellName.String, err)
@@ -672,16 +729,14 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 					continue
 				}
 				for _, y := range yields {
-					replSubmit(db, progID, cellName.String, y, result)
+					replSubmit(db, pid, cellName.String, y, result)
 				}
 			}
 
 			return evalStepResult{
-				action:   "evaluated",
-				cellID:   cellID.String,
-				cellName: cellName.String,
-				body:     body.String,
-				bodyType: bodyType.String,
+				action: "evaluated", progID: pid,
+				cellID: cellID.String, cellName: cellName.String,
+				body: body.String, bodyType: bodyType.String,
 			}
 		}
 
@@ -695,21 +750,18 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 		db.Exec("CALL DOLT_COMMIT('-Am', ?)", "cell: claim soft cell "+cellName.String)
 
 		return evalStepResult{
-			action:   "dispatch",
-			cellID:   cellID.String,
-			cellName: cellName.String,
-			body:     body.String,
-			bodyType: bodyType.String,
+			action: "dispatch", progID: pid,
+			cellID: cellID.String, cellName: cellName.String,
+			body: body.String, bodyType: bodyType.String,
 		}
 	}
 
-	return evalStepResult{action: "quiescent"}
+	return evalStepResult{action: "quiescent", progID: progID}
 }
 
-// replSubmit implements cell_submit in Go. Writes a yield value, checks
-// deterministic oracles, and freezes the cell if all yields are frozen.
+// replSubmit writes a yield value, checks deterministic oracles, and
+// freezes the cell if all yields are frozen.
 func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, string) {
-	// Find the computing cell
 	var cellID string
 	err := db.QueryRow(
 		"SELECT id FROM cells WHERE program_id = ? AND name = ? AND state = 'computing'",
@@ -718,13 +770,11 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		return "error", fmt.Sprintf("Cell %q not found or not computing", cellName)
 	}
 
-	// Write the yield (delete + insert for idempotency)
 	db.Exec("DELETE FROM yields WHERE cell_id = ? AND field_name = ?", cellID, fieldName)
 	db.Exec(
 		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, FALSE, NULL)",
 		cellID, fieldName, value)
 
-	// Check deterministic oracles
 	var oracleCount int
 	db.QueryRow(
 		"SELECT COUNT(*) FROM oracles WHERE cell_id = ? AND oracle_type = 'deterministic'",
@@ -732,8 +782,6 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 
 	if oracleCount > 0 {
 		oraclePass := 0
-
-		// Check not_empty and is_json_array oracles
 		rows, _ := db.Query(
 			"SELECT condition_expr FROM oracles WHERE cell_id = ? AND oracle_type = 'deterministic'",
 			cellID)
@@ -759,7 +807,6 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 						WHERE c.program_id = ? AND c.name = ? AND y.is_frozen = 1
 						LIMIT 1`, progID, srcCell).Scan(&srcVal)
 					if err == nil {
-						// Compare JSON array lengths
 						vLen := strings.Count(value, ",") + 1
 						sLen := strings.Count(srcVal, ",") + 1
 						if strings.TrimSpace(value) == "[]" {
@@ -785,30 +832,28 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		}
 	}
 
-	// Oracle passed (or no oracles): freeze the yield
 	db.Exec(
 		"UPDATE yields SET is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ? AND field_name = ?",
 		cellID, fieldName)
 
-	// Check if ALL yields are now frozen
 	var unfrozen int
 	db.QueryRow(
 		"SELECT COUNT(*) FROM yields WHERE cell_id = ? AND is_frozen = FALSE",
 		cellID).Scan(&unfrozen)
 
 	if unfrozen == 0 {
-		// Freeze the cell
 		db.Exec(
 			"UPDATE cells SET state = 'frozen', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
 			cellID)
-		db.Exec("DELETE FROM cell_claims WHERE cell_id = ?", cellID)
 
-		// Update piston stats
-		var pistonID string
-		if err := db.QueryRow("SELECT piston_id FROM cell_claims WHERE cell_id = ?", cellID).Scan(&pistonID); err == nil {
+		// Get piston before deleting claim
+		var claimPiston string
+		db.QueryRow("SELECT piston_id FROM cell_claims WHERE cell_id = ?", cellID).Scan(&claimPiston)
+		db.Exec("DELETE FROM cell_claims WHERE cell_id = ?", cellID)
+		if claimPiston != "" {
 			db.Exec(
 				"UPDATE pistons SET cells_completed = cells_completed + 1, last_heartbeat = NOW() WHERE id = ?",
-				pistonID)
+				claimPiston)
 		}
 
 		db.Exec(

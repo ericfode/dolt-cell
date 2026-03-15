@@ -15,6 +15,42 @@
   ∴∴ Describe how semantic oracle checking should work. Given the oracle table in «schema» where oracle_type='semantic' and condition_expr is NULL, explain how an LLM piston should evaluate whether a cell's output satisfies the natural-language assertion. Cover: how to present the assertion and value to the judge, what constitutes a pass vs fail, how to provide actionable feedback on failure for retry.
   ⊨ description is not empty
 
+⊢ claim
+  given context→schema
+  yield description
+  ∴∴ Describe how a piston claims a ready cell. Given the tables in «schema» — especially ready_cells VIEW and cell_claims — explain the atomic claiming protocol: how INSERT IGNORE ensures exactly one piston wins each cell, how ready_cells surfaces cells whose givens are all frozen, and how a piston retries if its claim is beaten by another piston.
+  ⊨ description is not empty
+
+⊢ dispatch
+  given context→schema
+  given claim→description
+  yield description
+  ∴∴ Describe how a claimed cell is dispatched to its piston. Given «schema» and the claiming process in «description», explain: how resolved_inputs are built by joining givens to frozen yields, how the cell body (∴ or ∴∴ text) becomes the piston prompt, how «guillemet» references map to resolved_inputs, and the difference between hard-cell inline evaluation and soft-cell dispatch.
+  ⊨ description is not empty
+
+⊢ evaluate
+  given dispatch→description
+  yield description
+  ∴∴ Describe how a piston evaluates a dispatched soft cell. Given the dispatch process in «description», explain: how the piston reads the body as an instruction, substitutes «guillemet» references with resolved input values, uses tools (code execution, file I/O, web search) when the task requires computation, and produces output for each yield field the cell declares.
+  ⊨ description is not empty
+
+⊢ submit
+  given context→schema
+  given evaluate→description
+  given oracle-semantic→description
+  yield description
+  ∴∴ Describe how a piston submits its output and the runtime freezes a cell. Given «schema», evaluation from «description», and semantic oracle rules from «description»: explain how cell_submit writes the yield value, how deterministic oracles (not_empty, is_json_array, length_matches) are checked in SQL, how semantic oracles are logged for piston self-judgment, how oracle failure triggers revision and resubmission, and how a cell transitions computing→frozen when all yields are frozen.
+  ⊨ description is not empty
+
+⊢ eval-loop
+  given claim→description
+  given dispatch→description
+  given evaluate→description
+  given submit→description
+  yield description
+  ∴∴ Describe the full piston eval loop that ties the four phases into a repeating cycle. Given claiming (from claim «description»), dispatching (from dispatch «description»), evaluation (from evaluate «description»), and submission (from submit «description»): explain how the loop repeats until action='complete' or action='quiescent', how multiple pistons run concurrently via atomic claiming, how each iteration is stateless (fresh database read), and how this cycle is the fundamental heartbeat of the Cell runtime.
+  ⊨ description is not empty
+
 ⊢ spawn
   given context→schema
   given context→syntax

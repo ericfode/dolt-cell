@@ -154,13 +154,7 @@ func parseCellFile(text string) []parsedCell {
 			continue
 		}
 
-		// Continuation line: indented, not a keyword — append to current body
-		if cur.body != "" && len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
-			cur.body += " " + trimmed
-			continue
-		}
-
-		// Oracle: ⊨ TEXT
+		// Oracle: ⊨ TEXT (must check before continuation lines)
 		if strings.HasPrefix(trimmed, "⊨ ") {
 			assertion := strings.TrimPrefix(trimmed, "⊨ ")
 			o := parsedOracle{assertion: assertion, oracleType: "semantic"}
@@ -192,6 +186,12 @@ func parseCellFile(text string) []parsedCell {
 				}
 			}
 			cur.oracles = append(cur.oracles, o)
+			continue
+		}
+
+		// Continuation line: indented, not a keyword — append to current body
+		if cur.body != "" && len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			cur.body += " " + trimmed
 			continue
 		}
 	}

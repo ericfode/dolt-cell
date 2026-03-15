@@ -609,13 +609,9 @@ func cmdPiston(db *sql.DB, progID string) {
 		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
 		pistonID, progID)
 
-	defer func() {
-		db.Exec(
-			"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE assigned_piston = ? AND state = 'computing'",
-			pistonID)
-		db.Exec("DELETE FROM cell_claims WHERE piston_id = ?", pistonID)
-		db.Exec("UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
-	}()
+	// NOTE: no defer cleanup — when dispatching a soft cell, we LEAVE it
+	// in 'computing' state so ct submit can find it. The cell_reap_stale
+	// procedure handles cleanup if the piston dies without submitting.
 
 	// Crunch through hard cells, stop at first soft cell or quiescent
 	step := 0
@@ -819,10 +815,18 @@ type watchModel struct {
 	spinner   spinner.Model
 	fetching  bool
 	lastFetch time.Time
-	collapsed map[string]bool // program-level collapse
-	expanded  map[string]bool // cell-level yield expand (key: "prog/cell")
-	cursor    int             // index into navItems()
-	ready     bool
+	collapsed  map[string]bool // program-level collapse
+	expanded   map[string]bool // cell-level yield expand (key: "prog/cell")
+	cursor     int             // index into navItems()
+	ready      bool
+	// Detail pane
+	showDetail bool
+	detailVP   viewport.Model
+	detail     *cellDetail
+	detailCell string // "prog/cell" currently shown in detail
+	// Search
+	filtering  bool
+	filterText string
 }
 
 var (
@@ -843,7 +847,188 @@ var (
 		"declared":  lipgloss.NewStyle().Foreground(lipgloss.Color("7")),
 		"bottom":    lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
 	}
+	detailLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
+	detailDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
+
+// --- Detail pane types ---
+
+type givenInfo struct {
+	sourceCell, sourceField string
+	value                   string
+	frozen, optional        bool
+}
+
+type oracleInfo struct {
+	oracleType, assertion string
+}
+
+type traceEvent struct {
+	eventType, detail string
+	createdAt         time.Time
+}
+
+type cellDetail struct {
+	body, bodyType, modelHint string
+	assignedPiston            string
+	givens                    []givenInfo
+	oracles                   []oracleInfo
+	trace                     []traceEvent
+}
+
+type detailDataMsg struct {
+	cellKey string
+	detail  *cellDetail
+	err     error
+}
+
+func queryDetailData(db *sql.DB, cellID, progID string) (*cellDetail, error) {
+	d := &cellDetail{}
+
+	// Cell metadata
+	db.QueryRow("SELECT COALESCE(body,''), body_type, COALESCE(model_hint,''), COALESCE(assigned_piston,'') FROM cells WHERE id = ?", cellID).
+		Scan(&d.body, &d.bodyType, &d.modelHint, &d.assignedPiston)
+
+	// Givens with resolved values
+	gRows, err := db.Query(`
+		SELECT g.source_cell, g.source_field, g.is_optional,
+		       COALESCE(y.value_text, ''), COALESCE(y.is_frozen, 0)
+		FROM givens g
+		JOIN cells src ON src.program_id = ? AND src.name = g.source_cell
+		LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field
+		WHERE g.cell_id = ?`, progID, cellID)
+	if err == nil {
+		defer gRows.Close()
+		for gRows.Next() {
+			var gi givenInfo
+			gRows.Scan(&gi.sourceCell, &gi.sourceField, &gi.optional, &gi.value, &gi.frozen)
+			d.givens = append(d.givens, gi)
+		}
+	}
+
+	// Oracles
+	oRows, err := db.Query("SELECT oracle_type, assertion FROM oracles WHERE cell_id = ?", cellID)
+	if err == nil {
+		defer oRows.Close()
+		for oRows.Next() {
+			var oi oracleInfo
+			oRows.Scan(&oi.oracleType, &oi.assertion)
+			d.oracles = append(d.oracles, oi)
+		}
+	}
+
+	// Recent trace
+	tRows, err := db.Query("SELECT event_type, COALESCE(detail,''), created_at FROM trace WHERE cell_id = ? ORDER BY created_at DESC LIMIT 5", cellID)
+	if err == nil {
+		defer tRows.Close()
+		for tRows.Next() {
+			var te traceEvent
+			tRows.Scan(&te.eventType, &te.detail, &te.createdAt)
+			d.trace = append(d.trace, te)
+		}
+	}
+
+	return d, nil
+}
+
+func (m watchModel) fetchDetailCmd() tea.Cmd {
+	items := m.navItems()
+	if m.cursor < 0 || m.cursor >= len(items) || items[m.cursor].kind != navCell {
+		return nil
+	}
+	c := m.cells[items[m.cursor].cellIdx]
+	cellID := c.prog + "-" + c.name
+	cellKey := c.prog + "/" + c.name
+	progID := c.prog
+	db := m.db
+	return func() tea.Msg {
+		detail, err := queryDetailData(db, cellID, progID)
+		return detailDataMsg{cellKey: cellKey, detail: detail, err: err}
+	}
+}
+
+func (m watchModel) renderDetail() string {
+	if m.detail == nil {
+		items := m.navItems()
+		if m.cursor >= 0 && m.cursor < len(items) && items[m.cursor].kind == navProgram {
+			return detailDimStyle.Render("  Select a cell to inspect")
+		}
+		return detailDimStyle.Render("  Loading...")
+	}
+
+	d := m.detail
+	var buf strings.Builder
+	maxW := m.width - 4
+	if maxW < 40 {
+		maxW = 40
+	}
+
+	// Body
+	buf.WriteString(detailLabelStyle.Render("  BODY"))
+	if d.bodyType != "" {
+		buf.WriteString(detailDimStyle.Render(fmt.Sprintf(" (%s)", d.bodyType)))
+	}
+	if d.modelHint != "" {
+		buf.WriteString(detailDimStyle.Render(fmt.Sprintf(" model:%s", d.modelHint)))
+	}
+	if d.assignedPiston != "" {
+		buf.WriteString(detailDimStyle.Render(fmt.Sprintf(" piston:%s", d.assignedPiston)))
+	}
+	buf.WriteString("\n")
+	body := d.body
+	if len(body) > maxW*3 {
+		body = body[:maxW*3] + "..."
+	}
+	for _, line := range strings.Split(body, "\n") {
+		buf.WriteString("    " + line + "\n")
+	}
+
+	// Givens
+	if len(d.givens) > 0 {
+		buf.WriteString(detailLabelStyle.Render("  GIVENS") + "\n")
+		for _, g := range d.givens {
+			frozen := "○"
+			if g.frozen {
+				frozen = frozenValStyle.Render("■")
+			}
+			opt := ""
+			if g.optional {
+				opt = detailDimStyle.Render(" (optional)")
+			}
+			val := g.value
+			if val == "" {
+				val = detailDimStyle.Render("—")
+			} else {
+				val = trunc(val, maxW-30)
+			}
+			buf.WriteString(fmt.Sprintf("    %s %s→%s%s = %s\n", frozen, g.sourceCell, g.sourceField, opt, val))
+		}
+	}
+
+	// Oracles
+	if len(d.oracles) > 0 {
+		buf.WriteString(detailLabelStyle.Render("  ORACLES") + "\n")
+		for _, o := range d.oracles {
+			typ := detailDimStyle.Render(fmt.Sprintf("[%s]", o.oracleType))
+			buf.WriteString(fmt.Sprintf("    %s %s\n", typ, o.assertion))
+		}
+	}
+
+	// Trace
+	if len(d.trace) > 0 {
+		buf.WriteString(detailLabelStyle.Render("  TRACE") + "\n")
+		for _, t := range d.trace {
+			ts := detailDimStyle.Render(t.createdAt.Format("15:04:05"))
+			detail := ""
+			if t.detail != "" {
+				detail = " " + trunc(t.detail, maxW-30)
+			}
+			buf.WriteString(fmt.Sprintf("    %s %s%s\n", ts, t.eventType, detail))
+		}
+	}
+
+	return buf.String()
+}
 
 // navItems builds the flat list of navigable items (program headers + cells).
 func (m watchModel) navItems() []navItem {

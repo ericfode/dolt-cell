@@ -31,6 +31,7 @@ oracles(id VARCHAR(64), cell_id VARCHAR(64), oracle_type VARCHAR(16),
 | `yield NAME` | Output declaration | INSERT into yields: field_name=NAME |
 | `yield NAME ≡ VALUE` | Pre-bound output | INSERT into yields + cell is hard/literal |
 | `∴ TEXT` | Soft cell body | body_type='soft', body=TEXT (with «» refs kept) |
+| `∴∴ TEXT` | Stem cell body (permanently soft) | body_type='stem', body=TEXT (with «» refs kept) |
 | `⊢= TEXT` | Hard cell body | body_type='hard', body=TEXT |
 | `⊨ TEXT` | Oracle assertion | INSERT into oracles |
 
@@ -63,7 +64,15 @@ syntax: `given data→items` means source_cell='data', source_field='items'.
      `∴ Sort «items» in ascending order.` → body='Sort «items» in ascending order.'
      Do NOT strip, replace, or expand guillemets. They are runtime interpolation markers.
 
-3. **Hard cell (computed)**: Has a `⊢=` body.
+3. **Stem cell**: Has a `∴∴` body (double therefore).
+   - body_type = 'stem'
+   - body = the text after `∴∴`
+   - state = 'declared'
+   - Same as soft but marked as permanently soft — never crystallizes.
+   - Used for parsers, semantic oracles, and other judgment that must stay LLM-evaluated.
+   - Preserve «» guillemets same as soft cells.
+
+4. **Hard cell (computed)**: Has a `⊢=` body.
    - body_type = 'hard'
    - body = the text after `⊢=`
    - state = 'declared'

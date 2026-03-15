@@ -300,11 +300,29 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 		}
 		var n int
 		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&n)
-		fmt.Printf("✓ %s: %d cells\n", name, n)
+		fmt.Printf("✓ %s: %d cells (from .sql)\n", name, n)
 		return
 	}
 
-	// No .sql file — create a pour-program and let the piston parse it
+	// Phase B: try deterministic parser first (instant, no LLM)
+	cells := parseCellFile(string(data))
+	if cells != nil {
+		sqlText := cellsToSQL(name, cells)
+		if _, err := db.Exec(sqlText); err != nil {
+			if !strings.Contains(err.Error(), "nothing to commit") {
+				// Phase B failed — fall through to stem cell
+				fmt.Printf("  Phase B parse failed: %v, falling back to piston...\n", err)
+				pourViaPiston(db, name, cellFile, data)
+				return
+			}
+		}
+		var n int
+		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&n)
+		fmt.Printf("✓ %s: %d cells (Phase B parser)\n", name, n)
+		return
+	}
+
+	// Phase A: stem cell parser (LLM piston)
 	pourViaPiston(db, name, cellFile, data)
 }
 

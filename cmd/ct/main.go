@@ -984,12 +984,10 @@ func (m *watchModel) ensureCursorVisible() {
 func (m watchModel) renderContent() string {
 	var buf strings.Builder
 
-	maxVal := m.width - 12
-	if maxVal < 20 {
-		maxVal = 20
-	}
-	if maxVal > 120 {
-		maxVal = 120
+	// Full terminal width for yields (no artificial cap)
+	maxVal := m.width - 16
+	if maxVal < 40 {
+		maxVal = 40
 	}
 
 	if m.err != nil {
@@ -1004,72 +1002,79 @@ func (m watchModel) renderContent() string {
 
 	vis := m.visibleCells()
 	cellIdx := 0
-	lastProg := ""
+	visIdx := 0
 
-	for _, c := range vis {
-		// Program header (once per program)
-		if c.prog != lastProg {
-			counts := m.programs[c.prog]
-			status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
-			if counts[0] == counts[1] {
-				status = doneStyle.Render("DONE")
+	for _, prog := range m.progOrder {
+		// Program header — always rendered even when collapsed
+		counts := m.programs[prog]
+		status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
+		if counts[0] == counts[1] {
+			status = doneStyle.Render("DONE")
+		}
+		collapseIcon := "▾"
+		if m.collapsed[prog] {
+			collapseIcon = "▸"
+		}
+		buf.WriteString(progStyle.Render(fmt.Sprintf("━━ %s %s", collapseIcon, prog)))
+		buf.WriteString(fmt.Sprintf(" (%s) ━━\n", status))
+
+		if m.collapsed[prog] {
+			continue
+		}
+
+		// Cells for this program
+		for visIdx < len(vis) && vis[visIdx].prog == prog {
+			c := vis[visIdx]
+			isCursor := cellIdx == m.cursor
+			cellKey := c.prog + "/" + c.name
+			isExpanded := m.expanded[cellKey]
+
+			icons := map[string]string{
+				"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
 			}
-			buf.WriteString(progStyle.Render(fmt.Sprintf("━━ %s", c.prog)))
-			buf.WriteString(fmt.Sprintf(" (%s) ━━\n", status))
-			lastProg = c.prog
-		}
+			icon := icons[c.state]
+			if icon == "" {
+				icon = "?"
+			}
+			if style, ok := iconStyles[c.state]; ok {
+				icon = style.Render(icon)
+			}
 
-		// Cell line
-		isCursor := cellIdx == m.cursor
-		cellKey := c.prog + "/" + c.name
-		isExpanded := m.expanded[cellKey]
+			prefix := "  "
+			if isCursor {
+				prefix = cursorStyle.Render("▸ ")
+			}
 
-		icons := map[string]string{
-			"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
-		}
-		icon := icons[c.state]
-		if icon == "" {
-			icon = "?"
-		}
-		if style, ok := iconStyles[c.state]; ok {
-			icon = style.Render(icon)
-		}
+			arrow := "▸"
+			if isExpanded {
+				arrow = "▾"
+			}
+			if len(c.yields) == 0 {
+				arrow = " "
+			}
 
-		// Cursor marker and expand indicator
-		prefix := "  "
-		if isCursor {
-			prefix = cursorStyle.Render("▸ ")
-		}
+			line := fmt.Sprintf("%s%s %s %-20s %s", prefix, arrow, icon, c.name, c.state)
+			if len(c.yields) > 0 && !isExpanded {
+				line += footerStyle.Render(fmt.Sprintf("  [%d yields]", len(c.yields)))
+			}
+			buf.WriteString(line + "\n")
 
-		arrow := "▸"
-		if isExpanded {
-			arrow = "▾"
-		}
-		if len(c.yields) == 0 {
-			arrow = " "
-		}
-
-		line := fmt.Sprintf("%s%s %s %-20s %s", prefix, arrow, icon, c.name, c.state)
-		if len(c.yields) > 0 && !isExpanded {
-			line += footerStyle.Render(fmt.Sprintf("  [%d yields]", len(c.yields)))
-		}
-		buf.WriteString(line + "\n")
-
-		// Yields (only when expanded)
-		if isExpanded {
-			for _, y := range c.yields {
-				if y.bottom {
-					buf.WriteString(fmt.Sprintf("        %s = %s\n", y.field, bottomValStyle.Render("⊥")))
-				} else if y.frozen && y.value != "" {
-					buf.WriteString(fmt.Sprintf("        %s = %s\n", y.field, frozenValStyle.Render(trunc(y.value, maxVal))))
-				} else if y.value != "" {
-					buf.WriteString(fmt.Sprintf("        %s ~ %s\n", y.field, pendValStyle.Render(trunc(y.value, maxVal))))
-				} else {
-					buf.WriteString(fmt.Sprintf("        %s   %s\n", y.field, footerStyle.Render("—")))
+			if isExpanded {
+				for _, y := range c.yields {
+					if y.bottom {
+						buf.WriteString(fmt.Sprintf("        %s = %s\n", y.field, bottomValStyle.Render("⊥")))
+					} else if y.frozen && y.value != "" {
+						buf.WriteString(fmt.Sprintf("        %s = %s\n", y.field, frozenValStyle.Render(trunc(y.value, maxVal))))
+					} else if y.value != "" {
+						buf.WriteString(fmt.Sprintf("        %s ~ %s\n", y.field, pendValStyle.Render(trunc(y.value, maxVal))))
+					} else {
+						buf.WriteString(fmt.Sprintf("        %s   %s\n", y.field, footerStyle.Render("—")))
+					}
 				}
 			}
+			cellIdx++
+			visIdx++
 		}
-		cellIdx++
 	}
 
 	if len(m.cells) == 0 && m.err == nil {

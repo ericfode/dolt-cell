@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -550,149 +552,211 @@ func trunc(s string, n int) string {
 }
 
 // ===================================================================
-// Watch: live dashboard
+// Watch: live dashboard (Bubble Tea TUI)
 // ===================================================================
 
+type watchYield struct {
+	field, value   string
+	frozen, bottom bool
+}
+
+type watchCell struct {
+	prog, name, state, bodyType string
+	yields                      []watchYield
+}
+
+type watchDataMsg struct {
+	cells    []watchCell
+	programs map[string][2]int
+	err      error
+}
+
+type watchModel struct {
+	db       *sql.DB
+	progID   string
+	cells    []watchCell
+	programs map[string][2]int
+	err      error
+}
+
+var (
+	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	doneStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
+	iconStyles  = map[string]lipgloss.Style{
+		"frozen":    lipgloss.NewStyle().Foreground(lipgloss.Color("4")),
+		"computing": lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+		"declared":  lipgloss.NewStyle().Foreground(lipgloss.Color("7")),
+		"bottom":    lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+	}
+)
+
+func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, error) {
+	var rows *sql.Rows
+	var err error
+	if progID != "" {
+		rows, err = db.Query(`
+			SELECT c.program_id, c.name, c.state, c.body_type,
+			       y.field_name, y.value_text, y.is_frozen, y.is_bottom
+			FROM cells c
+			LEFT JOIN yields y ON y.cell_id = c.id
+			WHERE c.program_id = ?
+			ORDER BY c.program_id, c.name, y.field_name`, progID)
+	} else {
+		rows, err = db.Query(`
+			SELECT c.program_id, c.name, c.state, c.body_type,
+			       y.field_name, y.value_text, y.is_frozen, y.is_bottom
+			FROM cells c
+			LEFT JOIN yields y ON y.cell_id = c.id
+			ORDER BY c.program_id, c.name, y.field_name`)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var cells []watchCell
+	var cur *watchCell
+	programs := make(map[string][2]int)
+
+	for rows.Next() {
+		var prog, name, state, bodyType sql.NullString
+		var fn, val sql.NullString
+		var frozen, bottom sql.NullBool
+		rows.Scan(&prog, &name, &state, &bodyType, &fn, &val, &frozen, &bottom)
+
+		key := prog.String + "/" + name.String
+		if cur == nil || (cur.prog+"/"+cur.name) != key {
+			if cur != nil {
+				cells = append(cells, *cur)
+			}
+			cur = &watchCell{
+				prog: prog.String, name: name.String,
+				state: state.String, bodyType: bodyType.String,
+			}
+			counts := programs[prog.String]
+			counts[0]++
+			if state.String == "frozen" {
+				counts[1]++
+			}
+			programs[prog.String] = counts
+		}
+		if fn.Valid {
+			yi := watchYield{field: fn.String}
+			if val.Valid {
+				yi.value = val.String
+			}
+			if frozen.Valid {
+				yi.frozen = frozen.Bool
+			}
+			if bottom.Valid {
+				yi.bottom = bottom.Bool
+			}
+			cur.yields = append(cur.yields, yi)
+		}
+	}
+	if cur != nil {
+		cells = append(cells, *cur)
+	}
+	return cells, programs, rows.Err()
+}
+
+func (m watchModel) fetchCmd() tea.Cmd {
+	return func() tea.Msg {
+		cells, programs, err := queryWatchData(m.db, m.progID)
+		return watchDataMsg{cells: cells, programs: programs, err: err}
+	}
+}
+
+func (m watchModel) Init() tea.Cmd {
+	return m.fetchCmd()
+}
+
+func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case watchDataMsg:
+		m.cells = msg.cells
+		m.programs = msg.programs
+		m.err = msg.err
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickRefresh{} })
+	case tickRefresh:
+		return m, m.fetchCmd()
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+type tickRefresh struct{}
+
+func (m watchModel) View() tea.View {
+	var buf strings.Builder
+
+	if m.err != nil {
+		buf.WriteString(fmt.Sprintf("  error: %v\n", m.err))
+		return tea.NewView(buf.String())
+	}
+
+	now := time.Now().Format("15:04:05")
+	buf.WriteString(headerStyle.Render(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs", now, len(m.programs))))
+	buf.WriteString("\n\n")
+
+	lastProg := ""
+	for _, c := range m.cells {
+		if c.prog != lastProg {
+			counts := m.programs[c.prog]
+			status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
+			if counts[0] == counts[1] {
+				status = doneStyle.Render("DONE")
+			}
+			buf.WriteString(fmt.Sprintf("━━ %s (%s) ━━\n", c.prog, status))
+			lastProg = c.prog
+		}
+
+		icons := map[string]string{
+			"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
+		}
+		icon := icons[c.state]
+		if icon == "" {
+			icon = "?"
+		}
+		if style, ok := iconStyles[c.state]; ok {
+			icon = style.Render(icon)
+		}
+
+		buf.WriteString(fmt.Sprintf("  %s %-20s %s\n", icon, c.name, c.state))
+
+		for _, y := range c.yields {
+			if y.bottom {
+				buf.WriteString(fmt.Sprintf("      %s = ⊥\n", y.field))
+			} else if y.frozen && y.value != "" {
+				buf.WriteString(fmt.Sprintf("      %s = %s\n", y.field, trunc(y.value, 60)))
+			} else if y.value != "" {
+				buf.WriteString(fmt.Sprintf("      %s ~ %s\n", y.field, trunc(y.value, 60)))
+			} else {
+				buf.WriteString(fmt.Sprintf("      %s   —\n", y.field))
+			}
+		}
+	}
+
+	if len(m.cells) == 0 {
+		buf.WriteString("  (no programs)\n")
+	}
+
+	buf.WriteString("\n  Press q to quit.\n")
+
+	v := tea.NewView(buf.String())
+	v.AltScreen = true
+	return v
+}
+
 func cmdWatch(db *sql.DB, progID string) {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-
-	clear := "\033[H\033[2J" // ANSI clear screen + cursor home
-
-	for {
-		select {
-		case <-sigCh:
-			fmt.Println()
-			return
-		default:
-		}
-
-		var buf strings.Builder
-
-		// Query all cells (optionally filtered by program)
-		var cellRows *sql.Rows
-		var err error
-		if progID != "" {
-			cellRows, err = db.Query(`
-				SELECT c.program_id, c.name, c.state, c.body_type,
-				       y.field_name, y.value_text, y.is_frozen, y.is_bottom
-				FROM cells c
-				LEFT JOIN yields y ON y.cell_id = c.id
-				WHERE c.program_id = ?
-				ORDER BY c.program_id, c.name, y.field_name`, progID)
-		} else {
-			cellRows, err = db.Query(`
-				SELECT c.program_id, c.name, c.state, c.body_type,
-				       y.field_name, y.value_text, y.is_frozen, y.is_bottom
-				FROM cells c
-				LEFT JOIN yields y ON y.cell_id = c.id
-				ORDER BY c.program_id, c.name, y.field_name`)
-		}
-		if err != nil {
-			fmt.Fprintf(&buf, "  error: %v\n", err)
-			fmt.Print(clear + buf.String())
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		// Collect stats
-		type yieldInfo struct {
-			field, value string
-			frozen, bottom bool
-		}
-		type cellInfo struct {
-			prog, name, state, bodyType string
-			yields                      []yieldInfo
-		}
-		var cells []cellInfo
-		var cur *cellInfo
-		programs := make(map[string][2]int) // prog -> [total, frozen]
-
-		for cellRows.Next() {
-			var prog, name, state, bodyType sql.NullString
-			var fn, val sql.NullString
-			var frozen, bottom sql.NullBool
-			cellRows.Scan(&prog, &name, &state, &bodyType, &fn, &val, &frozen, &bottom)
-
-			key := prog.String + "/" + name.String
-			if cur == nil || (cur.prog+"/"+cur.name) != key {
-				if cur != nil {
-					cells = append(cells, *cur)
-				}
-				cur = &cellInfo{
-					prog: prog.String, name: name.String,
-					state: state.String, bodyType: bodyType.String,
-				}
-				counts := programs[prog.String]
-				counts[0]++
-				if state.String == "frozen" {
-					counts[1]++
-				}
-				programs[prog.String] = counts
-			}
-			if fn.Valid {
-				yi := yieldInfo{field: fn.String}
-				if val.Valid {
-					yi.value = val.String
-				}
-				if frozen.Valid {
-					yi.frozen = frozen.Bool
-				}
-				if bottom.Valid {
-					yi.bottom = bottom.Bool
-				}
-				cur.yields = append(cur.yields, yi)
-			}
-		}
-		if cur != nil {
-			cells = append(cells, *cur)
-		}
-		cellRows.Close()
-
-		// Render
-		now := time.Now().Format("15:04:05")
-		buf.WriteString(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs\n\n", now, len(programs)))
-
-		lastProg := ""
-		for _, c := range cells {
-			if c.prog != lastProg {
-				counts := programs[c.prog]
-				status := fmt.Sprintf("%d/%d frozen", counts[1], counts[0])
-				if counts[0] == counts[1] {
-					status = "DONE"
-				}
-				buf.WriteString(fmt.Sprintf("━━ %s (%s) ━━\n", c.prog, status))
-				lastProg = c.prog
-			}
-
-			icon := map[string]string{
-				"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥",
-			}[c.state]
-			if icon == "" {
-				icon = "?"
-			}
-
-			buf.WriteString(fmt.Sprintf("  %s %-20s %s\n", icon, c.name, c.state))
-
-			for _, y := range c.yields {
-				if y.bottom {
-					buf.WriteString(fmt.Sprintf("      %s = ⊥\n", y.field))
-				} else if y.frozen && y.value != "" {
-					buf.WriteString(fmt.Sprintf("      %s = %s\n", y.field, trunc(y.value, 60)))
-				} else if y.value != "" {
-					buf.WriteString(fmt.Sprintf("      %s ~ %s\n", y.field, trunc(y.value, 60)))
-				} else {
-					buf.WriteString(fmt.Sprintf("      %s   —\n", y.field))
-				}
-			}
-		}
-
-		if len(cells) == 0 {
-			buf.WriteString("  (no programs)\n")
-		}
-
-		fmt.Print(clear + buf.String())
-		time.Sleep(2 * time.Second)
+	p := tea.NewProgram(watchModel{db: db, progID: progID})
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "watch error: %v\n", err)
+		os.Exit(1)
 	}
 }
 

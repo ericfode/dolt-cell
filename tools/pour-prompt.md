@@ -32,6 +32,7 @@ oracles(id VARCHAR(64), cell_id VARCHAR(64), oracle_type VARCHAR(16),
 | `yield NAME ≡ VALUE` | Pre-bound output | INSERT into yields + cell is hard/literal |
 | `∴ TEXT` | Soft cell body | body_type='soft', body=TEXT (with «» refs kept) |
 | `∴∴ TEXT` | Stem cell body (permanently soft) | body_type='stem', body=TEXT (with «» refs kept) |
+| `⊢∘ NAME × N` | Iteration: expand to N chained cells | See iteration rules below |
 | `⊢= TEXT` | Hard cell body | body_type='hard', body=TEXT |
 | `⊨ TEXT` | Oracle assertion | INSERT into oracles |
 
@@ -76,6 +77,56 @@ syntax: `given data→items` means source_cell='data', source_field='items'.
    - body_type = 'hard'
    - body = the text after `⊢=`
    - state = 'declared'
+
+## Iteration Expansion (`⊢∘`)
+
+`⊢∘ NAME × N` declares an iterated cell. The parser EXPANDS it to N separate
+cells chained by dependencies. The body, yields, and oracles are copied to
+each. The `given` clause seeds the first cell; subsequent cells read from the
+previous iteration's yield of the same field name.
+
+Example input:
+```
+⊢ seed
+  yield grid ≡ [1,2,3]
+
+⊢∘ step × 3
+  given seed→grid
+  yield grid
+  ∴ Transform «grid».
+  ⊨ grid is not empty
+```
+
+Expands to:
+```
+⊢ step-1
+  given seed→grid
+  yield grid
+  ∴ Transform «grid».
+  ⊨ grid is not empty
+
+⊢ step-2
+  given step-1→grid
+  yield grid
+  ∴ Transform «grid».
+  ⊨ grid is not empty
+
+⊢ step-3
+  given step-2→grid
+  yield grid
+  ∴ Transform «grid».
+  ⊨ grid is not empty
+```
+
+Rules:
+- Cell names become `NAME-1`, `NAME-2`, ..., `NAME-N`
+- Cell IDs become `{program}-{NAME}-1`, etc.
+- First cell's `given` uses the original source cell (e.g., seed)
+- Subsequent cells' `given` uses the previous iteration (e.g., step-1→grid)
+- The `given` field that matches a yield field name is the one that chains
+- All other givens (non-chaining) are copied verbatim to all iterations
+- Body type is preserved (soft, stem, or hard)
+- Oracles are copied to each iteration
 
 ## Oracle Type Classification
 

@@ -256,7 +256,30 @@ func TestIterationWithSemanticOracle(t *testing.T) {
 		t.Error("refine-3-judge should depend on refine-3→text")
 	}
 
-	t.Logf("✓ iteration judges generated:\n%s", sql)
+	// Feedback wiring: refine-2 should have optional given from refine-1-judge-1→verdict
+	if !strings.Contains(sql, "'refine-1-judge-1', 'verdict'") {
+		t.Error("refine-2 should have optional given refine-1-judge-1→verdict")
+	}
+	// refine-3 should have optional given from refine-2-judge-1→verdict
+	if !strings.Contains(sql, "'refine-2-judge-1', 'verdict'") {
+		t.Error("refine-3 should have optional given refine-2-judge-1→verdict")
+	}
+
+	// refine-1 should NOT have judge feedback (it's the first iteration)
+	// Check that no given has cell_id='ij-refine-1' and references a judge
+	lines := strings.Split(sql, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "'ij-refine-1'") && strings.Contains(line, "judge") && strings.Contains(line, "verdict") {
+			t.Errorf("refine-1 should not have judge feedback given: %s", line)
+		}
+	}
+
+	// refine-2 and refine-3 bodies should mention «verdict»
+	if !strings.Contains(sql, "«verdict»") {
+		t.Error("iteration bodies for i>1 should reference «verdict» feedback")
+	}
+
+	t.Logf("✓ iteration with judge feedback:\n%s", sql)
 }
 
 func TestMultipleSemanticOracles(t *testing.T) {
@@ -353,6 +376,46 @@ func TestFactCheckExample(t *testing.T) {
 	}
 
 	t.Logf("✓ fact-check.cell: 3 cells → %d judge cells generated\n%s", 3, sql)
+}
+
+func TestRefineWithJudgeExample(t *testing.T) {
+	data, err := os.ReadFile("../../examples/refine-with-judge.cell")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cells := parseCellFile(string(data))
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	// 3 parsed cells: prompt, draft, refine (iteration template)
+	if len(cells) != 3 {
+		t.Fatalf("expected 3 parsed cells, got %d", len(cells))
+	}
+
+	sql := cellsToSQL("refine-with-judge", cells)
+
+	// Expansion should produce:
+	// prompt (hard), draft (stem),
+	// refine-1 + refine-1-judge-1 + refine-1-judge-2,
+	// refine-2 (with feedback) + refine-2-judge-1 + refine-2-judge-2,
+	// refine-3 (with feedback) + refine-3-judge-1 + refine-3-judge-2
+	// = 2 + 3*3 = 11 cells total in SQL
+	cellCount := strings.Count(sql, "INSERT INTO cells")
+	if cellCount != 11 {
+		t.Errorf("expected 11 cells in SQL (2 base + 3 iterations * 3 [cell + 2 judges]), got %d", cellCount)
+	}
+
+	// refine-2 should have 2 judge feedback givens (from refine-1-judge-1 and refine-1-judge-2)
+	if !strings.Contains(sql, "'refine-1-judge-1', 'verdict', TRUE") {
+		t.Error("refine-2 should have optional given from refine-1-judge-1→verdict")
+	}
+	if !strings.Contains(sql, "'refine-1-judge-2', 'verdict', TRUE") {
+		t.Error("refine-2 should have optional given from refine-1-judge-2→verdict")
+	}
+
+	t.Logf("✓ refine-with-judge: %d cells in SQL", cellCount)
 }
 
 func TestMixedOracles(t *testing.T) {

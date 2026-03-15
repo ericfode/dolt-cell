@@ -334,6 +334,14 @@ func expandIteration(sb *strings.Builder, programID, prefix string, c parsedCell
 		}
 	}
 
+	// Detect semantic oracles — their judges will feed back into subsequent iterations
+	var semanticIndices []int
+	for j, o := range c.oracles {
+		if o.oracleType == "semantic" {
+			semanticIndices = append(semanticIndices, j)
+		}
+	}
+
 	for i := 1; i <= c.iterate; i++ {
 		iter := parsedCell{
 			name:     fmt.Sprintf("%s-%d", c.name, i),
@@ -354,6 +362,19 @@ func expandIteration(sb *strings.Builder, programID, prefix string, c parsedCell
 				}
 			}
 			iter.givens = append(iter.givens, ng)
+		}
+
+		// For i > 1: wire previous iteration's judge verdicts as optional givens
+		if i > 1 && len(semanticIndices) > 0 {
+			for _, j := range semanticIndices {
+				prevJudge := fmt.Sprintf("%s-%d-judge-%d", c.name, i-1, j+1)
+				iter.givens = append(iter.givens, parsedGiven{
+					sourceCell:  prevJudge,
+					sourceField: "verdict",
+					optional:    true,
+				})
+			}
+			iter.body += " If «verdict» feedback is available from a previous judge, address it."
 		}
 
 		writeCell(sb, programID, prefix, iter)

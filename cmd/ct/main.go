@@ -1033,13 +1033,19 @@ func (m watchModel) renderDetail() string {
 // navItems builds the flat list of navigable items (program headers + cells).
 func (m watchModel) navItems() []navItem {
 	var items []navItem
+	filter := strings.ToLower(m.filterText)
 	for _, prog := range m.progOrder {
 		items = append(items, navItem{kind: navProgram, prog: prog, cellIdx: -1})
 		if !m.collapsed[prog] {
 			for i, c := range m.cells {
-				if c.prog == prog {
-					items = append(items, navItem{kind: navCell, prog: prog, cellIdx: i})
+				if c.prog != prog {
+					continue
 				}
+				if filter != "" && !strings.Contains(strings.ToLower(c.name), filter) &&
+					!strings.Contains(strings.ToLower(c.prog), filter) {
+					continue
+				}
+				items = append(items, navItem{kind: navCell, prog: prog, cellIdx: i})
 			}
 		}
 	}
@@ -1168,6 +1174,50 @@ func (m watchModel) Init() tea.Cmd {
 	return tea.Batch(m.fetchCmd(), m.spinner.Tick)
 }
 
+func (m watchModel) updateViewportSizes() watchModel {
+	headerH := 2 // header + blank
+	footerH := 1
+	listH := m.height - headerH - footerH
+	if m.showDetail {
+		detailH := m.height / 3
+		if detailH < 5 {
+			detailH = 5
+		}
+		listH = m.height - headerH - footerH - detailH - 1 // -1 for separator
+		m.detailVP.SetWidth(m.width)
+		m.detailVP.SetHeight(detailH)
+	}
+	if listH < 3 {
+		listH = 3
+	}
+	m.viewport.SetWidth(m.width)
+	m.viewport.SetHeight(listH)
+	return m
+}
+
+func (m watchModel) cursorMoved() (watchModel, tea.Cmd) {
+	m.viewport.SetContent(m.renderContent())
+	m.ensureCursorVisible()
+	if m.showDetail {
+		// Check if cursor is on a different cell
+		items := m.navItems()
+		newKey := ""
+		if m.cursor >= 0 && m.cursor < len(items) && items[m.cursor].kind == navCell {
+			c := m.cells[items[m.cursor].cellIdx]
+			newKey = c.prog + "/" + c.name
+		}
+		if newKey != m.detailCell {
+			m.detailCell = newKey
+			m.detail = nil
+			if m.showDetail {
+				m.detailVP.SetContent(m.renderDetail())
+			}
+			return m, m.fetchDetailCmd()
+		}
+	}
+	return m, nil
+}
+
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -1181,7 +1231,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.programs = msg.programs
 			m.err = nil
 			m.lastFetch = time.Now()
-			// Build ordered program list
 			m.progOrder = m.progOrder[:0]
 			seen := make(map[string]bool)
 			for _, c := range m.cells {
@@ -1197,29 +1246,64 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickRefresh{} })
 
+	case detailDataMsg:
+		if msg.cellKey == m.detailCell && msg.err == nil {
+			m.detail = msg.detail
+			m.detailVP.SetContent(m.renderDetail())
+		}
+		return m, nil
+
 	case tickRefresh:
 		m.fetching = true
 		return m, m.fetchCmd()
 
 	case tea.WindowSizeMsg:
-		headerH := 2 // header + blank line
-		footerH := 1 // footer line
 		m.width = msg.Width
 		m.height = msg.Height
 		if !m.ready {
-			m.viewport = viewport.New(
-				viewport.WithWidth(msg.Width),
-				viewport.WithHeight(msg.Height-headerH-footerH),
-			)
+			m.viewport = viewport.New(viewport.WithWidth(msg.Width), viewport.WithHeight(msg.Height-3))
+			m.detailVP = viewport.New(viewport.WithWidth(msg.Width), viewport.WithHeight(0))
 			m.viewport.SetContent(m.renderContent())
 			m.ready = true
-		} else {
-			m.viewport.SetWidth(msg.Width)
-			m.viewport.SetHeight(msg.Height - headerH - footerH)
 		}
+		m = m.updateViewportSizes()
 		return m, nil
 
 	case tea.KeyPressMsg:
+		// Filter mode intercepts most keys
+		if m.filtering {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.filtering = false
+				m.filterText = ""
+				m.clampCursor()
+				m.viewport.SetContent(m.renderContent())
+				return m, nil
+			case "backspace":
+				if len(m.filterText) > 0 {
+					m.filterText = m.filterText[:len(m.filterText)-1]
+				}
+				m.clampCursor()
+				m.viewport.SetContent(m.renderContent())
+				return m, nil
+			case "enter":
+				m.filtering = false
+				// keep filterText active
+				m.viewport.SetContent(m.renderContent())
+				return m, nil
+			default:
+				r := msg.String()
+				if len(r) == 1 {
+					m.filterText += r
+					m.clampCursor()
+					m.viewport.SetContent(m.renderContent())
+				}
+				return m, nil
+			}
+		}
+
 		items := m.navItems()
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -1229,28 +1313,24 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(items)-1 {
 				m.cursor++
 			}
-			m.viewport.SetContent(m.renderContent())
-			m.ensureCursorVisible()
-			return m, nil
+			m2, cmd := m.cursorMoved()
+			return m2, cmd
 
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-			m.viewport.SetContent(m.renderContent())
-			m.ensureCursorVisible()
-			return m, nil
+			m2, cmd := m.cursorMoved()
+			return m2, cmd
 
 		case "enter", " ":
 			if m.cursor >= 0 && m.cursor < len(items) {
 				item := items[m.cursor]
 				switch item.kind {
 				case navProgram:
-					// Toggle program collapse
 					m.collapsed[item.prog] = !m.collapsed[item.prog]
 					m.clampCursor()
 				case navCell:
-					// Toggle cell yield expand
 					c := m.cells[item.cellIdx]
 					key := c.prog + "/" + c.name
 					m.expanded[key] = !m.expanded[key]
@@ -1261,7 +1341,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "e":
-			// Expand all: uncollapse programs + expand all cell yields
 			m.collapsed = make(map[string]bool)
 			for _, c := range m.cells {
 				m.expanded[c.prog+"/"+c.name] = true
@@ -1270,10 +1349,31 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "c":
-			// Collapse all cell yields (programs stay as-is)
 			m.expanded = make(map[string]bool)
 			m.viewport.SetContent(m.renderContent())
 			return m, nil
+
+		case "d":
+			m.showDetail = !m.showDetail
+			m = m.updateViewportSizes()
+			if m.showDetail {
+				m.detailVP.SetContent(m.renderDetail())
+				return m, m.fetchDetailCmd()
+			}
+			return m, nil
+
+		case "/":
+			m.filtering = true
+			m.filterText = ""
+			return m, nil
+
+		case "esc":
+			if m.filterText != "" {
+				m.filterText = ""
+				m.clampCursor()
+				m.viewport.SetContent(m.renderContent())
+				return m, nil
+			}
 		}
 	}
 
@@ -1435,17 +1535,35 @@ func (m watchModel) View() tea.View {
 	if m.fetching {
 		spin = " " + m.spinner.View()
 	}
-	buf.WriteString(headerStyle.Render(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs", now, len(m.programs))))
+	header := headerStyle.Render(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs", now, len(m.programs)))
+	buf.WriteString(header)
 	buf.WriteString(spin)
+
+	// Filter bar
+	if m.filtering {
+		buf.WriteString("  " + detailLabelStyle.Render("/") + m.filterText + cursorStyle.Render("▎"))
+	} else if m.filterText != "" {
+		buf.WriteString("  " + detailDimStyle.Render("filter: "+m.filterText+" (esc to clear)"))
+	}
 	buf.WriteString("\n")
 
-	// Viewport (scrollable content)
+	// Cell list viewport
 	buf.WriteString(m.viewport.View())
 	buf.WriteString("\n")
 
+	// Detail pane (if enabled)
+	if m.showDetail {
+		sep := strings.Repeat("─", m.width)
+		buf.WriteString(detailDimStyle.Render(sep) + "\n")
+		buf.WriteString(m.detailVP.View())
+	}
+
 	// Footer
-	pct := m.viewport.ScrollPercent() * 100
-	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · enter toggle · e expand all · c collapse all · q quit  %3.0f%%", pct)))
+	detailKey := "d detail"
+	if m.showDetail {
+		detailKey = "d hide"
+	}
+	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · enter toggle · %s · / search · e/c all · q quit", detailKey)))
 
 	v := tea.NewView(buf.String())
 	v.AltScreen = true

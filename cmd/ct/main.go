@@ -2074,13 +2074,14 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, FALSE, NULL)",
 		cellID, fieldName, value)
 
-	var oracleCount int
+	// Check deterministic oracles
+	var detCount int
 	db.QueryRow(
 		"SELECT COUNT(*) FROM oracles WHERE cell_id = ? AND oracle_type = 'deterministic'",
-		cellID).Scan(&oracleCount)
+		cellID).Scan(&detCount)
 
-	if oracleCount > 0 {
-		oraclePass := 0
+	if detCount > 0 {
+		detPass := 0
 		rows, _ := db.Query(
 			"SELECT condition_expr FROM oracles WHERE cell_id = ? AND oracle_type = 'deterministic'",
 			cellID)
@@ -2091,11 +2092,11 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 				switch {
 				case cond == "not_empty":
 					if value != "" {
-						oraclePass++
+						detPass++
 					}
 				case cond == "is_json_array":
 					if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
-						oraclePass++
+						detPass++
 					}
 				case strings.HasPrefix(cond, "length_matches:"):
 					srcCell := strings.TrimPrefix(cond, "length_matches:")
@@ -2115,7 +2116,7 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 							sLen = 0
 						}
 						if vLen == sLen {
-							oraclePass++
+							detPass++
 						}
 					}
 				}
@@ -2123,11 +2124,32 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			rows.Close()
 		}
 
-		if oraclePass < oracleCount {
+		if detPass < detCount {
 			db.Exec(
 				"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'oracle_fail', ?, NOW())",
-				cellID, fmt.Sprintf("Oracle check failed: %d/%d passed", oraclePass, oracleCount))
-			return "oracle_fail", fmt.Sprintf("%d/%d oracles passed", oraclePass, oracleCount)
+				cellID, fmt.Sprintf("Oracle check failed: %d/%d deterministic passed", detPass, detCount))
+			return "oracle_fail", fmt.Sprintf("%d/%d deterministic oracles passed", detPass, detCount)
+		}
+	}
+
+	// Log semantic oracles (not machine-checked yet — piston self-judges)
+	var semCount int
+	db.QueryRow(
+		"SELECT COUNT(*) FROM oracles WHERE cell_id = ? AND oracle_type = 'semantic'",
+		cellID).Scan(&semCount)
+	if semCount > 0 {
+		semRows, _ := db.Query(
+			"SELECT assertion FROM oracles WHERE cell_id = ? AND oracle_type = 'semantic'",
+			cellID)
+		if semRows != nil {
+			for semRows.Next() {
+				var assertion string
+				semRows.Scan(&assertion)
+				db.Exec(
+					"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'oracle_semantic', ?, NOW())",
+					cellID, fmt.Sprintf("Semantic (trust piston): %s", assertion))
+			}
+			semRows.Close()
 		}
 	}
 
@@ -2206,17 +2228,21 @@ func replAnnot(content, annotation string) {
 
 // replGetOracles returns oracle assertion strings for a cell.
 func replGetOracles(db *sql.DB, cellID string) []string {
-	rows, err := db.Query("SELECT assertion FROM oracles WHERE cell_id = ?", cellID)
+	rows, err := db.Query("SELECT oracle_type, assertion FROM oracles WHERE cell_id = ?", cellID)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
-		var a sql.NullString
-		rows.Scan(&a)
+		var otype, a sql.NullString
+		rows.Scan(&otype, &a)
 		if a.Valid {
-			out = append(out, a.String)
+			prefix := "⊨"
+			if otype.Valid && otype.String == "semantic" {
+				prefix = "⊨~" // semantic (piston-judged)
+			}
+			out = append(out, prefix+" "+a.String)
 		}
 	}
 	return out

@@ -22,9 +22,8 @@ import (
 const usage = `ct — Cell Tool (plumbing for Cell runtime pistons)
 
 Usage:
-  ct repl                                             Watch mode: claim any ready cell, run forever
-  ct repl <program-id>                                Run one program to completion
-  ct repl <name> <file.cell>                          Pour program, then run to completion
+  ct next                                              Claim next ready cell, print prompt, exit (for pistons)
+  ct next <program-id>                                Claim from specific program
   ct watch                                            Live dashboard: all programs, all cells (2s refresh)
   ct watch <program-id>                               Live dashboard for one program
   ct pour <name> <file.cell>                          Load a program
@@ -66,8 +65,12 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
-	case "repl":
-		cmdRepl(db, args)
+	case "next":
+		progID := ""
+		if len(args) > 0 {
+			progID = args[0]
+		}
+		cmdNext(db, progID)
 	case "watch":
 		progID := ""
 		if len(args) > 0 {
@@ -187,32 +190,19 @@ func cmdRun(db *sql.DB, progID string) {
 	}
 }
 
-// cmdSubmit submits a yield value for a soft cell
+// cmdSubmit submits a yield value for a soft cell (Go-native, no stored procs)
 func cmdSubmit(db *sql.DB, progID, cellName, field, value string) {
-	mustExec(db, "SET @@dolt_transaction_commit = 0")
-	rows, err := db.Query("CALL cell_submit(?, ?, ?, ?)", progID, cellName, field, value)
-	if err != nil {
-		fatal("cell_submit: %v", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		fatal("no result from cell_submit")
-	}
-	var result, message, fieldName sql.NullString
-	rows.Scan(&result, &message, &fieldName)
-
-	switch result.String {
+	result, msg := replSubmit(db, progID, cellName, field, value)
+	switch result {
 	case "ok":
 		fmt.Printf("■ %s.%s frozen\n", cellName, field)
-		// Continue the eval loop
-		fmt.Println()
-		cmdRun(db, progID)
 	case "oracle_fail":
-		fmt.Printf("✗ %s.%s oracle failed: %s\n", cellName, field, message.String)
+		fmt.Printf("✗ %s.%s oracle failed: %s\n", cellName, field, msg)
 		fmt.Printf("  → revise and resubmit: ct submit %s %s %s '<revised>'\n", progID, cellName, field)
-	case "error":
-		fmt.Printf("✗ error: %s\n", message.String)
+		os.Exit(1)
+	default:
+		fmt.Printf("✗ %s: %s\n", result, msg)
+		os.Exit(1)
 	}
 }
 
@@ -554,6 +544,99 @@ func trunc(s string, n int) string {
 }
 
 // ===================================================================
+// Next: claim one cell, print prompt, exit (piston interface)
+// ===================================================================
+//
+// ct next          — claim any ready cell from any program
+// ct next <prog>   — claim from a specific program
+//
+// Prints structured output the piston can parse:
+//   PROGRAM: sort-proof
+//   CELL: sort
+//   CELL_ID: sp-sort
+//   BODY_TYPE: soft
+//   BODY: Sort «items» in ascending order.
+//   GIVEN: data→items ≡ [4, 1, 7, 3, 9, 2]
+//   YIELD: sorted
+//   ORACLE: sorted is a permutation of items
+//   ORACLE: sorted is in ascending order
+//
+// Exit codes:
+//   0 = cell claimed and printed
+//   1 = error
+//   2 = no ready cells (quiescent)
+
+func cmdNext(db *sql.DB, progID string) {
+	pistonID := fmt.Sprintf("piston-%d", time.Now().UnixNano()%100000000)
+
+	// Register piston (lightweight — just so claims have a valid piston_id)
+	db.Exec("DELETE FROM pistons WHERE id = ?", pistonID)
+	db.Exec(
+		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
+		pistonID, progID)
+
+	es := replEvalStep(db, progID, pistonID)
+
+	switch es.action {
+	case "complete":
+		fmt.Println("COMPLETE")
+		os.Exit(2)
+
+	case "quiescent":
+		// Deregister — we didn't claim anything
+		db.Exec("UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
+		fmt.Println("QUIESCENT")
+		os.Exit(2)
+
+	case "evaluated":
+		// Hard cell was auto-frozen. Print confirmation and exit 0.
+		fmt.Printf("PROGRAM: %s\n", es.progID)
+		fmt.Printf("CELL: %s\n", es.cellName)
+		fmt.Printf("CELL_ID: %s\n", es.cellID)
+		fmt.Printf("BODY_TYPE: hard\n")
+		fmt.Printf("ACTION: frozen\n")
+
+	case "dispatch":
+		// Soft cell claimed. Print everything the piston needs.
+		fmt.Printf("PROGRAM: %s\n", es.progID)
+		fmt.Printf("CELL: %s\n", es.cellName)
+		fmt.Printf("CELL_ID: %s\n", es.cellID)
+		fmt.Printf("BODY_TYPE: soft\n")
+		fmt.Printf("PISTON: %s\n", pistonID)
+
+		// Resolved inputs
+		inputs := resolveInputs(db, es.progID, es.cellName)
+		prompt := interpolateBody(es.body, inputs)
+		for k, v := range inputs {
+			if !strings.Contains(k, "→") {
+				continue
+			}
+			fmt.Printf("GIVEN: %s ≡ %s\n", k, v)
+		}
+
+		// Body (the ∴ prompt with interpolated values)
+		fmt.Printf("BODY: %s\n", prompt)
+
+		// Yield fields the piston must submit
+		yields := getYieldFields(db, es.progID, es.cellName)
+		for _, y := range yields {
+			fmt.Printf("YIELD: %s\n", y)
+		}
+
+		// Oracles (so the piston knows the constraints)
+		oracles := replGetOracles(db, es.cellID)
+		for _, o := range oracles {
+			fmt.Printf("ORACLE: %s\n", o)
+		}
+
+		// How to submit
+		for _, y := range yields {
+			fmt.Printf("SUBMIT: ct submit %s %s %s '<value>'\n", es.progID, es.cellName, y)
+		}
+	}
+}
+
+// ===================================================================
 // Watch: live dashboard (Bubble Tea TUI)
 // ===================================================================
 
@@ -662,20 +745,24 @@ func (m watchModel) cursorLine() int {
 	}
 
 	cellIdx := 0
-	lastProg := ""
-	for _, c := range vis {
-		if c.prog != lastProg {
-			line++ // program header
-			lastProg = c.prog
+	visIdx := 0
+	for _, prog := range m.progOrder {
+		line++ // every program gets a header line
+		if m.collapsed[prog] {
+			continue
 		}
-		if cellIdx == m.cursor {
-			return line
+		for visIdx < len(vis) && vis[visIdx].prog == prog {
+			if cellIdx == m.cursor {
+				return line
+			}
+			line++ // cell line
+			c := vis[visIdx]
+			if m.expanded[c.prog+"/"+c.name] {
+				line += len(c.yields)
+			}
+			cellIdx++
+			visIdx++
 		}
-		line++ // cell line
-		if m.expanded[c.prog+"/"+c.name] {
-			line += len(c.yields)
-		}
-		cellIdx++
 	}
 	return line
 }
@@ -1040,18 +1127,11 @@ func cmdWatch(db *sql.DB, progID string) {
 }
 
 // ===================================================================
-// REPL: Read-Eval-Put-Print-Loop
+// Core eval engine (used by ct next, ct submit, ct pour)
 // ===================================================================
-//
-// Two modes:
-//   ct repl                    Watch mode — claim any ready cell, run forever
-//   ct repl <program-id>      Run one program to completion
-//   ct repl <name> <file.cell> Pour then run one program
-//
-// Watch mode: the piston loops forever, picking up any ready cell from
-// any program. Heartbeats every cycle. Sleeps 2s on quiescent. Exits
-// cleanly on Ctrl-C or stdin EOF.
 
+// cmdRepl is DEPRECATED — use ct next + ct submit instead.
+// Kept temporarily for backward compat; will be removed.
 func cmdRepl(db *sql.DB, args []string) {
 	var progID string // empty = watch mode (any program)
 	switch {

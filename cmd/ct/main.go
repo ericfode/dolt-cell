@@ -500,6 +500,7 @@ func submitYieldDirect(db *sql.DB, progID, cellName, field, value string) {
 
 func resolveInputs(db *sql.DB, progID, cellName string) map[string]string {
 	m := make(map[string]string)
+	fieldCount := make(map[string]int) // track how many givens share each field name
 	rows, err := db.Query(`
 		SELECT g.source_cell, g.source_field, y.value_text
 		FROM givens g
@@ -514,8 +515,18 @@ func resolveInputs(db *sql.DB, progID, cellName string) map[string]string {
 	for rows.Next() {
 		var sc, sf, v sql.NullString
 		rows.Scan(&sc, &sf, &v)
-		m[sc.String+"→"+sf.String] = v.String
+		qualified := sc.String + "→" + sf.String
+		m[qualified] = v.String
+		// Also add «source.field» dot-notation alias
+		m[sc.String+"."+sf.String] = v.String
+		fieldCount[sf.String]++
 		m[sf.String] = v.String
+	}
+	// Remove bare field names that are ambiguous (multiple givens share the name)
+	for field, count := range fieldCount {
+		if count > 1 {
+			delete(m, field)
+		}
 	}
 	return m
 }

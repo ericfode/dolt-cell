@@ -72,7 +72,10 @@ Read the result row:
 
 2. Read `body` — this is the cell's instruction (the `∴` line from the
    program). References like `«items»` in the body refer to the given values
-   from `resolved_inputs`.
+   from `resolved_inputs`. When multiple givens share the same field name,
+   use qualified references: `«source.field»` (e.g., `«draft.text»` vs
+   `«refine-3.text»`). Bare `«field»` only works when the field name is
+   unambiguous.
 
 3. **Think carefully and produce the output.** You are a full Claude Code
    session — use your tools (bash, file reading, web search, code execution)

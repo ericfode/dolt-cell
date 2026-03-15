@@ -141,11 +141,12 @@ BEGIN
             IF v_body LIKE 'literal:%' THEN
                 SET v_literal_val = SUBSTRING(v_body, 9);
 
-                -- Write the frozen yield
-                DELETE FROM yields WHERE cell_id = v_cell_id AND field_name = 'value';
-                INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at)
-                VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), v_cell_id, 'value',
-                        v_literal_val, TRUE, NOW());
+                -- Freeze all declared yields for this cell with the literal value
+                UPDATE yields
+                   SET value_text = v_literal_val,
+                       is_frozen = TRUE,
+                       frozen_at = NOW()
+                 WHERE cell_id = v_cell_id;
 
                 -- Freeze the cell
                 UPDATE cells
@@ -300,8 +301,8 @@ BEGIN
                                 JOIN cells c2 ON c2.id = y2.cell_id
                                 WHERE c2.program_id = p_program_id
                                   AND c2.name = SUBSTRING_INDEX(o.condition_expr, ':', -1)
-                                  AND y2.field_name = 'value'
-                                  AND y2.is_frozen = 1) AS JSON))
+                                  AND y2.is_frozen = 1
+                                LIMIT 1) AS JSON))
                 );
             END IF;
 

@@ -788,12 +788,13 @@ func cmdRepl(db *sql.DB, args []string) {
 
 // evalStepResult holds the result of a Go-native eval step.
 type evalStepResult struct {
-	action   string // complete, quiescent, evaluated, dispatch
-	progID   string // which program this cell belongs to
-	cellID   string
-	cellName string
-	body     string
-	bodyType string
+	action    string // complete, quiescent, evaluated, dispatch
+	progID    string // which program this cell belongs to
+	cellID    string
+	cellName  string
+	body      string
+	bodyType  string
+	modelHint string // preferred model for soft cells (empty = default)
 }
 
 // replEvalStep finds the next ready cell and claims it. When progID is empty,
@@ -892,6 +893,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 				action: "evaluated", progID: pid,
 				cellID: cellID.String, cellName: cellName.String,
 				body: body.String, bodyType: bodyType.String,
+				modelHint: modelHint.String,
 			}
 		}
 
@@ -908,6 +910,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 			action: "dispatch", progID: pid,
 			cellID: cellID.String, cellName: cellName.String,
 			body: body.String, bodyType: bodyType.String,
+			modelHint: modelHint.String,
 		}
 	}
 

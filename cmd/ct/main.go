@@ -827,6 +827,22 @@ type watchModel struct {
 	// Search
 	filtering  bool
 	filterText string
+	// Session stats
+	stats watchStats
+}
+
+type watchStats struct {
+	sessionStart   time.Time
+	navCount       int            // j/k moves
+	expandCount    int            // enter on cells
+	collapseCount  int            // enter on programs
+	detailOpens    int            // d presses to open
+	detailTime     time.Duration  // total time detail was open
+	detailOpenedAt *time.Time     // when detail was last opened
+	searchCount    int            // / presses
+	expandAll      int            // e presses
+	collapseAll    int            // c presses
+	cellVisits     map[string]int // "prog/cell" → visit count
 }
 
 var (
@@ -1310,15 +1326,26 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "j", "down":
+			m.stats.navCount++
 			if m.cursor < len(items)-1 {
 				m.cursor++
+			}
+			// Track cell visit
+			if m.cursor < len(items) && items[m.cursor].kind == navCell {
+				c := m.cells[items[m.cursor].cellIdx]
+				m.stats.cellVisits[c.prog+"/"+c.name]++
 			}
 			m2, cmd := m.cursorMoved()
 			return m2, cmd
 
 		case "k", "up":
+			m.stats.navCount++
 			if m.cursor > 0 {
 				m.cursor--
+			}
+			if m.cursor < len(items) && items[m.cursor].kind == navCell {
+				c := m.cells[items[m.cursor].cellIdx]
+				m.stats.cellVisits[c.prog+"/"+c.name]++
 			}
 			m2, cmd := m.cursorMoved()
 			return m2, cmd
@@ -1328,9 +1355,11 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				item := items[m.cursor]
 				switch item.kind {
 				case navProgram:
+					m.stats.collapseCount++
 					m.collapsed[item.prog] = !m.collapsed[item.prog]
 					m.clampCursor()
 				case navCell:
+					m.stats.expandCount++
 					c := m.cells[item.cellIdx]
 					key := c.prog + "/" + c.name
 					m.expanded[key] = !m.expanded[key]
@@ -1341,6 +1370,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "e":
+			m.stats.expandAll++
 			m.collapsed = make(map[string]bool)
 			for _, c := range m.cells {
 				m.expanded[c.prog+"/"+c.name] = true
@@ -1349,12 +1379,21 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "c":
+			m.stats.collapseAll++
 			m.expanded = make(map[string]bool)
 			m.viewport.SetContent(m.renderContent())
 			return m, nil
 
 		case "d":
 			m.showDetail = !m.showDetail
+			if m.showDetail {
+				m.stats.detailOpens++
+				now := time.Now()
+				m.stats.detailOpenedAt = &now
+			} else if m.stats.detailOpenedAt != nil {
+				m.stats.detailTime += time.Since(*m.stats.detailOpenedAt)
+				m.stats.detailOpenedAt = nil
+			}
 			m = m.updateViewportSizes()
 			if m.showDetail {
 				m.detailVP.SetContent(m.renderDetail())
@@ -1363,8 +1402,47 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "/":
+			m.stats.searchCount++
 			m.filtering = true
 			m.filterText = ""
+			return m, nil
+
+		case "G":
+			// Jump to bottom
+			m.stats.navCount++
+			m.cursor = len(items) - 1
+			m2, cmd := m.cursorMoved()
+			return m2, cmd
+
+		case "g":
+			// Jump to top
+			m.stats.navCount++
+			m.cursor = 0
+			m2, cmd := m.cursorMoved()
+			return m2, cmd
+
+		case "tab":
+			// Jump to next program header
+			m.stats.navCount++
+			for i := m.cursor + 1; i < len(items); i++ {
+				if items[i].kind == navProgram {
+					m.cursor = i
+					m2, cmd := m.cursorMoved()
+					return m2, cmd
+				}
+			}
+			return m, nil
+
+		case "shift+tab":
+			// Jump to previous program header
+			m.stats.navCount++
+			for i := m.cursor - 1; i >= 0; i-- {
+				if items[i].kind == navProgram {
+					m.cursor = i
+					m2, cmd := m.cursorMoved()
+					return m2, cmd
+				}
+			}
 			return m, nil
 
 		case "esc":
@@ -1563,7 +1641,7 @@ func (m watchModel) View() tea.View {
 	if m.showDetail {
 		detailKey = "d hide"
 	}
-	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · enter toggle · %s · / search · e/c all · q quit", detailKey)))
+	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · tab prog · g/G top/bot · enter toggle · %s · / search · q quit", detailKey)))
 
 	v := tea.NewView(buf.String())
 	v.AltScreen = true
@@ -1572,17 +1650,76 @@ func (m watchModel) View() tea.View {
 
 func cmdWatch(db *sql.DB, progID string) {
 	s := spinner.New()
-	p := tea.NewProgram(watchModel{
+	model := watchModel{
 		db:        db,
 		progID:    progID,
 		collapsed: make(map[string]bool),
 		expanded:  make(map[string]bool),
 		spinner:   s,
-	})
-	if _, err := p.Run(); err != nil {
+		stats: watchStats{
+			sessionStart: time.Now(),
+			cellVisits:   make(map[string]int),
+		},
+	}
+	p := tea.NewProgram(model)
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "watch error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Print session stats
+	if m, ok := finalModel.(watchModel); ok {
+		m.printStats()
+	}
+}
+
+func (m watchModel) printStats() {
+	st := m.stats
+	dur := time.Since(st.sessionStart)
+
+	// Finalize detail time if still open
+	if st.detailOpenedAt != nil {
+		st.detailTime += time.Since(*st.detailOpenedAt)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  ct watch session: %s\n", fmtDuration(dur))
+	fmt.Fprintf(os.Stderr, "  nav: %d · expand: %d · collapse: %d · expand-all: %d · collapse-all: %d\n",
+		st.navCount, st.expandCount, st.collapseCount, st.expandAll, st.collapseAll)
+	fmt.Fprintf(os.Stderr, "  detail: %d opens (%s) · search: %d\n",
+		st.detailOpens, fmtDuration(st.detailTime), st.searchCount)
+
+	// Top visited cells
+	if len(st.cellVisits) > 0 {
+		type kv struct {
+			key   string
+			count int
+		}
+		var sorted []kv
+		for k, v := range st.cellVisits {
+			sorted = append(sorted, kv{k, v})
+		}
+		// Simple insertion sort (small N)
+		for i := 1; i < len(sorted); i++ {
+			for j := i; j > 0 && sorted[j].count > sorted[j-1].count; j-- {
+				sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+			}
+		}
+		n := len(sorted)
+		if n > 5 {
+			n = 5
+		}
+		fmt.Fprintf(os.Stderr, "  most visited: ")
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				fmt.Fprintf(os.Stderr, ", ")
+			}
+			fmt.Fprintf(os.Stderr, "%s (%d)", sorted[i].key, sorted[i].count)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
+	}
+	fmt.Fprintf(os.Stderr, "\n")
 }
 
 // ===================================================================

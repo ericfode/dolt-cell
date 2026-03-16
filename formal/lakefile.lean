@@ -10,3 +10,5 @@ lean_lib StemCell
 lean_lib Claims
 
 lean_lib Retort
+
+lean_lib Denotational

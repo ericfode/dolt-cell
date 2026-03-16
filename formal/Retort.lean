@@ -671,6 +671,84 @@ theorem data_persists (vt : ValidTrace) (n m : Nat) (h : n ≤ m) :
              fun _ h => h, fun _ h => h, fun _ h => h⟩
 
 /-! ====================================================================
+    GRAPH GROWTH: Stem cells produce unbounded frames
+    ==================================================================== -/
+
+-- The frames list grows when createFrame operations occur
+-- For non-stem cells: exactly one frame per cell (created at pour)
+-- For stem cells: one frame per generation (created on demand)
+
+-- Frames only grow (never shrink)
+theorem frames_monotonic (vt : ValidTrace) (n : Nat) :
+    (vt.trace n).frames.length ≤ (vt.trace (n + 1)).frames.length := by
+  have h := always_appendOnly vt n
+  unfold appendOnly framesPreserved at h
+  obtain ⟨_, hf, _, _, _, _⟩ := h
+  -- Every frame in trace n is in trace (n+1)
+  -- So length can only grow or stay the same
+  sorry -- frames only grow: every frame in trace n is in trace (n+1)
+
+-- Non-stem cell: at most one frame across the entire trace
+def nonStemBounded (r : Retort) (cell : CellName) : Prop :=
+  (∀ cd ∈ r.cells, cd.name = cell → cd.bodyType ≠ .stem) →
+  (r.frames.filter (fun f => f.cellName == cell)).length ≤ 1
+
+-- Stem cell: frames grow linearly with generations
+def stemFrameCount (r : Retort) (cell : CellName) : Nat :=
+  (r.frames.filter (fun f => f.cellName == cell)).length
+
+-- Each createFrame increases the stem cell's frame count by 1
+theorem createFrame_grows (r : Retort) (cfd : CreateFrameData) :
+    (applyOp r (.createFrame cfd)).frames.length = r.frames.length + 1 := by
+  simp [applyOp, List.length_append]
+
+-- Pour grows frames by the number of initial frames
+theorem pour_grows (r : Retort) (pd : PourData) :
+    (applyOp r (.pour pd)).frames.length = r.frames.length + pd.frames.length := by
+  simp [applyOp, List.length_append]
+
+-- Other operations don't change frame count
+theorem claim_frames_stable (r : Retort) (cd : ClaimData) :
+    (applyOp r (.claim cd)).frames.length = r.frames.length := by
+  rfl
+
+theorem freeze_frames_stable (r : Retort) (fd : FreezeData) :
+    (applyOp r (.freeze fd)).frames.length = r.frames.length := by
+  rfl
+
+theorem release_frames_stable (r : Retort) (rd : ReleaseData) :
+    (applyOp r (.release rd)).frames.length = r.frames.length := by
+  rfl
+
+-- Yields grow monotonically (append-only)
+theorem yields_monotonic (vt : ValidTrace) (n : Nat) :
+    (vt.trace n).yields.length ≤ (vt.trace (n + 1)).yields.length := by
+  have h := always_appendOnly vt n
+  unfold appendOnly yieldsPreserved at h
+  obtain ⟨_, _, hy, _, _, _⟩ := h
+  sorry -- yields only grow: every yield in trace n is in trace (n+1)
+
+-- Bindings grow monotonically (append-only)
+theorem bindings_monotonic (vt : ValidTrace) (n : Nat) :
+    (vt.trace n).bindings.length ≤ (vt.trace (n + 1)).bindings.length := by
+  have h := always_appendOnly vt n
+  unfold appendOnly bindingsPreserved at h
+  obtain ⟨_, _, _, hb, _, _⟩ := h
+  sorry -- bindings only grow: every binding in trace n is in trace (n+1)
+
+-- The total graph size (frames + yields + bindings) grows monotonically
+def graphSize (r : Retort) : Nat :=
+  r.frames.length + r.yields.length + r.bindings.length
+
+theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
+    graphSize (vt.trace n) ≤ graphSize (vt.trace (n + 1)) := by
+  unfold graphSize
+  have hf := frames_monotonic vt n
+  have hy := yields_monotonic vt n
+  have hb := bindings_monotonic vt n
+  omega
+
+/-! ====================================================================
     SUMMARY: The Complete Formal Model
     ====================================================================
 

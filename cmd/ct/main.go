@@ -874,11 +874,11 @@ type watchYield struct {
 }
 
 type watchCell struct {
-	prog, name, state, bodyType string
-	body                        string
-	computingSince              *time.Time
-	assignedPiston              string
-	yields                      []watchYield
+	id, prog, name, state, bodyType string
+	body                            string
+	computingSince                  *time.Time
+	assignedPiston                  string
+	yields                          []watchYield
 }
 
 type watchDataMsg struct {
@@ -1053,12 +1053,11 @@ func (m watchModel) fetchDetailCmd() tea.Cmd {
 		return nil
 	}
 	c := m.cells[items[m.cursor].cellIdx]
-	cellID := c.prog + "-" + c.name
-	cellKey := c.prog + "/" + c.name
+	cellKey := c.id
 	progID := c.prog
 	db := m.db
 	return func() tea.Msg {
-		detail, err := queryDetailData(db, cellID, progID)
+		detail, err := queryDetailData(db, cellKey, progID)
 		return detailDataMsg{cellKey: cellKey, detail: detail, err: err}
 	}
 }
@@ -1210,15 +1209,19 @@ func (m watchModel) cursorLine() int {
 func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, error) {
 	var rows *sql.Rows
 	var err error
-	q := `SELECT c.program_id, c.name, c.state, c.body_type, c.body,
+	q := `SELECT c.id, c.program_id, c.name, c.state, c.body_type, c.body,
 	             c.computing_since, c.assigned_piston,
 	             y.field_name, y.value_text, y.is_frozen, y.is_bottom
 	      FROM cells c
 	      LEFT JOIN yields y ON y.cell_id = c.id`
+	// Order: computing first (active), then declared (ready), then frozen (done)
+	orderClause := ` ORDER BY c.program_id,
+		CASE c.state WHEN 'computing' THEN 0 WHEN 'declared' THEN 1 WHEN 'bottom' THEN 2 ELSE 3 END,
+		c.name, c.id, y.field_name`
 	if progID != "" {
-		rows, err = db.Query(q+" WHERE c.program_id = ? ORDER BY c.program_id, c.name, y.field_name", progID)
+		rows, err = db.Query(q+" WHERE c.program_id = ?"+orderClause, progID)
 	} else {
-		rows, err = db.Query(q + " ORDER BY c.program_id, c.name, y.field_name")
+		rows, err = db.Query(q + orderClause)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -1230,20 +1233,20 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, 
 	programs := make(map[string][2]int)
 
 	for rows.Next() {
-		var prog, name, state, bodyType, body, piston sql.NullString
+		var cellID, prog, name, state, bodyType, body, piston sql.NullString
 		var compSince sql.NullTime
 		var fn, val sql.NullString
 		var frozen, bottom sql.NullBool
-		rows.Scan(&prog, &name, &state, &bodyType, &body,
+		rows.Scan(&cellID, &prog, &name, &state, &bodyType, &body,
 			&compSince, &piston,
 			&fn, &val, &frozen, &bottom)
 
-		key := prog.String + "/" + name.String
-		if cur == nil || (cur.prog+"/"+cur.name) != key {
+		if cur == nil || cur.id != cellID.String {
 			if cur != nil {
 				cells = append(cells, *cur)
 			}
 			cur = &watchCell{
+				id:   cellID.String,
 				prog: prog.String, name: name.String,
 				state: state.String, bodyType: bodyType.String,
 				body: body.String, assignedPiston: piston.String,
@@ -1320,7 +1323,7 @@ func (m watchModel) cursorMoved() (watchModel, tea.Cmd) {
 		newKey := ""
 		if m.cursor >= 0 && m.cursor < len(items) && items[m.cursor].kind == navCell {
 			c := m.cells[items[m.cursor].cellIdx]
-			newKey = c.prog + "/" + c.name
+			newKey = c.id
 		}
 		if newKey != m.detailCell {
 			m.detailCell = newKey
@@ -1461,7 +1464,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case navCell:
 					m.stats.expandCount++
 					c := m.cells[item.cellIdx]
-					key := c.prog + "/" + c.name
+					key := c.id
 					m.expanded[key] = !m.expanded[key]
 				}
 				m.viewport.SetContent(m.renderContent())
@@ -1636,7 +1639,7 @@ func (m watchModel) renderContent() string {
 
 		case navCell:
 			c := m.cells[item.cellIdx]
-			cellKey := c.prog + "/" + c.name
+			cellKey := c.id
 			isExpanded := m.expanded[cellKey]
 
 			// Hard/soft-aware state icons
@@ -1694,7 +1697,27 @@ func (m watchModel) renderContent() string {
 				}
 			}
 
-			line := fmt.Sprintf("%s  %s %s %-20s %s", prefix, arrow, icon, c.name, stateLabel)
+			// Show short ID suffix when multiple cells share the same name
+			displayName := c.name
+			dupCount := 0
+			for _, other := range m.cells {
+				if other.prog == c.prog && other.name == c.name {
+					dupCount++
+				}
+			}
+			if dupCount > 1 {
+				// Extract hash suffix from cell ID for disambiguation
+				suffix := c.id
+				if idx := strings.LastIndex(suffix, "-"); idx >= 0 && idx < len(suffix)-1 {
+					suffix = suffix[idx+1:]
+				}
+				if len(suffix) > 6 {
+					suffix = suffix[:6]
+				}
+				displayName = c.name + detailDimStyle.Render("#"+suffix)
+			}
+
+			line := fmt.Sprintf("%s  %s %s %-20s %s", prefix, arrow, icon, displayName, stateLabel)
 
 			// Show yield info when collapsed
 			if !isExpanded {

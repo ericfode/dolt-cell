@@ -302,6 +302,7 @@ func cmdYields(db *sql.DB, progID string) {
 }
 
 func cmdHistory(db *sql.DB, progID string) {
+	// Trace events
 	rows, err := db.Query(`
 		SELECT t.event_type, t.detail, t.created_at, c.name
 		FROM trace t LEFT JOIN cells c ON c.id = t.cell_id
@@ -320,6 +321,32 @@ func cmdHistory(db *sql.DB, progID string) {
 			ts = createdAt.Time.Format("15:04:05")
 		}
 		fmt.Printf("  %s  %-10s  %-10s  %s\n", ts, eventType.String, cellName.String, trunc(detail.String, 50))
+	}
+
+	// Claim log (v2 frame model)
+	clRows, err := db.Query(`
+		SELECT cl.action, cl.piston_id, cl.created_at, f.cell_name
+		FROM claim_log cl
+		JOIN frames f ON f.id = cl.frame_id
+		WHERE f.program_id = ?
+		ORDER BY cl.created_at DESC LIMIT 10`, progID)
+	if err == nil {
+		defer clRows.Close()
+		first := true
+		for clRows.Next() {
+			if first {
+				fmt.Println("\n  Claim log:")
+				first = false
+			}
+			var action, pistonID, cellName sql.NullString
+			var createdAt sql.NullTime
+			clRows.Scan(&action, &pistonID, &createdAt, &cellName)
+			ts := ""
+			if createdAt.Valid {
+				ts = createdAt.Time.Format("15:04:05")
+			}
+			fmt.Printf("  %s  %-10s  %-10s  %s\n", ts, action.String, cellName.String, trunc(pistonID.String, 30))
+		}
 	}
 }
 

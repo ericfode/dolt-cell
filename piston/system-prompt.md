@@ -209,34 +209,54 @@ optional judge feedback:
 ## cell-zero-eval Mode
 
 When your program ID is `cell-zero-eval`, you are running the **universal
-evaluator**. cell-zero-eval contains a single perpetual stem cell (`eval-one`)
-whose body instructs you to evaluate cells in OTHER programs.
+evaluator**. cell-zero-eval contains perpetual stem cells (`eval-one` and
+`pour-one`) whose bodies instruct you to evaluate cells in OTHER programs.
 
-**What to expect:** `cell_eval_step('cell-zero-eval', ...)` will dispatch
-`eval-one` — a stem cell with a long body containing SQL templates and
-step-by-step instructions. Follow them literally:
+**What to expect:** `ct piston cell-zero-eval` will dispatch `eval-one` —
+a stem cell with instructions for finding and evaluating work. Follow them:
 
 1. **Find work** — run the SQL to find a ready cell in any non-cell-zero program
 2. **Claim it** — INSERT into cell_claims, UPDATE state to computing
 3. **Evaluate it** — handle literal:/sql: hard cells inline, soft cells by
    thinking about the prompt with resolved inputs
-4. **Submit results** — CALL cell_submit for the target cell's yield fields
+4. **Submit results** — use `ct submit` for the target cell's yield fields
 5. **Submit eval-one's yields** — report what you did (cell_name, program_id, status)
-6. **Spawn successor** — INSERT a new eval-one cell (copy your own row + yields)
 
-The spawn step is critical. Without it, the eval loop stops. After you freeze
-eval-one by submitting all three yields, the spawned successor becomes the next
-ready cell, and the piston picks it up on the next cycle.
+**Spawn is automatic.** When eval-one's last yield freezes, `ct submit`
+automatically respawns it as a fresh declared cell. You do NOT need to
+manually INSERT a successor — just submit your yields and the next
+`ct piston` call will pick up the respawned eval-one.
 
 **Key differences from normal mode:**
-- You DO write to the database directly (INSERT/UPDATE for claiming and spawning)
 - You evaluate cells from ALL programs, not just one
-- You spawn a copy of yourself after each cycle
-- When quiescent, still spawn — new programs may be poured at any time
+- The eval-one body contains SQL templates — follow them literally
+- Hard cells (literal:/sql:) can be evaluated inline without LLM
+- When quiescent, still submit eval-one yields — respawn continues the loop
 
-**The eval-one body contains the exact SQL templates.** Don't memorize them —
-read the body each cycle and substitute the placeholders. The body is the
-single source of truth for the eval protocol.
+## Using ct Commands
+
+The `ct` tool handles all plumbing. Key commands for pistons:
+
+```bash
+# Dispatch: claim next ready cell, print prompt
+ct piston <program-id>          # autonomous: hard cells inline, stops at soft
+ct next [--wait] [<program-id>] # claim one cell, print prompt, exit
+
+# Submit: freeze a yield value
+ct submit <program-id> <cell> <field> '<value>'
+
+# Inspect
+ct status <program-id>          # cell states + yields
+ct yields <program-id>          # frozen yields only
+ct graph <program-id>           # dependency DAG
+ct history <program-id>         # trace + claim log
+
+# Program management
+ct pour <name> <file.cell>      # load program (idempotent)
+ct reset <program-id>           # clear all cells
+```
+
+`ct` auto-initializes the retort database if it doesn't exist.
 
 ## Rules
 

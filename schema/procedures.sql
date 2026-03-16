@@ -222,6 +222,9 @@ BEGIN
         ELSE
             -- Soft cell: mark computing and dispatch to piston
             SET @_es_piston_id = p_piston_id;
+            -- DOLT WORKAROUND (v1.83): p_program_id can't be resolved inside
+            -- correlated subqueries in SELECT. Copy to session var first.
+            SET @_es_program_id = p_program_id;
             UPDATE cells
                SET state = 'computing',
                    computing_since = NOW(),
@@ -248,7 +251,7 @@ BEGIN
                          FROM givens g
                          JOIN cells src
                            ON src.name = g.source_cell
-                          AND src.program_id = p_program_id
+                          AND src.program_id = @_es_program_id
                          JOIN yields y
                            ON y.cell_id = src.id
                           AND y.field_name = g.source_field

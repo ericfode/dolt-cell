@@ -1065,6 +1065,120 @@ theorem createFrame_adds_frame (r : Retort) (cfd : CreateFrameData) :
   exact List.mem_append_right _ (List.mem_singleton.mpr rfl)
 
 /-! ====================================================================
+    PROGRESS THEOREM (liveness: ready frames can always be claimed)
+    ==================================================================== -/
+
+-- Well-formedness condition: every frame has a cell definition.
+-- This is a natural invariant: frames are created from cell definitions.
+def framesCellDefsExist (r : Retort) : Prop :=
+  ∀ f ∈ r.frames, (r.cellDef f.cellName).isSome
+
+-- Helper: when cellDef is some, frameStatus = declared implies frameClaim is none.
+-- This is because the 'some cd' branch of frameStatus returns .declared only
+-- when (a) not all fields are frozen AND (b) frameClaim is none.
+private theorem declared_of_some_implies_no_claim (r : Retort) (f : Frame) (cd : CellDef)
+    (hCellDef : r.cellDef f.cellName = some cd)
+    (hStatus : r.frameStatus f = .declared) :
+    (r.frameClaim f.id).isNone = true := by
+  -- Expand frameStatus and substitute the cellDef
+  unfold Retort.frameStatus at hStatus
+  rw [hCellDef] at hStatus
+  -- Now hStatus has the form: (if allFrozen then .frozen else if claimed then .computing else .declared) = .declared
+  -- Case split on frameClaim
+  cases hClaim : r.frameClaim f.id with
+  | none => rfl
+  | some c =>
+    -- frameClaim is some c, so isSome = true
+    -- In the `some cd` branch of frameStatus, if not all fields frozen, we'd get .computing
+    -- If all fields frozen, we'd get .frozen
+    -- Neither is .declared, so hStatus is contradictory
+    exfalso
+    simp only [hClaim, Option.isSome] at hStatus
+    -- After simp, hStatus should have the if-then-else with isSome resolved to true
+    -- so we get: if allFrozen then .frozen else .computing = .declared
+    split at hStatus <;> simp at hStatus
+
+-- Helper: FrameStatus BEq equality to Prop equality.
+-- The derived BEq on FrameStatus uses DecidableEq, so we use that.
+private theorem FrameStatus.eq_of_beq_true : ∀ (a b : FrameStatus),
+    (a == b) = true → a = b := by
+  intro a b h
+  have : DecidableEq FrameStatus := inferInstance
+  cases a <;> cases b <;> first | rfl | (revert h; decide)
+
+-- Key liveness result: if readyFrames is non-empty, there exists a valid ClaimData.
+-- Requires that every frame has a cell definition (natural well-formedness).
+theorem progress (r : Retort) (f : Frame)
+    (hReady : f ∈ r.readyFrames)
+    (hCellDefs : framesCellDefsExist r) :
+    ∃ cd : ClaimData, claimValid r cd := by
+  -- Decompose readyFrames membership: f ∈ r.frames and frameReady f = true
+  unfold Retort.readyFrames at hReady
+  rw [List.mem_filter] at hReady
+  obtain ⟨hMem, hFrameReady⟩ := hReady
+  -- frameReady f = true means frameStatus f == .declared ∧ all givens satisfied
+  unfold Retort.frameReady at hFrameReady
+  have hStatusBool : (r.frameStatus f == FrameStatus.declared) = true := by
+    revert hFrameReady
+    simp only [Bool.and_eq_true]
+    exact fun ⟨h, _⟩ => h
+  have hStatus : r.frameStatus f = .declared :=
+    FrameStatus.eq_of_beq_true _ _ hStatusBool
+  -- Since f ∈ r.frames and framesCellDefsExist, cellDef exists
+  have hCellDefSome := hCellDefs f hMem
+  obtain ⟨cd, hCd⟩ := Option.isSome_iff_exists.mp hCellDefSome
+  -- Since cellDef is some and frameStatus is declared, frameClaim is none
+  have hNoClaim := declared_of_some_implies_no_claim r f cd hCd hStatus
+  -- Construct the witness: use f.id as frameId, any pistonId
+  refine ⟨⟨f.id, ⟨"progress_witness"⟩⟩, ?_⟩
+  unfold claimValid
+  constructor
+  · -- The frame exists and is ready
+    exact ⟨f, hMem, rfl, hFrameReady⟩
+  · -- frameClaim is none
+    exact hNoClaim
+
+/-! ====================================================================
+    REMAINING POSTCONDITIONS
+    ==================================================================== -/
+
+-- Postcondition: poured cells are in the result.
+theorem pour_adds_cells (r : Retort) (pd : PourData) (c : CellDef)
+    (hc : c ∈ pd.cells) :
+    c ∈ (applyOp r (.pour pd)).cells := by
+  unfold applyOp
+  simp only
+  exact List.mem_append_right _ hc
+
+-- Postcondition: poured frames are in the result.
+theorem pour_adds_frames (r : Retort) (pd : PourData) (f : Frame)
+    (hf : f ∈ pd.frames) :
+    f ∈ (applyOp r (.pour pd)).frames := by
+  unfold applyOp
+  simp only
+  exact List.mem_append_right _ hf
+
+-- Postcondition: after freeze, if the cell definition exists and the freeze
+-- yields cover all fields of the cell, the frame's status is frozen.
+theorem freeze_makes_frozen (r : Retort) (fd : FreezeData) (f : Frame) (cd : CellDef)
+    (_hFrame : f ∈ r.frames)
+    (_hFrameId : f.id = fd.frameId)
+    (hCellDef : (applyOp r (.freeze fd)).cellDef f.cellName = some cd)
+    (hCovers : cd.fields.all (fun fld =>
+      ((r.yields ++ fd.yields).filter (fun y => y.frameId == f.id)).map (·.field)
+        |>.contains fld)) :
+    (applyOp r (.freeze fd)).frameStatus f = .frozen := by
+  unfold Retort.frameStatus
+  -- cellDef for applyOp (.freeze fd) is the same as r's (cells unchanged)
+  rw [hCellDef]
+  -- The frameYields of the result = r.yields ++ fd.yields, filtered by frameId
+  unfold Retort.frameYields applyOp
+  simp only
+  -- Goal: if (cd.fields.all ...) then .frozen else ... = .frozen
+  -- The condition matches hCovers exactly
+  rw [if_pos hCovers]
+
+/-! ====================================================================
     COMPOSITE WELL-FORMEDNESS PRESERVATION
     ==================================================================== -/
 
@@ -1553,6 +1667,13 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   - claim_adds_claim: claims.length grows by 1
   - freeze_removes_claim: claims.length strictly decreases
   - createFrame_adds_frame: new frame is in result
+  - pour_adds_cells: poured cells are in the result
+  - pour_adds_frames: poured frames are in the result
+  - freeze_makes_frozen: after freeze, if all fields covered, status is frozen
+
+  Progress (liveness):
+  - progress: if readyFrames is non-empty, there exists a valid ClaimData
+      (requires framesCellDefsExist — every frame has a cell definition)
 
   Composite:
   - wellFormed_preserved: validOp + wellFormed => wellFormed after applyOp

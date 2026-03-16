@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,8 +26,9 @@ const usage = `ct — Cell Tool (plumbing for Cell runtime pistons)
 Usage:
   ct piston                                            Autonomous piston loop (ct next → think → ct submit)
   ct piston <program-id>                              Piston for one program
-  ct next [--wait] [<program-id>]                      Claim next ready cell, print prompt, exit
+  ct next [--wait] [--model <hint>] [<program-id>]      Claim next ready cell, print prompt, exit
   ct next --wait                                      Block until a cell is ready (polls every 2s)
+  ct next --model claude                              Only claim cells matching model_hint
   ct watch                                            Live dashboard: all programs, all cells (2s refresh)
   ct watch <program-id>                               Live dashboard for one program
   ct pour <name> <file.cell>                          Load a program
@@ -78,14 +80,18 @@ func main() {
 	case "next":
 		progID := ""
 		wait := false
-		for _, a := range args {
-			if a == "--wait" {
+		modelHint := ""
+		for i := 0; i < len(args); i++ {
+			if args[i] == "--wait" {
 				wait = true
+			} else if args[i] == "--model" && i+1 < len(args) {
+				i++
+				modelHint = args[i]
 			} else {
-				progID = a
+				progID = args[i]
 			}
 		}
-		cmdNext(db, progID, wait)
+		cmdNext(db, progID, wait, modelHint)
 	case "watch":
 		progID := ""
 		if len(args) > 0 {
@@ -323,21 +329,21 @@ func cmdEval(db *sql.DB, name, cellFile string) {
 	}
 
 	// Insert the pour-request cell with .cell text as body
-	db.Exec(
+	mustExecDB(db,
 		"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, 'cell-zero-eval', 'pour-request', 'hard', ?, 'declared')",
 		reqID, string(data))
 
 	// Yield: name (pre-frozen with the program name)
-	db.Exec(
+	mustExecDB(db,
 		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'name', ?, TRUE, NOW())",
 		"y-"+reqID+"-name", reqID, name)
 
 	// Yield: text (pre-frozen with the .cell content)
-	db.Exec(
+	mustExecDB(db,
 		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'text', ?, TRUE, NOW())",
 		"y-"+reqID+"-text", reqID, string(data))
 
-	db.Exec("CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("eval: submit pour-request for %s", name))
+	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("eval: submit pour-request for %s", name))
 
 	fmt.Printf("✓ Submitted pour-request for %s (%d bytes)\n", name, len(data))
 	fmt.Printf("  Request ID: %s\n", reqID)
@@ -438,37 +444,37 @@ func pourViaPiston(db *sql.DB, name, cellFile string, data []byte) {
 			promptPath, name, name)
 
 		// INSERT source cell (hard, literal — text goes in yields not body)
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, 'source', 'hard', 'literal:_', 'declared')",
 			sourceID, pourProg)
 		// Source yields: text (the .cell contents) and name (the program name)
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'text', ?, TRUE, NOW())",
 			"y-"+pourProg+"-source-text", sourceID, sourceText)
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'name', ?, TRUE, NOW())",
 			"y-"+pourProg+"-source-name", sourceID, name)
 		// Freeze source immediately (it's a literal)
-		db.Exec("UPDATE cells SET state = 'frozen' WHERE id = ?", sourceID)
+		mustExecDB(db, "UPDATE cells SET state = 'frozen' WHERE id = ?", sourceID)
 
 		// INSERT parse cell (stem — permanently soft parser, never crystallizes)
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, 'parse', 'stem', ?, 'declared')",
 			parseID, pourProg, parseBody)
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO givens (id, cell_id, source_cell, source_field) VALUES (?, ?, 'source', 'text')",
 			"g-"+pourProg+"-parse-text", parseID)
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO givens (id, cell_id, source_cell, source_field) VALUES (?, ?, 'source', 'name')",
 			"g-"+pourProg+"-parse-name", parseID)
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO yields (id, cell_id, field_name) VALUES (?, ?, 'sql')",
 			"y-"+pourProg+"-parse-sql", parseID)
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO oracles (id, cell_id, oracle_type, assertion, condition_expr) VALUES (?, ?, 'deterministic', 'sql is not empty', 'not_empty')",
 			"o-"+pourProg+"-parse-1", parseID)
 
-		db.Exec("CALL DOLT_COMMIT('-Am', ?)", "pour-program: "+pourProg)
+		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "pour-program: "+pourProg)
 		fmt.Printf("  created pour-program %s (2 cells)\n", pourProg)
 	}
 
@@ -517,9 +523,9 @@ func cmdReset(db *sql.DB, progID string) {
 		} else {
 			q += "program_id = ?"
 		}
-		db.Exec(q, progID)
+		mustExecDB(db, q, progID)
 	}
-	db.Exec("CALL DOLT_COMMIT('-Am', ?)", "reset: "+progID)
+	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "reset: "+progID)
 	fmt.Printf("✓ Reset %s\n", progID)
 }
 
@@ -555,6 +561,73 @@ func submitYieldDirect(db *sql.DB, progID, cellName, field, value string) {
 			fmt.Printf("  ✗ %s.%s: %s\n", cellName, field, message.String)
 		}
 	}
+}
+
+// mustExecDB wraps db.Exec with a non-fatal warning log on error.
+func mustExecDB(db *sql.DB, query string, args ...interface{}) {
+	if _, err := db.Exec(query, args...); err != nil {
+		log.Printf("WARN: exec failed: %v (query: %s)", err, query)
+	}
+}
+
+// readyCellResult holds the result of findReadyCell.
+type readyCellResult struct {
+	cellID    string
+	progID    string
+	cellName  string
+	body      string
+	bodyType  string
+	modelHint string
+}
+
+// findReadyCell finds a single ready cell matching the given filters.
+// progID filters by program (empty = any). excludeProgram excludes a program.
+// modelHint filters by model_hint (empty = any, matching NULL or equal).
+func findReadyCell(db *sql.DB, progID string, excludeProgram string, modelHint string) (*readyCellResult, error) {
+	readySQL := `
+		SELECT c.id, c.program_id, c.name, c.body, c.body_type, c.model_hint
+		FROM cells c
+		WHERE c.state = 'declared'
+		  AND c.id NOT IN (SELECT cell_id FROM cell_claims)
+		  AND (
+		    SELECT COUNT(*) FROM givens g
+		    JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
+		    LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
+		    WHERE g.cell_id = c.id
+		      AND g.is_optional = FALSE
+		      AND y.id IS NULL
+		  ) = 0`
+
+	var queryArgs []interface{}
+
+	if progID != "" {
+		readySQL += " AND c.program_id = ?"
+		queryArgs = append(queryArgs, progID)
+	}
+	if excludeProgram != "" {
+		readySQL += " AND c.program_id != ?"
+		queryArgs = append(queryArgs, excludeProgram)
+	}
+	if modelHint != "" {
+		readySQL += " AND (c.model_hint IS NULL OR c.model_hint = ?)"
+		queryArgs = append(queryArgs, modelHint)
+	}
+	readySQL += " LIMIT 1"
+
+	var cellID, cellProgID, cellName, body, bodyType, mHint sql.NullString
+	err := db.QueryRow(readySQL, queryArgs...).
+		Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &mHint)
+	if err != nil {
+		return nil, err
+	}
+	return &readyCellResult{
+		cellID:    cellID.String,
+		progID:    cellProgID.String,
+		cellName:  cellName.String,
+		body:      body.String,
+		bodyType:  bodyType.String,
+		modelHint: mHint.String,
+	}, nil
 }
 
 // --- helpers ---
@@ -688,8 +761,8 @@ func cmdPiston(db *sql.DB, progID string) {
 	pistonID := genPistonID()
 
 	// Register
-	db.Exec("DELETE FROM pistons WHERE id = ?", pistonID)
-	db.Exec(
+	mustExecDB(db, "DELETE FROM pistons WHERE id = ?", pistonID)
+	mustExecDB(db,
 		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
 		pistonID, progID)
 
@@ -701,9 +774,9 @@ func cmdPiston(db *sql.DB, progID string) {
 	step := 0
 	for {
 		step++
-		db.Exec("UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
+		mustExecDB(db, "UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
 
-		es := replEvalStep(db, progID, pistonID)
+		es := replEvalStep(db, progID, pistonID, "")
 
 		switch es.action {
 		case "complete":
@@ -778,12 +851,12 @@ func cmdPiston(db *sql.DB, progID string) {
 //   1 = error
 //   2 = no ready cells (quiescent)
 
-func cmdNext(db *sql.DB, progID string, wait bool) {
+func cmdNext(db *sql.DB, progID string, wait bool, modelHint string) {
 	pistonID := genPistonID()
 
 	// Register piston (lightweight — just so claims have a valid piston_id)
-	db.Exec("DELETE FROM pistons WHERE id = ?", pistonID)
-	db.Exec(
+	mustExecDB(db, "DELETE FROM pistons WHERE id = ?", pistonID)
+	mustExecDB(db,
 		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
 		pistonID, progID)
 
@@ -802,7 +875,7 @@ func cmdNext(db *sql.DB, progID string, wait bool) {
 
 	var es evalStepResult
 	for {
-		es = replEvalStep(db, progID, pistonID)
+		es = replEvalStep(db, progID, pistonID, modelHint)
 
 		if es.action != "quiescent" && es.action != "complete" {
 			break
@@ -811,10 +884,10 @@ func cmdNext(db *sql.DB, progID string, wait bool) {
 			break
 		}
 		// --wait: poll every 2s until a cell becomes ready
-		db.Exec("UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
+		mustExecDB(db, "UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
 		select {
 		case <-sigCh:
-			db.Exec("UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
+			mustExecDB(db, "UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
 			fmt.Println("INTERRUPTED")
 			os.Exit(2)
 		case <-time.After(2 * time.Second):
@@ -828,7 +901,7 @@ func cmdNext(db *sql.DB, progID string, wait bool) {
 
 	case "quiescent":
 		// Deregister — we didn't claim anything
-		db.Exec("UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
+		mustExecDB(db, "UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
 		fmt.Println("QUIESCENT")
 		os.Exit(2)
 
@@ -2052,8 +2125,8 @@ func cmdRepl(db *sql.DB, args []string) {
 	watch := progID == ""
 
 	// Register piston (program_id = '' for watch mode)
-	db.Exec("DELETE FROM pistons WHERE id = ?", pistonID)
-	db.Exec(
+	mustExecDB(db, "DELETE FROM pistons WHERE id = ?", pistonID)
+	mustExecDB(db,
 		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
 		pistonID, progID)
 
@@ -2067,11 +2140,11 @@ func cmdRepl(db *sql.DB, args []string) {
 	}()
 
 	defer func() {
-		db.Exec(
+		mustExecDB(db,
 			"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE assigned_piston = ? AND state = 'computing'",
 			pistonID)
-		db.Exec("DELETE FROM cell_claims WHERE piston_id = ?", pistonID)
-		db.Exec("UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
+		mustExecDB(db, "DELETE FROM cell_claims WHERE piston_id = ?", pistonID)
+		mustExecDB(db, "UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
 		fmt.Printf("\n  piston %s deregistered\n", pistonID)
 	}()
 
@@ -2098,9 +2171,9 @@ func cmdRepl(db *sql.DB, args []string) {
 		step++
 
 		// Heartbeat
-		db.Exec("UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
+		mustExecDB(db, "UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
 
-		es := replEvalStep(db, progID, pistonID)
+		es := replEvalStep(db, progID, pistonID, "")
 
 		switch es.action {
 		case "complete":
@@ -2246,8 +2319,9 @@ type evalStepResult struct {
 }
 
 // replEvalStep finds the next ready cell and claims it. When progID is empty,
-// scans ALL programs (watch mode). Returns the action and cell info.
-func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
+// scans ALL programs (watch mode). modelHint filters by model_hint when set.
+// Returns the action and cell info.
+func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalStepResult {
 	// Single-program mode: check if that program is complete
 	if progID != "" {
 		var remaining int
@@ -2261,41 +2335,17 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 
 	// Find and claim a ready cell (atomic via INSERT IGNORE)
 	for attempt := 0; attempt < 50; attempt++ {
-		var cellID, cellProgID, cellName, body, bodyType sql.NullString
-		var modelHint sql.NullString
-		var err error
-
-		// Inline ready_cells logic (Dolt view NOT EXISTS is unreliable)
-		readySQL := `
-			SELECT c.id, c.program_id, c.name, c.body, c.body_type, c.model_hint
-			FROM cells c
-			WHERE c.state = 'declared'
-			  AND c.id NOT IN (SELECT cell_id FROM cell_claims)
-			  AND (
-			    SELECT COUNT(*) FROM givens g
-			    JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
-			    LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
-			    WHERE g.cell_id = c.id
-			      AND g.is_optional = FALSE
-			      AND y.id IS NULL
-			  ) = 0`
-		if progID != "" {
-			err = db.QueryRow(readySQL+" AND c.program_id = ? LIMIT 1", progID).
-				Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &modelHint)
-		} else {
-			err = db.QueryRow(readySQL + " LIMIT 1").
-				Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &modelHint)
-		}
+		rc, err := findReadyCell(db, progID, "", modelHint)
 		if err != nil {
 			break // no ready cells
 		}
 
-		pid := cellProgID.String
+		pid := rc.progID
 
 		// Atomic claim
 		res, err := db.Exec(
 			"INSERT IGNORE INTO cell_claims (cell_id, piston_id, claimed_at) VALUES (?, ?, NOW())",
-			cellID.String, pistonID)
+			rc.cellID, pistonID)
 		if err != nil {
 			continue
 		}
@@ -2305,66 +2355,66 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 		}
 
 		// Claimed! Handle hard vs soft
-		if bodyType.String == "hard" {
-			db.Exec(
+		if rc.bodyType == "hard" {
+			mustExecDB(db,
 				"UPDATE cells SET state = 'computing', computing_since = NOW(), assigned_piston = ? WHERE id = ?",
-				pistonID, cellID.String)
+				pistonID, rc.cellID)
 
-			if strings.HasPrefix(body.String, "literal:") {
-				literalVal := strings.TrimPrefix(body.String, "literal:")
+			if strings.HasPrefix(rc.body, "literal:") {
+				literalVal := strings.TrimPrefix(rc.body, "literal:")
 				// Only freeze yields that aren't already frozen (pre-frozen by pour SQL for multi-yield hard cells)
-				db.Exec(
+				mustExecDB(db,
 					"UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ? AND is_frozen = FALSE",
-					literalVal, cellID.String)
-				db.Exec(
+					literalVal, rc.cellID)
+				mustExecDB(db,
 					"UPDATE cells SET state = 'frozen', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
-					cellID.String)
-				db.Exec("DELETE FROM cell_claims WHERE cell_id = ?", cellID.String)
-				db.Exec(
+					rc.cellID)
+				mustExecDB(db, "DELETE FROM cell_claims WHERE cell_id = ?", rc.cellID)
+				mustExecDB(db,
 					"UPDATE pistons SET cells_completed = cells_completed + 1, last_heartbeat = NOW() WHERE id = ?",
 					pistonID)
-				db.Exec(
+				mustExecDB(db,
 					"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'Hard cell: literal value', NOW())",
-					cellID.String)
-				db.Exec("CALL DOLT_COMMIT('-Am', ?)", "cell: freeze hard cell "+cellName.String)
+					rc.cellID)
+				mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "cell: freeze hard cell "+rc.cellName)
 
-			} else if strings.HasPrefix(body.String, "sql:") {
-				sqlQuery := strings.TrimSpace(strings.TrimPrefix(body.String, "sql:"))
-				yields := getYieldFields(db, pid, cellName.String)
+			} else if strings.HasPrefix(rc.body, "sql:") {
+				sqlQuery := strings.TrimSpace(strings.TrimPrefix(rc.body, "sql:"))
+				yields := getYieldFields(db, pid, rc.cellName)
 				var result string
 				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
-					fmt.Printf("  ✗ %s SQL error: %v\n", cellName.String, err)
-					db.Exec(
+					fmt.Printf("  ✗ %s SQL error: %v\n", rc.cellName, err)
+					mustExecDB(db,
 						"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
-						cellID.String)
-					db.Exec("DELETE FROM cell_claims WHERE cell_id = ?", cellID.String)
+						rc.cellID)
+					mustExecDB(db, "DELETE FROM cell_claims WHERE cell_id = ?", rc.cellID)
 					continue
 				}
 				for _, y := range yields {
-					replSubmit(db, pid, cellName.String, y, result)
+					replSubmit(db, pid, rc.cellName, y, result)
 				}
 			}
 
 			return evalStepResult{
 				action: "evaluated", progID: pid,
-				cellID: cellID.String, cellName: cellName.String,
-				body: body.String, bodyType: bodyType.String,
+				cellID: rc.cellID, cellName: rc.cellName,
+				body: rc.body, bodyType: rc.bodyType,
 			}
 		}
 
 		// Soft cell: mark computing and dispatch
-		db.Exec(
+		mustExecDB(db,
 			"UPDATE cells SET state = 'computing', computing_since = NOW(), assigned_piston = ? WHERE id = ?",
-			pistonID, cellID.String)
-		db.Exec(
+			pistonID, rc.cellID)
+		mustExecDB(db,
 			"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'claimed', CONCAT('Claimed by piston ', ?), NOW())",
-			cellID.String, pistonID)
-		db.Exec("CALL DOLT_COMMIT('-Am', ?)", "cell: claim soft cell "+cellName.String)
+			rc.cellID, pistonID)
+		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "cell: claim soft cell "+rc.cellName)
 
 		return evalStepResult{
 			action: "dispatch", progID: pid,
-			cellID: cellID.String, cellName: cellName.String,
-			body: body.String, bodyType: bodyType.String,
+			cellID: rc.cellID, cellName: rc.cellName,
+			body: rc.body, bodyType: rc.bodyType,
 		}
 	}
 
@@ -2382,8 +2432,8 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		return "error", fmt.Sprintf("Cell %q not found or not computing", cellName)
 	}
 
-	db.Exec("DELETE FROM yields WHERE cell_id = ? AND field_name = ?", cellID, fieldName)
-	db.Exec(
+	mustExecDB(db, "DELETE FROM yields WHERE cell_id = ? AND field_name = ?", cellID, fieldName)
+	mustExecDB(db,
 		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, FALSE, NULL)",
 		cellID, fieldName, value)
 
@@ -2438,7 +2488,7 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		}
 
 		if detPass < detCount {
-			db.Exec(
+			mustExecDB(db,
 				"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'oracle_fail', ?, NOW())",
 				cellID, fmt.Sprintf("Oracle check failed: %d/%d deterministic passed", detPass, detCount))
 			return "oracle_fail", fmt.Sprintf("%d/%d deterministic oracles passed", detPass, detCount)
@@ -2458,7 +2508,7 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			for semRows.Next() {
 				var assertion string
 				semRows.Scan(&assertion)
-				db.Exec(
+				mustExecDB(db,
 					"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'oracle_semantic', ?, NOW())",
 					cellID, fmt.Sprintf("Semantic (trust piston): %s", assertion))
 			}
@@ -2466,7 +2516,7 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		}
 	}
 
-	db.Exec(
+	mustExecDB(db,
 		"UPDATE yields SET is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ? AND field_name = ?",
 		cellID, fieldName)
 
@@ -2476,24 +2526,24 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		cellID).Scan(&unfrozen)
 
 	if unfrozen == 0 {
-		db.Exec(
+		mustExecDB(db,
 			"UPDATE cells SET state = 'frozen', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
 			cellID)
 
 		// Get piston before deleting claim
 		var claimPiston string
 		db.QueryRow("SELECT piston_id FROM cell_claims WHERE cell_id = ?", cellID).Scan(&claimPiston)
-		db.Exec("DELETE FROM cell_claims WHERE cell_id = ?", cellID)
+		mustExecDB(db, "DELETE FROM cell_claims WHERE cell_id = ?", cellID)
 		if claimPiston != "" {
-			db.Exec(
+			mustExecDB(db,
 				"UPDATE pistons SET cells_completed = cells_completed + 1, last_heartbeat = NOW() WHERE id = ?",
 				claimPiston)
 		}
 
-		db.Exec(
+		mustExecDB(db,
 			"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'All yields frozen', NOW())",
 			cellID)
-		db.Exec("CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))
+		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))
 	}
 
 	return "ok", fmt.Sprintf("Yield frozen: %s.%s", cellName, fieldName)

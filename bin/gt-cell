@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# gt-cell — Gas Town ↔ Cell runtime bridge
+#
+# Wraps ct pour + ct auto to run a Cell program and map yields to beads.
+#
+# Usage:
+#   gt-cell run <name> <file.cell>             Pour + auto-evaluate a program
+#   gt-cell run <name> <file.cell> --max N     Limit evaluation steps
+#   gt-cell status <program-id>                Show program state
+#   gt-cell yields <program-id>                Show frozen yields
+#
+# Environment:
+#   RETORT_DSN    Dolt DSN (default: root@tcp(127.0.0.1:3308)/retort)
+#   CT_BIN        Path to ct binary (default: auto-detect)
+#   CT_PISTON_CMD Piston command for ct auto (default: claude -p --model claude-haiku-4-5-20251001)
+
+set -euo pipefail
+
+# Find ct binary
+CT_BIN="${CT_BIN:-}"
+if [[ -z "$CT_BIN" ]]; then
+    # Look in common locations
+    for candidate in \
+        "$(dirname "$0")/../ct" \
+        "$(dirname "$0")/ct" \
+        "$(command -v ct 2>/dev/null)" \
+    ; do
+        if [[ -n "$candidate" && -x "$candidate" ]]; then
+            CT_BIN="$candidate"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$CT_BIN" || ! -x "$CT_BIN" ]]; then
+    echo "gt-cell: ct binary not found. Set CT_BIN or build ct first." >&2
+    exit 1
+fi
+
+export RETORT_DSN="${RETORT_DSN:-root@tcp(127.0.0.1:3308)/retort}"
+
+usage() {
+    cat <<'EOF'
+gt-cell — Gas Town ↔ Cell runtime bridge
+
+Usage:
+  gt-cell run <name> <file.cell> [--max N]     Pour + auto-evaluate, map yields to beads
+  gt-cell status <program-id>                  Show program state
+  gt-cell yields <program-id>                  Show frozen yields
+  gt-cell watch [<program-id>]                 Live dashboard
+
+Examples:
+  gt-cell run code-audit examples/code-audit.cell
+  gt-cell run incident-response examples/incident-response.cell --max 20
+  gt-cell status code-audit
+EOF
+    exit 1
+}
+
+cmd_run() {
+    local name="$1"
+    local file="$2"
+    shift 2
+    local extra_args=("$@")
+
+    echo "▸ Pouring ${name} from ${file}..."
+    if ! "$CT_BIN" pour "$name" "$file"; then
+        echo "gt-cell: pour failed" >&2
+        exit 1
+    fi
+
+    echo "▸ Running ${name}..."
+    local auto_args=("$name")
+    auto_args+=("${extra_args[@]}")
+
+    # Check if ct auto exists (newer ct versions)
+    if "$CT_BIN" auto --help >/dev/null 2>&1; then
+        "$CT_BIN" auto "${auto_args[@]}"
+    else
+        # Fallback: use ct piston for the program
+        echo "  (ct auto not available, using ct piston)"
+        "$CT_BIN" piston "$name"
+    fi
+
+    local exit_code=$?
+
+    # Show results
+    echo ""
+    echo "▸ Results:"
+    "$CT_BIN" yields "$name" 2>/dev/null || true
+
+    # Completion bead is handled by ct itself (emitCompletionBead)
+    # But also emit a summary to stdout for Gas Town consumption
+    echo ""
+    echo "▸ Program ${name} finished (exit ${exit_code})"
+
+    return $exit_code
+}
+
+cmd_status() {
+    "$CT_BIN" status "$1"
+}
+
+cmd_yields() {
+    "$CT_BIN" yields "$1"
+}
+
+cmd_watch() {
+    "$CT_BIN" watch "$@"
+}
+
+# --- Main dispatch ---
+if [[ $# -lt 1 ]]; then
+    usage
+fi
+
+case "$1" in
+    run)
+        shift
+        [[ $# -lt 2 ]] && usage
+        cmd_run "$@"
+        ;;
+    status)
+        shift
+        [[ $# -lt 1 ]] && usage
+        cmd_status "$@"
+        ;;
+    yields)
+        shift
+        [[ $# -lt 1 ]] && usage
+        cmd_yields "$@"
+        ;;
+    watch)
+        shift
+        cmd_watch "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

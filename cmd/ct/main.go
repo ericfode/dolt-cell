@@ -30,15 +30,13 @@ Usage:
   ct yields <program-id>                              Show frozen yields
   ct history <program-id>                             Show execution history
   ct graph <program-id>                               Show DAG (dependency graph from bindings)
-  ct auto <program-id> [--max N] [--piston CMD]        Autonomous piston loop (dispatches to piston subprocess)
   ct reset <program-id>                               Reset program
 
 The piston is YOU (the LLM session using this tool) or a polecat you sling to.
-ct auto dispatches soft cells to a piston subprocess via stdin/stdout.
+ct handles the plumbing. You handle the thinking.
 
 Environment:
-  RETORT_DSN      Dolt DSN (default: root@tcp(127.0.0.1:3308)/retort)
-  CT_PISTON_CMD   Piston command (default: claude -p --model claude-haiku-4-5-20251001)
+  RETORT_DSN   Dolt DSN (default: root@tcp(127.0.0.1:3308)/retort)
 `
 
 func main() {
@@ -90,28 +88,6 @@ func main() {
 	}
 
 	switch cmd {
-	case "auto":
-		progID := ""
-		maxSteps := 50
-		pistonCmd := os.Getenv("CT_PISTON_CMD")
-		if pistonCmd == "" {
-			pistonCmd = "claude -p --model claude-haiku-4-5-20251001"
-		}
-		for i := 0; i < len(args); i++ {
-			if args[i] == "--max" && i+1 < len(args) {
-				i++
-				fmt.Sscanf(args[i], "%d", &maxSteps)
-			} else if args[i] == "--piston" && i+1 < len(args) {
-				i++
-				pistonCmd = args[i]
-			} else {
-				progID = args[i]
-			}
-		}
-		if progID == "" {
-			fatal("usage: ct auto <program-id> [--max N] [--piston CMD]")
-		}
-		cmdAuto(db, progID, maxSteps, pistonCmd)
 	case "piston":
 		progID := ""
 		if len(args) > 0 {

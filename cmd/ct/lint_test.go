@@ -6,7 +6,7 @@ import (
 )
 
 func TestLint_Clean(t *testing.T) {
-	cells := parseCellFile(`cell topic
+	cells := mustParse(t,`cell topic
   yield subject = "hello"
 
 cell use
@@ -23,7 +23,7 @@ cell use
 }
 
 func TestLint_DanglingGiven(t *testing.T) {
-	cells := parseCellFile(`cell use
+	cells := mustParse(t,`cell use
   given nonexistent.field
   yield result
   ---
@@ -43,7 +43,7 @@ func TestLint_DanglingGiven(t *testing.T) {
 }
 
 func TestLint_DuplicateName(t *testing.T) {
-	cells := parseCellFile(`cell foo
+	cells := mustParse(t,`cell foo
   yield x = "1"
 
 cell foo
@@ -62,7 +62,7 @@ cell foo
 }
 
 func TestLint_NoYields(t *testing.T) {
-	cells := parseCellFile(`cell empty
+	cells := mustParse(t,`cell empty
   ---
   Body with no yields.
   ---
@@ -80,7 +80,7 @@ func TestLint_NoYields(t *testing.T) {
 }
 
 func TestLint_Cycle(t *testing.T) {
-	cells := parseCellFile(`cell a
+	cells := mustParse(t,`cell a
   given b.x
   yield x
   ---
@@ -107,7 +107,7 @@ cell b
 }
 
 func TestLint_IterationValid(t *testing.T) {
-	cells := parseCellFile(`cell seed
+	cells := mustParse(t,`cell seed
   yield text = "hello"
 
 cell refine (stem)
@@ -145,7 +145,7 @@ func TestLint_AllExamples(t *testing.T) {
 			if err != nil {
 				t.Skip(err)
 			}
-			cells := parseCellFile(string(data))
+			cells := mustParse(t,string(data))
 			if cells == nil {
 				t.Skipf("cannot parse %s", f)
 			}

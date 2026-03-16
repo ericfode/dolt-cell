@@ -13,9 +13,12 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+var validNameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 
 // parsedCell represents one cell extracted from .cell syntax.
 type parsedCell struct {
@@ -47,11 +50,39 @@ type parsedOracle struct {
 }
 
 // parseCellFile parses .cell syntax. Tries v2 (ASCII) first, falls back to v1 (Unicode).
-func parseCellFile(text string) []parsedCell {
-	if cells := parseCellFileV2(text); cells != nil {
-		return cells
+// Returns an error if any cell or field name is invalid.
+func parseCellFile(text string) ([]parsedCell, error) {
+	var cells []parsedCell
+	if cells = parseCellFileV2(text); cells == nil {
+		cells = parseCellFileV1(text)
 	}
-	return parseCellFileV1(text)
+	if cells == nil {
+		return nil, nil
+	}
+	if err := validateCellNames(cells); err != nil {
+		return nil, err
+	}
+	return cells, nil
+}
+
+// validateCellNames checks that all cell names and field names match [a-zA-Z][a-zA-Z0-9_-]*.
+func validateCellNames(cells []parsedCell) error {
+	for _, c := range cells {
+		if !validNameRe.MatchString(c.name) {
+			return fmt.Errorf("invalid cell name %q: must match [a-zA-Z][a-zA-Z0-9_-]*", c.name)
+		}
+		for _, y := range c.yields {
+			if !validNameRe.MatchString(y.fieldName) {
+				return fmt.Errorf("invalid field name %q in cell %q: must match [a-zA-Z][a-zA-Z0-9_-]*", y.fieldName, c.name)
+			}
+		}
+		for _, g := range c.givens {
+			if !validNameRe.MatchString(g.sourceField) {
+				return fmt.Errorf("invalid field name %q in given of cell %q: must match [a-zA-Z][a-zA-Z0-9_-]*", g.sourceField, c.name)
+			}
+		}
+	}
+	return nil
 }
 
 // parseCellFileV2 parses v2 ASCII syntax: cell NAME, ---, given X.Y, check, recur.

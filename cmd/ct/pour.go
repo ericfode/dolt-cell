@@ -27,7 +27,10 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 	}
 
 	// Phase B: deterministic parser (instant, no LLM)
-	cells := parseCellFile(string(data))
+	cells, parseErr := parseCellFile(string(data))
+	if parseErr != nil {
+		fatal("parse %s: %v", cellFile, parseErr)
+	}
 	if cells != nil {
 		sqlText := cellsToSQL(name, cells)
 		if _, err := db.Exec(sqlText); err != nil {

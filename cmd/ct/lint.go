@@ -12,7 +12,11 @@ func cmdLint(filename string) {
 		fatal("read %s: %v", filename, err)
 	}
 
-	cells := parseCellFile(string(data))
+	cells, parseErr := parseCellFile(string(data))
+	if parseErr != nil {
+		fmt.Printf("✗ %s: %v\n", filename, parseErr)
+		os.Exit(1)
+	}
 	if cells == nil {
 		fmt.Printf("✗ %s: parse failed (not valid v1 or v2 syntax)\n", filename)
 		os.Exit(1)

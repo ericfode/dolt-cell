@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+// mustParse calls parseCellFile and fatals on validation errors.
+func mustParse(t *testing.T, text string) []parsedCell {
+	t.Helper()
+	cells, err := parseCellFile(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cells
+}
+
 func TestParseAllExamples(t *testing.T) {
 	files, err := filepath.Glob("../../examples/*.cell")
 	if err != nil {
@@ -20,7 +30,7 @@ func TestParseAllExamples(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cells := parseCellFile(string(data))
+			cells := mustParse(t,string(data))
 			if cells == nil {
 				t.Skipf("Phase B cannot parse %s (falls back to Phase A)", name)
 				return
@@ -37,7 +47,7 @@ func TestParseCellZero(t *testing.T) {
 		t.Fatalf("read cell-zero.cell: %v", err)
 	}
 
-	cells := parseCellFile(string(data))
+	cells := mustParse(t,string(data))
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil — Phase B cannot parse cell-zero.cell")
 	}
@@ -124,7 +134,7 @@ func TestExplicitSemanticOracle(t *testing.T) {
   ∴ Sort «items» ascending.
   ⊨~ result is well-formatted and readable
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -155,7 +165,7 @@ func TestSemanticNotEmptyStaysDeterministic(t *testing.T) {
   ∴ Write something.
   ⊨ text is not empty
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -180,7 +190,7 @@ func TestJudgeCellGeneration(t *testing.T) {
   ∴ Sort «items» ascending.
   ⊨~ sorted is in ascending order
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -230,7 +240,7 @@ func TestIterationWithSemanticOracle(t *testing.T) {
   ∴∴ Improve «text». Make it clearer.
   ⊨~ text reads naturally and flows well
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -294,7 +304,7 @@ func TestMultipleSemanticOracles(t *testing.T) {
   ⊨~ summary captures key trends
   ⊨~ chart is properly labeled
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -327,7 +337,7 @@ func TestFactCheckExample(t *testing.T) {
 		t.Fatalf("read fact-check.cell: %v", err)
 	}
 
-	cells := parseCellFile(string(data))
+	cells := mustParse(t,string(data))
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -384,7 +394,7 @@ func TestRefineWithJudgeExample(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cells := parseCellFile(string(data))
+	cells := mustParse(t,string(data))
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -431,7 +441,7 @@ func TestMixedOracles(t *testing.T) {
   ⊨ sorted is not empty
   ⊨~ sorted is in strictly ascending order
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -456,7 +466,7 @@ func TestHaikuMultiLineBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cells := parseCellFile(string(data))
+	cells := mustParse(t,string(data))
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -511,7 +521,7 @@ func TestIterationTemplateReference(t *testing.T) {
   yield summary
   ∴ Summarize «text» in one sentence.
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -545,7 +555,7 @@ func TestIterationTemplateReferenceDoesNotAffectExplicit(t *testing.T) {
   yield comparison
   ∴ Compare first iteration «text» with final «text».
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -576,7 +586,7 @@ func TestGatherWildcard(t *testing.T) {
   yield summary
   ∴ Combine all findings into a coherent summary.
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -607,7 +617,7 @@ func TestV2BasicCellDecl(t *testing.T) {
 	input := `cell topic
   yield subject = "autumn rain"
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -633,7 +643,7 @@ func TestV2StemCell(t *testing.T) {
   Find work and evaluate it.
   ---
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -663,7 +673,7 @@ cell compose
   Write about «subject».
   ---
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -691,7 +701,7 @@ func TestV2OptionalGiven(t *testing.T) {
   Revise based on feedback.
   ---
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -715,7 +725,7 @@ func TestV2FencedBody(t *testing.T) {
   Return three lines.
   ---
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -740,7 +750,7 @@ func TestV2HardComputedSQL(t *testing.T) {
   sql: SELECT COUNT(*) FROM items
   ---
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -763,7 +773,7 @@ func TestV2CheckOracle(t *testing.T) {
   check text is not empty
   check~ text is factually accurate
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -803,7 +813,7 @@ cell synthesize
   Combine all findings.
   ---
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -842,7 +852,7 @@ cell refine (stem)
   Improve «text».
   ---
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -875,7 +885,7 @@ cell reflect (stem)
   Refine «poem». Return SETTLED or REVISING.
   ---
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -904,7 +914,7 @@ func TestV2ParseCellZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	cells := parseCellFile(string(data))
+	cells := mustParse(t,string(data))
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil — cannot parse v2 cell-zero.cell")
 	}
@@ -946,7 +956,7 @@ func TestV2ParseHaiku(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cells := parseCellFile(string(data))
+	cells := mustParse(t,string(data))
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil — cannot parse v2 haiku.cell")
 	}
@@ -977,7 +987,7 @@ func TestV2ParseHaikuRefine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cells := parseCellFile(string(data))
+	cells := mustParse(t,string(data))
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil — cannot parse v2 haiku-refine.cell")
 	}
@@ -1026,7 +1036,7 @@ func TestV2YieldUnquoted(t *testing.T) {
 	input := `cell topic
   yield subject = autumn rain on a temple roof
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -1047,7 +1057,7 @@ func TestV2AllExamplesParse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		cells := parseCellFile(string(data))
+		cells := mustParse(t,string(data))
 		if cells == nil {
 			failed = append(failed, name)
 		}
@@ -1077,7 +1087,7 @@ func TestGatherWildcardWithTemplateRef(t *testing.T) {
   yield summary
   ∴ Use the final result.
 `
-	cells := parseCellFile(input)
+	cells := mustParse(t,input)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -1097,5 +1107,89 @@ func TestGatherWildcardWithTemplateRef(t *testing.T) {
 	count := strings.Count(sql, "'step-4', 'result'")
 	if count < 2 {
 		t.Errorf("step-4→result should appear in both collect and final givens, got %d occurrences", count)
+	}
+}
+
+func TestParseRejectsInvalidNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string // substring expected in error message
+	}{
+		{
+			name: "cell name starts with digit",
+			input: `cell 1bad
+  yield x = "hello"
+`,
+			want: `invalid cell name "1bad"`,
+		},
+		{
+			name: "cell name starts with underscore",
+			input: `cell _hidden
+  yield x = "hello"
+`,
+			want: `invalid cell name "_hidden"`,
+		},
+		{
+			name: "cell name contains space",
+			input: `cell bad name
+  yield x = "hello"
+`,
+			want: `invalid cell name "bad name"`,
+		},
+		{
+			name: "cell name contains dot",
+			input: `cell bad.name
+  yield x = "hello"
+`,
+			want: `invalid cell name "bad.name"`,
+		},
+		{
+			name: "yield field starts with digit",
+			input: `cell ok
+  yield 9field = "hello"
+`,
+			want: `invalid field name "9field"`,
+		},
+		{
+			name: "yield field contains special char",
+			input: `cell ok
+  yield f@ield = "hello"
+`,
+			want: `invalid field name "f@ield"`,
+		},
+		{
+			name:  "v1 cell name starts with digit",
+			input: "⊢ 2cell\n  yield x ≡ hi\n",
+			want:  `invalid cell name "2cell"`,
+		},
+		{
+			name: "valid names pass",
+			input: `cell my-cell_1
+  yield field-name_2 = "ok"
+`,
+			want: "", // no error expected
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cells, err := parseCellFile(tt.input)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if cells == nil {
+					t.Fatal("expected valid parse, got nil")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.want)
+			}
+		})
 	}
 }

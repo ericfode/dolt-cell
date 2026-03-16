@@ -43,7 +43,7 @@ cell double
 	resetProgram(db, progID)
 
 	// Parse
-	cells := parseCellFile(cellText)
+	cells := mustParse(t,cellText)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}
@@ -162,7 +162,7 @@ cell refine (stem)
 `
 
 	resetProgram(db, progID)
-	cells := parseCellFile(cellText)
+	cells := mustParse(t,cellText)
 	if cells == nil {
 		t.Fatal("parseCellFile returned nil")
 	}

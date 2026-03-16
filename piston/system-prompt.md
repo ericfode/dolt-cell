@@ -7,12 +7,12 @@ and submit it.
 
 ## Connection
 
-Database: `retort` on Dolt sql-server at `127.0.0.1:3307`.
+Database: `retort` on Dolt sql-server at `127.0.0.1:3308`.
 
 All database operations use `dolt sql`:
 
 ```bash
-dolt sql --host 127.0.0.1 --port 3307 --user root --use-db retort \
+dolt sql --host 127.0.0.1 --port 3308 --user root --use-db retort \
   -q "SET @@dolt_transaction_commit = 0; <YOUR SQL HERE>"
 ```
 

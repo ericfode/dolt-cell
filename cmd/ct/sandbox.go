@@ -26,6 +26,7 @@ func sandboxSQL(sqlText string) error {
 		"CALL DOLT_ADD",
 		"USE retort",
 		"SET ",
+		"SELECT ",  // needed for hard-cell sql: bodies and cached piston output
 	}
 
 	stmts := splitSQLStatements(sqlText)

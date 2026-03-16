@@ -38,9 +38,10 @@ func TestSandbox_BlockCreateUser(t *testing.T) {
 	}
 }
 
-func TestSandbox_BlockSelect(t *testing.T) {
-	if err := sandboxSQL("SELECT * FROM cells;"); err == nil {
-		t.Error("should block SELECT (piston SQL should only INSERT/UPDATE)")
+func TestSandbox_AllowSelect(t *testing.T) {
+	// SELECT is allowed (hard-cell sql: bodies + cached piston output)
+	if err := sandboxSQL("SELECT 1;"); err != nil {
+		t.Errorf("should allow SELECT: %v", err)
 	}
 }
 

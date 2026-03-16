@@ -6,7 +6,7 @@
 --   schema/cell_heartbeat.sql (heartbeat/lease, pistons)
 --
 -- Usage:
---   dolt sql --host 127.0.0.1 --port 3307 --user root \
+--   dolt sql --host 127.0.0.1 --port 3308 --user root \
 --     -q "SOURCE schema/retort-init.sql;"
 --
 -- Bead: do-hrm

@@ -64,7 +64,25 @@ func main() {
 	}
 	defer db.Close()
 	if err := db.Ping(); err != nil {
-		fatal("ping: %v", err)
+		// Auto-init: if retort database doesn't exist, create it
+		if strings.Contains(err.Error(), "database not found") {
+			initDSN := strings.Replace(dsn, "/retort", "/", 1)
+			if initDB, e2 := sql.Open("mysql", initDSN+"?multiStatements=true&parseTime=true&tls=false"); e2 == nil {
+				defer initDB.Close()
+				if autoInitRetort(initDB) {
+					// Retry ping after init
+					if err := db.Ping(); err != nil {
+						fatal("ping after init: %v", err)
+					}
+				} else {
+					fatal("ping: %v", err)
+				}
+			} else {
+				fatal("ping: %v", err)
+			}
+		} else {
+			fatal("ping: %v", err)
+		}
 	}
 
 	cmd := os.Args[1]
@@ -716,6 +734,114 @@ func mustExec(db *sql.DB, q string, args ...any) {
 	if _, err := db.Exec(q, args...); err != nil {
 		fatal("exec: %v", err)
 	}
+}
+
+// autoInitRetort creates the retort database with schema, views, and procedures.
+// Called automatically when ct can't connect because the database doesn't exist.
+func autoInitRetort(db *sql.DB) bool {
+	// Find schema files relative to executable or cwd
+	root := "."
+	for _, try := range []string{".", "..", "../..", "../../.."} {
+		if _, err := os.Stat(filepath.Join(try, "schema", "retort-init.sql")); err == nil {
+			root = try
+			break
+		}
+	}
+
+	initPath := filepath.Join(root, "schema", "retort-init.sql")
+	initSQL, err := os.ReadFile(initPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ct: auto-init: cannot find schema/retort-init.sql (tried from cwd)\n")
+		return false
+	}
+
+	fmt.Fprintf(os.Stderr, "ct: auto-init retort database...\n")
+
+	// Execute init SQL (split on semicolons, skip comments)
+	for _, stmt := range splitSQL(string(initSQL)) {
+		if _, err := db.Exec(stmt); err != nil {
+			fmt.Fprintf(os.Stderr, "ct: auto-init: %v\n", err)
+			return false
+		}
+	}
+
+	// Install procedures
+	procPath := filepath.Join(root, "schema", "procedures.sql")
+	procSQL, err := os.ReadFile(procPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ct: auto-init: cannot find schema/procedures.sql\n")
+		return false
+	}
+	db.Exec("USE retort")
+	for _, proc := range parseProcSQL(string(procSQL)) {
+		if _, err := db.Exec(proc); err != nil {
+			fmt.Fprintf(os.Stderr, "ct: auto-init proc: %v\n", err)
+			return false
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "ct: auto-init complete\n")
+	return true
+}
+
+func splitSQL(src string) []string {
+	var stmts []string
+	var buf strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "--") {
+			continue
+		}
+		buf.WriteString(line + "\n")
+		if strings.HasSuffix(t, ";") {
+			if s := strings.TrimSpace(buf.String()); s != "" {
+				stmts = append(stmts, s)
+			}
+			buf.Reset()
+		}
+	}
+	return stmts
+}
+
+func parseProcSQL(src string) []string {
+	var stmts []string
+	var buf strings.Builder
+	delim := ";"
+	for _, line := range strings.Split(src, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "--") && delim == ";" {
+			continue
+		}
+		if strings.HasPrefix(t, "DELIMITER") {
+			if s := strings.TrimSpace(buf.String()); s != "" {
+				stmts = append(stmts, s)
+				buf.Reset()
+			}
+			parts := strings.Fields(t)
+			if len(parts) >= 2 {
+				delim = parts[1]
+			}
+			continue
+		}
+		if delim != ";" && strings.HasSuffix(t, delim) {
+			buf.WriteString(strings.TrimSuffix(t, delim) + "\n")
+			if s := strings.TrimSpace(buf.String()); s != "" {
+				stmts = append(stmts, s)
+			}
+			buf.Reset()
+			continue
+		}
+		buf.WriteString(line + "\n")
+	}
+	if s := strings.TrimSpace(buf.String()); s != "" {
+		for _, stmt := range strings.Split(s, ";") {
+			stmt = strings.TrimSpace(stmt)
+			if stmt != "" && !strings.HasPrefix(stmt, "--") {
+				stmts = append(stmts, stmt)
+			}
+		}
+	}
+	return stmts
 }
 
 func fatal(f string, a ...any) {

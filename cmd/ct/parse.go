@@ -507,21 +507,8 @@ func cellsToSQL(programID string, cells []parsedCell) string {
 	var sb strings.Builder
 	sb.WriteString("USE retort;\n")
 
-	// Abbreviate program ID for cell ID prefix
+	// Use full program name as cell ID prefix (no abbreviation — avoids collisions)
 	prefix := programID
-	if len(prefix) > 4 {
-		// Use initials: sort-proof → sp, game-of-life → gol, cell-zero → cz
-		parts := strings.Split(prefix, "-")
-		abbr := ""
-		for _, p := range parts {
-			if len(p) > 0 {
-				abbr += string(p[0])
-			}
-		}
-		if len(abbr) >= 2 {
-			prefix = abbr
-		}
-	}
 
 	// Build iteration template map: name → N (for reference resolution)
 	iterTemplates := map[string]int{}

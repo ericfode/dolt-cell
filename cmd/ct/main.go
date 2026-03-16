@@ -357,6 +357,14 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 	}
 	fmt.Printf("Pouring %s from %s (%d bytes)...\n", name, cellFile, len(data))
 
+	// Auto-reset if program already exists (idempotent pour)
+	var existing int
+	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&existing)
+	if existing > 0 {
+		resetProgram(db, name)
+		fmt.Printf("  (reset %d existing cells)\n", existing)
+	}
+
 	// Backward compat: if .sql file exists, use it directly
 	sqlFile := strings.TrimSuffix(cellFile, ".cell") + ".sql"
 	if sqlData, err := os.ReadFile(sqlFile); err == nil {
@@ -515,6 +523,11 @@ func pourExecSQL(db *sql.DB, name, sqlText string) {
 }
 
 func cmdReset(db *sql.DB, progID string) {
+	resetProgram(db, progID)
+	fmt.Printf("✓ Reset %s\n", progID)
+}
+
+func resetProgram(db *sql.DB, progID string) {
 	mustExec(db, "SET @@dolt_transaction_commit = 0")
 	for _, t := range []string{"trace", "cell_claims", "oracles", "yields", "givens", "cells"} {
 		q := fmt.Sprintf("DELETE FROM %s WHERE ", t)
@@ -526,7 +539,6 @@ func cmdReset(db *sql.DB, progID string) {
 		mustExecDB(db, q, progID)
 	}
 	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "reset: "+progID)
-	fmt.Printf("✓ Reset %s\n", progID)
 }
 
 // submitYieldCall calls cell_submit and returns the result without side effects

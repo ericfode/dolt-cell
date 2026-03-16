@@ -76,6 +76,9 @@ type watchModel struct {
 	showHelp bool
 	// Auto-retry state
 	retryCountdown int // seconds until next retry (0 = not retrying)
+	// Monotonicity tracking
+	prevNonFrozen  int  // non-frozen count from previous refresh
+	nonFrozenAlert bool // true if non-frozen count increased
 	// Session stats
 	stats watchStats
 }
@@ -547,6 +550,19 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					seen[c.prog] = true
 				}
 			}
+			// Monotonicity check: alert if non-frozen count increased
+			var total, frozen int
+			for _, counts := range m.programs {
+				total += counts[0]
+				frozen += counts[1]
+			}
+			nonFrozen := total - frozen
+			if m.prevNonFrozen > 0 && nonFrozen > m.prevNonFrozen {
+				m.nonFrozenAlert = true
+			} else {
+				m.nonFrozenAlert = false
+			}
+			m.prevNonFrozen = nonFrozen
 		}
 		m.clampCursor()
 		if m.ready {
@@ -1033,7 +1049,16 @@ func (m watchModel) View() tea.View {
 			computingCells++
 		}
 	}
+	nonFrozenCells := totalCells - frozenCells
 	statsStr := fmt.Sprintf("%d/%d", frozenCells, totalCells)
+	if nonFrozenCells > 0 {
+		nfStr := fmt.Sprintf(" %d pending", nonFrozenCells)
+		if m.nonFrozenAlert {
+			statsStr += errStyle.Render(nfStr + " ▲")
+		} else {
+			statsStr += pendValStyle.Render(nfStr)
+		}
+	}
 	if computingCells > 0 {
 		statsStr += fmt.Sprintf(" %s", pendValStyle.Render(fmt.Sprintf("⚡%d", computingCells)))
 	}

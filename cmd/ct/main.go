@@ -387,22 +387,7 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 		fmt.Printf("  (reset %d existing cells)\n", existing)
 	}
 
-	// Backward compat: if .sql file exists, use it directly
-	sqlFile := strings.TrimSuffix(cellFile, ".cell") + ".sql"
-	if sqlData, err := os.ReadFile(sqlFile); err == nil {
-		if _, err := db.Exec(string(sqlData)); err != nil {
-			if !strings.Contains(err.Error(), "nothing to commit") {
-				fatal("pour: %v", err)
-			}
-		}
-		var n int
-		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&n)
-		ensureFrames(db, name)
-		fmt.Printf("✓ %s: %d cells (from .sql)\n", name, n)
-		return
-	}
-
-	// Phase B: try deterministic parser first (instant, no LLM)
+	// Phase B: deterministic parser (instant, no LLM)
 	cells := parseCellFile(string(data))
 	if cells != nil {
 		sqlText := cellsToSQL(name, cells)

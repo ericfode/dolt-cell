@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS cells (
         COMMENT 'Identifier of the piston that claimed this cell. NULL when not computing.',
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_program_state (program_id, state),
-    INDEX idx_name (program_id, name),
+    UNIQUE INDEX idx_cells_prog_name (program_id, name),
     INDEX idx_cells_computing_since (state, computing_since)
         COMMENT 'Supports cell_reap_stale() scanning for timed-out computing cells'
 );

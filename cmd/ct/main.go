@@ -37,6 +37,7 @@ Usage:
   ct run <program-id>                                 Eval loop: hard cells inline, soft cells print prompt
   ct submit <program-id> <cell> <field> <value>       Submit a soft cell result
   ct status <program-id>                              Show program state
+  ct frames <program-id>                              Show frames (generation, status)
   ct yields <program-id>                              Show frozen yields
   ct history <program-id>                             Show execution history
   ct graph <program-id>                               Show DAG (dependency graph from bindings)
@@ -133,6 +134,9 @@ func main() {
 	case "status":
 		need(args, 1, "ct status <program-id>")
 		cmdStatus(db, args[0])
+	case "frames":
+		need(args, 1, "ct frames <program-id>")
+		cmdFrames(db, args[0])
 	case "yields":
 		need(args, 1, "ct yields <program-id>")
 		cmdYields(db, args[0])
@@ -261,8 +265,8 @@ func cmdStatus(db *sql.DB, progID string) {
 	}
 	defer rows.Close()
 
-	fmt.Printf("  %-12s %-8s %-6s %s\n", "CELL", "STATE", "TYPE", "YIELD")
-	fmt.Printf("  %-12s %-8s %-6s %s\n", "────", "─────", "────", "─────")
+	fmt.Printf("  %-12s %-8s %-6s %-4s %s\n", "CELL", "STATE", "TYPE", "GEN", "YIELD")
+	fmt.Printf("  %-12s %-8s %-6s %-4s %s\n", "────", "─────", "────", "───", "─────")
 	for rows.Next() {
 		var name, state, bodyType, yieldStatus, assignedPiston, fieldName sql.NullString
 		var isFrozen sql.NullBool
@@ -275,7 +279,101 @@ func cmdStatus(db *sql.DB, progID string) {
 		if fieldName.Valid {
 			ys = fieldName.String + ": " + trunc(yieldStatus.String, 50)
 		}
-		fmt.Printf("  %-12s %s %-6s %-6s %s\n", name.String, icon, state.String, bodyType.String, ys)
+		// For stem cells, show latest frame generation
+		genStr := ""
+		if bodyType.String == "stem" {
+			var maxGen sql.NullInt64
+			db.QueryRow(
+				"SELECT MAX(generation) FROM frames WHERE program_id = ? AND cell_name = ?",
+				progID, name.String).Scan(&maxGen)
+			if maxGen.Valid {
+				genStr = fmt.Sprintf("g%d", maxGen.Int64)
+			}
+		}
+		fmt.Printf("  %-12s %s %-6s %-6s %-4s %s\n", name.String, icon, state.String, bodyType.String, genStr, ys)
+	}
+}
+
+// cmdFrames shows all frames for a program with their generation and derived status.
+// Status is derived from yields and claim_log, not from cells.state.
+func cmdFrames(db *sql.DB, progID string) {
+	rows, err := db.Query(`
+		SELECT f.id, f.cell_name, f.generation, f.created_at
+		FROM frames f
+		WHERE f.program_id = ?
+		ORDER BY f.cell_name, f.generation`, progID)
+	if err != nil {
+		fatal("frames: %v", err)
+	}
+	defer rows.Close()
+
+	fmt.Printf("  %-24s %-12s %-4s %-10s %s\n", "FRAME", "CELL", "GEN", "STATUS", "DETAIL")
+	fmt.Printf("  %-24s %-12s %-4s %-10s %s\n", "─────", "────", "───", "──────", "──────")
+	for rows.Next() {
+		var frameID, cellName sql.NullString
+		var generation sql.NullInt64
+		var createdAt sql.NullTime
+		rows.Scan(&frameID, &cellName, &generation, &createdAt)
+
+		// Derive status from yields: check if all yields for the cell are frozen
+		status := "pending"
+		detail := ""
+
+		// Check if there are frozen yields tied to this cell at this generation
+		var frozenCount, totalCount int
+		db.QueryRow(`
+			SELECT COUNT(*) FROM yields y
+			JOIN cells c ON c.id = y.cell_id
+			WHERE c.program_id = ? AND c.name = ? AND y.is_frozen = 1`,
+			progID, cellName.String).Scan(&frozenCount)
+		db.QueryRow(`
+			SELECT COUNT(*) FROM yields y
+			JOIN cells c ON c.id = y.cell_id
+			WHERE c.program_id = ? AND c.name = ?`,
+			progID, cellName.String).Scan(&totalCount)
+
+		if totalCount > 0 && frozenCount == totalCount {
+			status = "frozen"
+			detail = fmt.Sprintf("%d/%d yields", frozenCount, totalCount)
+		} else if frozenCount > 0 {
+			status = "partial"
+			detail = fmt.Sprintf("%d/%d yields", frozenCount, totalCount)
+		}
+
+		// Check claim_log for activity
+		var lastAction sql.NullString
+		db.QueryRow(
+			"SELECT action FROM claim_log WHERE frame_id = ? ORDER BY created_at DESC LIMIT 1",
+			frameID.String).Scan(&lastAction)
+		if lastAction.Valid && status == "pending" {
+			switch lastAction.String {
+			case "claimed":
+				status = "computing"
+			case "completed":
+				status = "frozen"
+			case "timed_out":
+				status = "stale"
+			}
+		}
+
+		// Check for bottom yields
+		var bottomCount int
+		db.QueryRow(`
+			SELECT COUNT(*) FROM yields y
+			JOIN cells c ON c.id = y.cell_id
+			WHERE c.program_id = ? AND c.name = ? AND y.is_bottom = 1`,
+			progID, cellName.String).Scan(&bottomCount)
+		if bottomCount > 0 {
+			status = "bottom"
+		}
+
+		icon := map[string]string{"frozen": "■", "computing": "▶", "pending": "○", "partial": "◐", "bottom": "⊥", "stale": "✗"}[status]
+		if icon == "" {
+			icon = "?"
+		}
+
+		fmt.Printf("  %-24s %-12s g%-3d %s %-10s %s\n",
+			trunc(frameID.String, 24), cellName.String, generation.Int64, icon, status, detail)
 	}
 }
 
@@ -705,6 +803,38 @@ func ensureFrames(db *sql.DB, progID string) {
 			"INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES (?, ?, ?, 0)",
 			frameID, name, progID)
 	}
+}
+
+// ensureFrameForCell creates a frame for a single cell if one doesn't exist.
+// For non-stem cells this creates gen-0. For stem cells this creates the next
+// generation frame. This is called on-demand when a cell is claimed or frozen.
+func ensureFrameForCell(db *sql.DB, progID, cellName, cellID string) {
+	// Check if any frame already exists for this cell
+	var existing int
+	db.QueryRow(
+		"SELECT COUNT(*) FROM frames WHERE program_id = ? AND cell_name = ?",
+		progID, cellName).Scan(&existing)
+	if existing > 0 {
+		return // frame already exists
+	}
+	// Create gen-0 frame
+	frameID := "f-" + cellID + "-0"
+	db.Exec(
+		"INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES (?, ?, ?, 0)",
+		frameID, cellName, progID)
+}
+
+// latestFrameID returns the frame ID for the latest generation of a cell.
+// Returns empty string if no frame exists.
+func latestFrameID(db *sql.DB, progID, cellName string) string {
+	var frameID string
+	err := db.QueryRow(
+		"SELECT id FROM frames WHERE program_id = ? AND cell_name = ? ORDER BY generation DESC LIMIT 1",
+		progID, cellName).Scan(&frameID)
+	if err != nil {
+		return ""
+	}
+	return frameID
 }
 
 func resetProgram(db *sql.DB, progID string) {
@@ -2675,9 +2805,15 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 			continue
 		}
 
+		// Ensure frame exists for this cell (stem cells don't get gen-0 at pour time)
+		ensureFrameForCell(db, rc.progID, rc.cellName, rc.cellID)
+
 		// Log claim (v2 frame model audit trail)
-		db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), CONCAT('f-', ?, '-0'), ?, 'claimed')",
-			rc.cellID, pistonID)
+		frameID := latestFrameID(db, rc.progID, rc.cellName)
+		if frameID != "" {
+			db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'claimed')",
+				frameID, pistonID)
+		}
 
 		// Claimed! Handle hard vs soft
 		if rc.bodyType == "hard" {
@@ -2883,10 +3019,15 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			cellID)
 
 		// Record bindings + claim completion (v2 frame model)
+		// Ensure frame exists before recording bindings (stem cells may not have one yet)
+		ensureFrameForCell(db, progID, cellName, cellID)
 		recordBindings(db, progID, cellName, cellID)
 		if claimPiston != "" {
-			db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), CONCAT('f-', ?, '-0'), ?, 'completed')",
-				cellID, claimPiston)
+			frameID := latestFrameID(db, progID, cellName)
+			if frameID != "" {
+				db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'completed')",
+					frameID, claimPiston)
+			}
 		}
 
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))

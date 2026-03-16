@@ -15,74 +15,11 @@
   - DAG properties (acyclicity, content-addressing)
 -/
 
-/-! ====================================================================
-    BASIC TYPES
-    ==================================================================== -/
-
--- Identity types (all strings in SQL, opaque here)
-structure CellName where
-  val : String
-  deriving Repr, DecidableEq, BEq, Hashable
-
-structure ProgramId where
-  val : String
-  deriving Repr, DecidableEq, BEq, Hashable
-
-structure FrameId where
-  val : String
-  deriving Repr, DecidableEq, BEq, Hashable
-
-structure PistonId where
-  val : String
-  deriving Repr, DecidableEq, BEq
-
-structure FieldName where
-  val : String
-  deriving Repr, DecidableEq, BEq
-
-/-! ====================================================================
-    LAWFUL BEQ INSTANCES (needed for precondition proofs)
-    ==================================================================== -/
-
-instance : LawfulBEq CellName where
-  eq_of_beq {a b} h := by
-    have : a.val = b.val := eq_of_beq (α := String) h
-    cases a; cases b; simp_all
-  rfl {a} := beq_self_eq_true a.val
-
-instance : LawfulBEq ProgramId where
-  eq_of_beq {a b} h := by
-    have : a.val = b.val := eq_of_beq (α := String) h
-    cases a; cases b; simp_all
-  rfl {a} := beq_self_eq_true a.val
-
-instance : LawfulBEq FrameId where
-  eq_of_beq {a b} h := by
-    have : a.val = b.val := eq_of_beq (α := String) h
-    cases a; cases b; simp_all
-  rfl {a} := beq_self_eq_true a.val
-
-instance : LawfulBEq PistonId where
-  eq_of_beq {a b} h := by
-    have : a.val = b.val := eq_of_beq (α := String) h
-    cases a; cases b; simp_all
-  rfl {a} := beq_self_eq_true a.val
-
-instance : LawfulBEq FieldName where
-  eq_of_beq {a b} h := by
-    have : a.val = b.val := eq_of_beq (α := String) h
-    cases a; cases b; simp_all
-  rfl {a} := beq_self_eq_true a.val
+import Core
 
 /-! ====================================================================
     CELL DEFINITIONS (immutable after pour)
     ==================================================================== -/
-
-inductive BodyType where
-  | hard     -- evaluated by SQL/literal inline
-  | soft     -- evaluated by LLM piston
-  | stem     -- permanently soft, cycles through generations
-  deriving Repr, DecidableEq, BEq
 
 structure CellDef where
   name      : CellName
@@ -386,10 +323,16 @@ def stemCellsDemandDriven (r : Retort) : Prop :=
     -- The point is that stem frames are created on demand, not at pour time.
     -- We model this as: pour doesn't create frames for stem cells.
 
+-- I8: Every frame has a cell definition (natural invariant: frames come from cells)
+-- (definition lifted above wellFormed; see framesCellDefsExist below)
+def framesCellDefsExist (r : Retort) : Prop :=
+  ∀ f ∈ r.frames, (r.cellDef f.cellName).isSome
+
 -- The complete well-formedness predicate
 def wellFormed (r : Retort) : Prop :=
   cellNamesUnique r ∧ framesUnique r ∧ yieldsWellFormed r ∧
-  bindingsWellFormed r ∧ claimsWellFormed r ∧ claimMutex r ∧ yieldUnique r
+  bindingsWellFormed r ∧ claimsWellFormed r ∧ claimMutex r ∧ yieldUnique r ∧
+  framesCellDefsExist r
 
 /-! ====================================================================
     IMMUTABILITY / APPEND-ONLY PROPERTIES
@@ -507,6 +450,11 @@ def pourValid (r : Retort) (pd : PourData) : Prop :=
 def pourInternallyUnique (_r : Retort) (pd : PourData) : Prop :=
   ∀ c1 c2, c1 ∈ pd.cells → c2 ∈ pd.cells →
     c1.program = c2.program → c1.name = c2.name → c1 = c2
+
+-- Precondition: every poured frame's cell name has a definition in r.cells ++ pd.cells.
+def pourFramesCellDefsExist (r : Retort) (pd : PourData) : Prop :=
+  ∀ f ∈ pd.frames,
+    (r.cells ++ pd.cells).any (fun c => c.name == f.cellName)
 
 -- Precondition: a claim is valid if the frame exists, is ready, and not already claimed.
 def claimValid (r : Retort) (cd : ClaimData) : Prop :=
@@ -711,6 +659,10 @@ def pourFramesUnique (r : Retort) (pd : PourData) : Prop :=
 def createFrameUnique (r : Retort) (cfd : CreateFrameData) : Prop :=
   ∀ ef ∈ r.frames,
     cfd.frame.cellName = ef.cellName → cfd.frame.generation = ef.generation → cfd.frame = ef
+
+-- Precondition: created frame's cell name has a definition in r.cells.
+def createFrameCellDefExists (r : Retort) (cfd : CreateFrameData) : Prop :=
+  (r.cellDef cfd.frame.cellName).isSome
 
 -- Pour preserves framesUnique when poured frames are compatible.
 theorem pour_preserves_framesUnique (r : Retort) (pd : PourData)
@@ -1014,6 +966,68 @@ theorem createFrame_preserves_yieldUnique (r : Retort) (cfd : CreateFrameData)
     yieldUnique (applyOp r (.createFrame cfd)) := by
   unfold yieldUnique applyOp at *; simp only; exact hWF
 
+/-! I8: framesCellDefsExist preservation -/
+
+-- Pour: old frames still find their cellDef (cells grew); new frames need the precondition.
+theorem pour_preserves_framesCellDefsExist (r : Retort) (pd : PourData)
+    (hWF : framesCellDefsExist r)
+    (hPourFrames : pourFramesCellDefsExist r pd) :
+    framesCellDefsExist (applyOp r (.pour pd)) := by
+  unfold framesCellDefsExist applyOp at *
+  simp only
+  intro f hf
+  rw [List.mem_append] at hf
+  cases hf with
+  | inl hfOld =>
+    -- f is an old frame: its cellDef existed in r.cells, which is a prefix of r.cells ++ pd.cells
+    have hSome := hWF f hfOld
+    unfold Retort.cellDef at *
+    rw [List.find?_isSome] at hSome ⊢
+    obtain ⟨c, hc, hpc⟩ := hSome
+    exact ⟨c, List.mem_append_left _ hc, hpc⟩
+  | inr hfNew =>
+    -- f is a new frame: use pourFramesCellDefsExist
+    unfold pourFramesCellDefsExist at hPourFrames
+    have hAny := hPourFrames f hfNew
+    unfold Retort.cellDef
+    rw [List.find?_isSome]
+    rw [List.any_eq_true] at hAny
+    obtain ⟨c, hc, hpc⟩ := hAny
+    exact ⟨c, hc, hpc⟩
+
+-- Claim, freeze, release: cells and frames unchanged or frames unchanged.
+theorem claim_preserves_framesCellDefsExist (r : Retort) (cd : ClaimData)
+    (hWF : framesCellDefsExist r) :
+    framesCellDefsExist (applyOp r (.claim cd)) := by
+  unfold framesCellDefsExist applyOp at *; simp only; exact hWF
+
+theorem freeze_preserves_framesCellDefsExist (r : Retort) (fd : FreezeData)
+    (hWF : framesCellDefsExist r) :
+    framesCellDefsExist (applyOp r (.freeze fd)) := by
+  unfold framesCellDefsExist applyOp at *; simp only; exact hWF
+
+theorem release_preserves_framesCellDefsExist (r : Retort) (rd : ReleaseData)
+    (hWF : framesCellDefsExist r) :
+    framesCellDefsExist (applyOp r (.release rd)) := by
+  unfold framesCellDefsExist applyOp at *; simp only; exact hWF
+
+-- CreateFrame: old frames still valid; new frame needs the precondition.
+theorem createFrame_preserves_framesCellDefsExist (r : Retort) (cfd : CreateFrameData)
+    (hWF : framesCellDefsExist r)
+    (hExists : createFrameCellDefExists r cfd) :
+    framesCellDefsExist (applyOp r (.createFrame cfd)) := by
+  unfold framesCellDefsExist applyOp at *
+  simp only
+  intro f hf
+  rw [List.mem_append] at hf
+  cases hf with
+  | inl hfOld => exact hWF f hfOld
+  | inr hfNew =>
+    simp at hfNew
+    rw [hfNew]
+    unfold createFrameCellDefExists at hExists
+    exact hExists
+
 /-! ====================================================================
     POSTCONDITION THEOREMS
     ==================================================================== -/
@@ -1067,11 +1081,6 @@ theorem createFrame_adds_frame (r : Retort) (cfd : CreateFrameData) :
 /-! ====================================================================
     PROGRESS THEOREM (liveness: ready frames can always be claimed)
     ==================================================================== -/
-
--- Well-formedness condition: every frame has a cell definition.
--- This is a natural invariant: frames are created from cell definitions.
-def framesCellDefsExist (r : Retort) : Prop :=
-  ∀ f ∈ r.frames, (r.cellDef f.cellName).isSome
 
 -- Helper: when cellDef is some, frameStatus = declared implies frameClaim is none.
 -- This is because the 'some cd' branch of frameStatus returns .declared only
@@ -1185,7 +1194,8 @@ theorem freeze_makes_frozen (r : Retort) (fd : FreezeData) (f : Frame) (cd : Cel
 -- Aggregate precondition: what makes an operation valid for wellFormed preservation.
 def validOp (r : Retort) : RetortOp → Prop
   | .pour pd =>
-    pourValid r pd ∧ pourInternallyUnique r pd ∧ pourFramesUnique r pd
+    pourValid r pd ∧ pourInternallyUnique r pd ∧ pourFramesUnique r pd ∧
+    pourFramesCellDefsExist r pd
   | .claim cd =>
     claimValid r cd
   | .freeze fd =>
@@ -1193,7 +1203,7 @@ def validOp (r : Retort) : RetortOp → Prop
     freezeFrameExists r fd ∧ freezeBindingsRefFrames r fd ∧
     freezeYieldsUnique r fd
   | .release _ => True
-  | .createFrame cfd => createFrameUnique r cfd
+  | .createFrame cfd => createFrameUnique r cfd ∧ createFrameCellDefExists r cfd
 
 -- The master preservation theorem: any valid operation preserves wellFormed.
 theorem wellFormed_preserved (r : Retort) (op : RetortOp)
@@ -1201,11 +1211,11 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
     (hValid : validOp r op) :
     wellFormed (applyOp r op) := by
   unfold wellFormed at *
-  obtain ⟨hI1, hI2, hI3, hI4, hI5, hI6, hI7⟩ := hWF
+  obtain ⟨hI1, hI2, hI3, hI4, hI5, hI6, hI7, hI8⟩ := hWF
   cases op with
   | pour pd =>
     unfold validOp at hValid
-    obtain ⟨hPourValid, hPourInternal, hPourFrames⟩ := hValid
+    obtain ⟨hPourValid, hPourInternal, hPourFrames, hPourCellDefs⟩ := hValid
     exact ⟨pour_preserves_cellNamesUnique r pd hI1 hPourValid hPourInternal,
            pour_preserves_framesUnique r pd hI2 hPourFrames,
            pour_preserves_yieldsWellFormed r pd hI3,
@@ -1213,7 +1223,8 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            pour_preserves_claimsWellFormed r pd hI5,
            -- pour doesn't add claims, claimMutex trivially preserved
            (by unfold claimMutex applyOp at *; simp only; exact hI6),
-           pour_preserves_yieldUnique r pd hI7⟩
+           pour_preserves_yieldUnique r pd hI7,
+           pour_preserves_framesCellDefsExist r pd hI8 hPourCellDefs⟩
   | claim cd =>
     unfold validOp at hValid
     exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
@@ -1222,7 +1233,8 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            claim_preserves_bindingsWellFormed r cd hI4,
            claim_preserves_claimsWellFormed r cd hI5 hValid,
            claim_preserves_claimMutex r cd hI6 hValid,
-           claim_preserves_yieldUnique r cd hI7⟩
+           claim_preserves_yieldUnique r cd hI7,
+           claim_preserves_framesCellDefsExist r cd hI8⟩
   | freeze fd =>
     unfold validOp at hValid
     obtain ⟨hFreezeValid, hWitnessed, hFrameExists, hProducers, hYieldsUnique⟩ := hValid
@@ -1232,7 +1244,8 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            freeze_preserves_bindingsWellFormed r fd hI4 hFreezeValid hFrameExists hProducers,
            freeze_preserves_claimsWellFormed r fd hI5,
            freeze_preserves_claimMutex r fd hI6,
-           freeze_preserves_yieldUnique r fd hI7 hYieldsUnique⟩
+           freeze_preserves_yieldUnique r fd hI7 hYieldsUnique,
+           freeze_preserves_framesCellDefsExist r fd hI8⟩
   | release rd =>
     unfold validOp at hValid
     exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
@@ -1241,17 +1254,20 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            release_preserves_bindingsWellFormed r rd hI4,
            release_preserves_claimsWellFormed r rd hI5,
            release_preserves_claimMutex r rd hI6,
-           release_preserves_yieldUnique r rd hI7⟩
+           release_preserves_yieldUnique r rd hI7,
+           release_preserves_framesCellDefsExist r rd hI8⟩
   | createFrame cfd =>
     unfold validOp at hValid
+    obtain ⟨hCfUnique, hCfCellDef⟩ := hValid
     exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
-           createFrame_preserves_framesUnique r cfd hI2 hValid,
+           createFrame_preserves_framesUnique r cfd hI2 hCfUnique,
            createFrame_preserves_yieldsWellFormed r cfd hI3,
            createFrame_preserves_bindingsWellFormed r cfd hI4,
            createFrame_preserves_claimsWellFormed r cfd hI5,
            -- createFrame doesn't change claims
            (by unfold claimMutex applyOp at *; simp only; exact hI6),
-           createFrame_preserves_yieldUnique r cfd hI7⟩
+           createFrame_preserves_yieldUnique r cfd hI7,
+           createFrame_preserves_framesCellDefsExist r cfd hI8 hCfCellDef⟩
 
 /-! ====================================================================
     PROOFS: Cells are stable after pour

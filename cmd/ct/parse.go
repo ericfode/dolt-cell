@@ -11,6 +11,7 @@ package main
 // a separate cell that takes the original output and yields a verdict.
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
@@ -563,7 +564,7 @@ func cellsToSQL(programID string, cells []parsedCell) string {
 }
 
 func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
-	cellID := prefix + "-" + c.name
+	cellID := safeID(prefix + "-" + c.name)
 
 	// Determine body
 	body := c.body
@@ -602,7 +603,7 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 
 	// Givens
 	for _, g := range c.givens {
-		gID := fmt.Sprintf("g-%s-%s-%s-%s", prefix, c.name, g.sourceCell, g.sourceField)
+		gID := safeID(fmt.Sprintf("g-%s-%s-%s-%s", prefix, c.name, g.sourceCell, g.sourceField))
 		opt := "FALSE"
 		if g.optional {
 			opt = "TRUE"
@@ -614,7 +615,7 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 
 	// Yields
 	for _, y := range c.yields {
-		yID := fmt.Sprintf("y-%s-%s-%s", prefix, c.name, y.fieldName)
+		yID := safeID(fmt.Sprintf("y-%s-%s-%s", prefix, c.name, y.fieldName))
 		if allPrebound && len(c.yields) > 1 {
 			// Pre-freeze each yield with its value
 			sb.WriteString(fmt.Sprintf(
@@ -629,7 +630,7 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 
 	// Oracles
 	for i, o := range c.oracles {
-		oID := fmt.Sprintf("o-%s-%s-%d", prefix, c.name, i+1)
+		oID := safeID(fmt.Sprintf("o-%s-%s-%d", prefix, c.name, i+1))
 		condExpr := "NULL"
 		if o.condExpr != "" {
 			condExpr = fmt.Sprintf("'%s'", escape(o.condExpr))
@@ -641,7 +642,7 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 
 	// Guard oracle (for iteration cells with recur until GUARD)
 	if c.guard != "" {
-		gID := fmt.Sprintf("o-%s-%s-guard", prefix, c.name)
+		gID := safeID(fmt.Sprintf("o-%s-%s-guard", prefix, c.name))
 		sb.WriteString(fmt.Sprintf(
 			"INSERT INTO oracles (id, cell_id, oracle_type, assertion, condition_expr) VALUES ('%s', '%s', 'deterministic', 'guard: %s', 'guard:%s');\n",
 			escape(gID), escape(cellID), escape(c.guard), escape(c.guard)))
@@ -753,6 +754,17 @@ func writeJudgeCells(sb *strings.Builder, programID, prefix string, c parsedCell
 		}
 		writeCell(sb, programID, prefix, judge)
 	}
+}
+
+// safeID truncates IDs that exceed VARCHAR(64) by hashing the overflow.
+func safeID(id string) string {
+	if len(id) <= 64 {
+		return id
+	}
+	// Keep a readable prefix + hash suffix
+	h := fmt.Sprintf("%x", sha256.Sum256([]byte(id)))
+	prefix := id[:48]
+	return prefix + "-" + h[:15]
 }
 
 func escape(s string) string {

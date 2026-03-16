@@ -1,0 +1,142 @@
+-- Incident Response Pipeline
+-- Models an on-call incident investigation. Multiple parallel
+-- investigation threads feed into a synthesis. A remediation
+-- plan is reviewed until approved. This is genuinely hard to
+-- express as sequential beads — the parallel investigation +
+-- guarded iteration + gather is the sweet spot for Cell.
+
+cell incident
+  yield description = "Dolt server returning 'database not found: retort' intermittently. Affects ct pour and ct run. Server shows as running (PID alive, port open). Occurs after ~30 minutes of inactivity."
+  yield severity = "P2"
+
+cell triage
+  given incident.description
+  given incident.severity
+  yield category
+  yield initial_hypothesis
+  yield investigation_plan
+  ---
+  Triage this incident: «description» (severity: «severity»)
+
+  Classify the category (data loss, connectivity, performance, config, bug).
+  Form an initial hypothesis about root cause.
+  Plan 3 parallel investigation threads.
+  ---
+  check category is not empty
+
+cell investigate-logs (stem)
+  given incident.description
+  given triage.investigation_plan
+  yield findings
+  ---
+  Investigation thread: LOG ANALYSIS
+
+  Check Dolt server logs, system logs, and any error output related to «description».
+  Look for: error patterns before the failure, memory/disk warnings, connection timeouts.
+
+  Use bash to check: journalctl, dolt server stderr, /tmp/*.log files.
+  Report concrete findings with timestamps.
+  ---
+  check findings is not empty
+
+cell investigate-state (stem)
+  given incident.description
+  given triage.investigation_plan
+  yield findings
+  ---
+  Investigation thread: STATE INSPECTION
+
+  Check the current state of the Dolt server and retort database:
+  - Is the database listed in SHOW DATABASES?
+  - What's the disk usage of .dolt-data/?
+  - Are there orphan test databases?
+  - What's the connection count?
+
+  Use bash to run: gt dolt status, dolt sql queries, ls -la on data dirs.
+  Report concrete findings.
+  ---
+  check findings is not empty
+
+cell investigate-repro (stem)
+  given incident.description
+  given triage.investigation_plan
+  yield findings
+  ---
+  Investigation thread: REPRODUCTION
+
+  Try to reproduce the issue:
+  1. Note current state (is retort visible now?)
+  2. Run ct pour and ct run — do they work?
+  3. Wait or simulate inactivity
+  4. Check again
+
+  Report: reproducible (yes/no), conditions, timing.
+  ---
+  check findings is not empty
+
+cell root-cause
+  given triage.initial_hypothesis
+  given investigate-logs.findings
+  given investigate-state.findings
+  given investigate-repro.findings
+  yield analysis
+  yield confirmed_cause
+  yield confidence
+  ---
+  Synthesize all investigation findings:
+  - Logs: «investigate-logs.findings»
+  - State: «investigate-state.findings»
+  - Repro: «investigate-repro.findings»
+
+  Against the initial hypothesis: «initial_hypothesis»
+
+  Determine root cause with confidence level (HIGH/MEDIUM/LOW).
+  If the hypothesis was wrong, explain what the actual cause is.
+  ---
+  check~ analysis addresses all three investigation threads
+
+cell remediation (stem)
+  given root-cause.confirmed_cause
+  given root-cause.confidence
+  given incident.severity
+  yield plan
+  yield approved
+  recur until approved = "APPROVED" (max 3)
+  ---
+  Write a remediation plan for: «confirmed_cause» (confidence: «confidence», severity: «severity»)
+
+  Include:
+  1. Immediate mitigation (stop the bleeding)
+  2. Root cause fix (prevent recurrence)
+  3. Verification steps (how to confirm it's fixed)
+  4. Monitoring (how to detect if it happens again)
+
+  Be specific — include exact commands, config changes, code patches.
+
+  Self-review: is this plan safe to execute? Could it make things worse?
+  Return APPROVED or NEEDS_REVISION.
+  ---
+  check plan is not empty
+
+cell postmortem
+  given incident.description
+  given incident.severity
+  given root-cause.analysis
+  given root-cause.confirmed_cause
+  given remediation.plan
+  yield document
+  ---
+  Write a postmortem document:
+
+  ## Incident Summary
+  ## Timeline
+  ## Root Cause
+  ## Impact
+  ## Remediation
+  ## Lessons Learned
+  ## Action Items
+
+  Keep it factual. No blame. Focus on systemic improvements.
+  ---
+  check document is not empty
+  check~ document includes specific action items with owners

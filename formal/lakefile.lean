@@ -9,6 +9,9 @@ lean_lib StemCell
 
 lean_lib Claims
 
-lean_lib Retort
+lean_lib Core
+
+lean_lib Retort where
+  roots := #[`Retort]
 
 lean_lib Denotational

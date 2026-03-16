@@ -1,0 +1,77 @@
+-- Code Audit Pipeline
+-- A multi-stage code review that would be hard to express as beads.
+-- The DAG structure ensures each stage sees only what it needs,
+-- and judges independently verify each stage's output.
+
+cell target
+  yield repo = "doltcell/crew/helix"
+  yield files = "cmd/ct/main.go, cmd/ct/parse.go, schema/retort-init.sql"
+
+cell inventory
+  given target.repo
+  given target.files
+  yield summary
+  yield hotspots
+  yield loc_estimate
+  ---
+  You have access to the filesystem. Read the files listed in «files» from the repo at «repo».
+
+  For each file, report:
+  - File path and approximate line count
+  - Primary responsibility (what does this file do?)
+  - Top 3 complexity hotspots (functions/blocks that are hardest to understand)
+
+  Return a structured summary, then a separate list of hotspots ranked by complexity.
+  ---
+  check summary is not empty
+
+cell security-scan
+  given target.files
+  given inventory.hotspots
+  yield findings
+  ---
+  Review the hotspots identified in «hotspots» for security issues. Focus on:
+  1. SQL injection (string concatenation in queries)
+  2. Path traversal (user-controlled file paths)
+  3. Command injection (shell execution with user input)
+  4. Information disclosure (error messages leaking internals)
+
+  For each finding: severity (HIGH/MEDIUM/LOW), location (file:line), description, remediation.
+  Return as a structured list. If no issues found, explain why the code is safe.
+  ---
+  check findings is not empty
+  check~ findings addresses all hotspot locations, not just a subset
+
+cell architecture-review
+  given inventory.summary
+  given inventory.loc_estimate
+  yield assessment
+  ---
+  Based on the codebase summary «summary» (approximately «loc_estimate» lines):
+
+  1. Is the architecture appropriate for the scale?
+  2. Are responsibilities well-separated?
+  3. What are the coupling risks?
+  4. What would break if the codebase doubled in size?
+
+  Be specific — reference actual files and functions from the summary.
+  ---
+  check~ assessment provides actionable recommendations, not vague advice
+
+cell synthesize
+  given security-scan.findings
+  given architecture-review.assessment
+  yield report
+  ---
+  Combine the security findings «findings» and architecture assessment «assessment» into a single audit report.
+
+  Structure:
+  ## Executive Summary (3 sentences)
+  ## Critical Findings (security issues, if any)
+  ## Architecture Concerns
+  ## Recommendations (prioritized, actionable)
+
+  Keep it under 500 words. Every recommendation must reference a specific file or function.
+  ---
+  check report is not empty
+  check~ report is actionable and references specific code locations

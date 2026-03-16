@@ -1,0 +1,89 @@
+-- Design Document Generator
+-- Takes a feature request and produces a full design doc through
+-- iterative research, drafting, and review. This pipeline is hard
+-- to express in beads because it has conditional iteration (refine
+-- until the review passes) and parallel research threads.
+
+cell request
+  yield feature = "Add a ct watch command that shows a live TUI dashboard of all programs and their cell states, updating every 2 seconds"
+  yield constraints = "Must use bubbletea v2. Must handle 100+ cells without lag. Must show frozen yields inline."
+
+cell research (stem)
+  given request.feature
+  given request.constraints
+  yield prior_art
+  yield api_surface
+  yield risks
+  recur (max 3)
+  ---
+  Research «feature» with constraints «constraints».
+
+  Investigate:
+  1. Prior art — what existing tools do something similar? (ct status, ct watch already exist partially)
+  2. API surface — what bubbletea components are needed? (viewport, table, spinner)
+  3. Technical risks — what could go wrong? (Dolt query latency, terminal rendering, large cell bodies)
+
+  Each iteration should cover a different angle. Don't repeat previous findings.
+  ---
+  check prior_art is not empty
+
+cell draft (stem)
+  given request.feature
+  given request.constraints
+  given research[*].prior_art
+  given research[*].risks
+  yield doc
+  yield sections
+  ---
+  Write a design document for «feature».
+
+  Use the research findings to inform the design:
+  Prior art: «prior_art»
+  Risks: «risks»
+
+  Structure:
+  ## Problem Statement
+  ## Proposed Solution
+  ## Architecture
+  ## Data Flow
+  ## Error Handling
+  ## Testing Strategy
+  ## Open Questions
+
+  Be specific — include function signatures, data structures, and bubbletea model types.
+  ---
+  check doc is not empty
+
+cell review (stem)
+  given draft.doc
+  given request.constraints
+  yield verdict
+  yield feedback
+  recur until verdict = "APPROVED" (max 3)
+  ---
+  Review this design document against the constraints «constraints»:
+
+  «doc»
+
+  Check:
+  1. Does it address all constraints?
+  2. Are the data structures concrete enough to implement?
+  3. Is the error handling complete?
+  4. Is the testing strategy realistic?
+
+  If issues found, explain what needs to change.
+  Return APPROVED or NEEDS_REVISION on the first line, then detailed feedback.
+  ---
+
+cell final
+  given draft.doc
+  given review.feedback
+  given review.verdict
+  yield document
+  ---
+  Produce the final design document. Start from «doc», incorporate the review feedback «feedback» (verdict: «verdict»).
+
+  If the review approved it, clean up formatting and return it.
+  If the review had revisions, apply them and note what changed.
+  ---
+  check document is not empty

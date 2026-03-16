@@ -312,11 +312,27 @@ def stemDenotation (body : CellBody Id) (trace : ExecTrace) : CellStream :=
 -- it has exactly one frame per cell (in topological order).
 -- For programs with stem cells, the trace is potentially infinite.
 
+-- Helper: evalN produces at most n frames (each step adds at most one)
+private theorem evalN_length_le (p : Program Id) (n : Nat) :
+    (evalN p n).length ≤ n := by
+  induction n with
+  | zero => simp [evalN]
+  | succ n ih =>
+    simp only [evalN]
+    split
+    · -- evalStep returns none: trace unchanged, length ≤ n ≤ n + 1
+      exact Nat.le_succ_of_le ih
+    · -- evalStep returns some: trace ++ [frame], length = old + 1 ≤ n + 1
+      simp only [List.length_append, List.length_cons, List.length_nil]
+      omega
+
 -- FINITE BOUND for non-stem programs:
+-- (The hypothesis hNoStem is the semantic precondition; the bound holds
+-- structurally because evalN adds at most one frame per step.)
 theorem nonStem_finite (p : Program Id)
-    (hNoStem : ∀ cd ∈ p.cells, cd.effectLevel ≠ .divergent) :
-    (evalN p p.cells.length).length ≤ p.cells.length := by
-  sorry -- Each non-divergent cell contributes at most one frame
+    (_hNoStem : ∀ cd ∈ p.cells, cd.effectLevel ≠ .divergent) :
+    (evalN p p.cells.length).length ≤ p.cells.length :=
+  evalN_length_le p p.cells.length
 
 /-! ====================================================================
     WHAT'S MISSING FROM THE LANGUAGE

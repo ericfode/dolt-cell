@@ -692,6 +692,454 @@ theorem freeze_preserves_claimMutex (r : Retort) (fd : FreezeData)
   exact hWF c1 c2 hc1.1 hc2.1 hSameFrame
 
 /-! ====================================================================
+    PROOFS: Remaining invariant preservation (I2, I3, I4, I5, I7)
+    ==================================================================== -/
+
+/-! I2: framesUnique preservation -/
+
+-- Precondition: poured frames don't conflict with existing frames on (cell, gen),
+-- and are internally unique on (cell, gen).
+def pourFramesUnique (r : Retort) (pd : PourData) : Prop :=
+  -- New frames don't conflict with existing
+  (∀ nf ∈ pd.frames, ∀ ef ∈ r.frames,
+    nf.cellName = ef.cellName → nf.generation = ef.generation → nf = ef) ∧
+  -- New frames are internally unique
+  (∀ f1 f2, f1 ∈ pd.frames → f2 ∈ pd.frames →
+    f1.cellName = f2.cellName → f1.generation = f2.generation → f1 = f2)
+
+-- Precondition: created frame doesn't conflict with existing frames on (cell, gen).
+def createFrameUnique (r : Retort) (cfd : CreateFrameData) : Prop :=
+  ∀ ef ∈ r.frames,
+    cfd.frame.cellName = ef.cellName → cfd.frame.generation = ef.generation → cfd.frame = ef
+
+-- Pour preserves framesUnique when poured frames are compatible.
+theorem pour_preserves_framesUnique (r : Retort) (pd : PourData)
+    (hWF : framesUnique r)
+    (hCompat : pourFramesUnique r pd) :
+    framesUnique (applyOp r (.pour pd)) := by
+  unfold framesUnique applyOp at *
+  simp only
+  intro f1 f2 hf1 hf2 hCell hGen
+  rw [List.mem_append] at hf1 hf2
+  cases hf1 with
+  | inl hf1L =>
+    cases hf2 with
+    | inl hf2L => exact hWF f1 f2 hf1L hf2L hCell hGen
+    | inr hf2R => exact (hCompat.1 f2 hf2R f1 hf1L hCell.symm hGen.symm).symm
+  | inr hf1R =>
+    cases hf2 with
+    | inl hf2L => exact hCompat.1 f1 hf1R f2 hf2L hCell hGen
+    | inr hf2R => exact hCompat.2 f1 f2 hf1R hf2R hCell hGen
+
+-- CreateFrame preserves framesUnique when the new frame is compatible.
+theorem createFrame_preserves_framesUnique (r : Retort) (cfd : CreateFrameData)
+    (hWF : framesUnique r)
+    (hCompat : createFrameUnique r cfd) :
+    framesUnique (applyOp r (.createFrame cfd)) := by
+  unfold framesUnique applyOp at *
+  simp only
+  intro f1 f2 hf1 hf2 hCell hGen
+  rw [List.mem_append] at hf1 hf2
+  cases hf1 with
+  | inl hf1L =>
+    cases hf2 with
+    | inl hf2L => exact hWF f1 f2 hf1L hf2L hCell hGen
+    | inr hf2R =>
+      simp at hf2R
+      subst hf2R
+      exact (hCompat f1 hf1L hCell.symm hGen.symm).symm
+  | inr hf1R =>
+    cases hf2 with
+    | inl hf2L =>
+      simp at hf1R
+      subst hf1R
+      exact hCompat f2 hf2L hCell hGen
+    | inr hf2R =>
+      simp at hf1R hf2R
+      rw [hf1R, hf2R]
+
+-- Non-frame-adding operations trivially preserve framesUnique.
+theorem claim_preserves_framesUnique (r : Retort) (cd : ClaimData)
+    (hWF : framesUnique r) :
+    framesUnique (applyOp r (.claim cd)) := by
+  unfold framesUnique applyOp at *; simp only; exact hWF
+
+theorem freeze_preserves_framesUnique (r : Retort) (fd : FreezeData)
+    (hWF : framesUnique r) :
+    framesUnique (applyOp r (.freeze fd)) := by
+  unfold framesUnique applyOp at *; simp only; exact hWF
+
+theorem release_preserves_framesUnique (r : Retort) (rd : ReleaseData)
+    (hWF : framesUnique r) :
+    framesUnique (applyOp r (.release rd)) := by
+  unfold framesUnique applyOp at *; simp only; exact hWF
+
+/-! I3: yieldsWellFormed preservation -/
+
+-- Freeze adds yields. The freezeValid precondition ensures all new yields
+-- reference fd.frameId, and the frame must exist (it's claimed).
+-- We need: the claimed frame exists in r.frames.
+def freezeFrameExists (r : Retort) (fd : FreezeData) : Prop :=
+  ∃ f ∈ r.frames, f.id = fd.frameId
+
+theorem freeze_preserves_yieldsWellFormed (r : Retort) (fd : FreezeData)
+    (hWF : yieldsWellFormed r)
+    (hValid : freezeValid r fd)
+    (hExists : freezeFrameExists r fd) :
+    yieldsWellFormed (applyOp r (.freeze fd)) := by
+  unfold yieldsWellFormed applyOp at *
+  simp only
+  intro y hy
+  rw [List.mem_append] at hy
+  cases hy with
+  | inl hyOld =>
+    -- Old yield: frame still exists (frames unchanged by freeze)
+    obtain ⟨f, hf, hfid⟩ := hWF y hyOld
+    exact ⟨f, hf, hfid⟩
+  | inr hyNew =>
+    -- New yield from this freeze: its frameId = fd.frameId (by freezeValid)
+    unfold freezeValid at hValid
+    have hAll := hValid.2.1
+    rw [List.all_eq_true] at hAll
+    have hBeq := hAll y hyNew
+    simp at hBeq
+    obtain ⟨f, hf, hfid⟩ := hExists
+    exact ⟨f, hf, hBeq ▸ hfid⟩
+
+-- Non-yield-adding operations trivially preserve yieldsWellFormed.
+-- (pour adds frames but not yields, claim/release/createFrame don't add yields)
+theorem pour_preserves_yieldsWellFormed (r : Retort) (pd : PourData)
+    (hWF : yieldsWellFormed r) :
+    yieldsWellFormed (applyOp r (.pour pd)) := by
+  unfold yieldsWellFormed applyOp at *
+  simp only
+  intro y hy
+  obtain ⟨f, hf, hfid⟩ := hWF y hy
+  exact ⟨f, List.mem_append_left _ hf, hfid⟩
+
+theorem claim_preserves_yieldsWellFormed (r : Retort) (cd : ClaimData)
+    (hWF : yieldsWellFormed r) :
+    yieldsWellFormed (applyOp r (.claim cd)) := by
+  unfold yieldsWellFormed applyOp at *; simp only; exact hWF
+
+theorem release_preserves_yieldsWellFormed (r : Retort) (rd : ReleaseData)
+    (hWF : yieldsWellFormed r) :
+    yieldsWellFormed (applyOp r (.release rd)) := by
+  unfold yieldsWellFormed applyOp at *; simp only; exact hWF
+
+theorem createFrame_preserves_yieldsWellFormed (r : Retort) (cfd : CreateFrameData)
+    (hWF : yieldsWellFormed r) :
+    yieldsWellFormed (applyOp r (.createFrame cfd)) := by
+  unfold yieldsWellFormed applyOp at *
+  simp only
+  intro y hy
+  obtain ⟨f, hf, hfid⟩ := hWF y hy
+  exact ⟨f, List.mem_append_left _ hf, hfid⟩
+
+/-! I4: bindingsWellFormed preservation -/
+
+-- Freeze adds bindings. freezeValid ensures consumer = fd.frameId.
+-- We also need producer frames to exist: freezeBindingsWitnessed guarantees
+-- a yield exists for each producer, and yieldsWellFormed ensures those
+-- yields reference existing frames. But for a direct proof, we ask that
+-- the producer frames exist in r.frames.
+def freezeBindingsRefFrames (r : Retort) (fd : FreezeData) : Prop :=
+  ∀ b ∈ fd.bindings,
+    (∃ f ∈ r.frames, f.id = b.producerFrame)
+
+theorem freeze_preserves_bindingsWellFormed (r : Retort) (fd : FreezeData)
+    (hWF : bindingsWellFormed r)
+    (hValid : freezeValid r fd)
+    (hFrameExists : freezeFrameExists r fd)
+    (hProducers : freezeBindingsRefFrames r fd) :
+    bindingsWellFormed (applyOp r (.freeze fd)) := by
+  unfold bindingsWellFormed applyOp at *
+  simp only
+  intro b hb
+  rw [List.mem_append] at hb
+  cases hb with
+  | inl hbOld =>
+    obtain ⟨⟨fc, hfc, hfcid⟩, ⟨fp, hfp, hfpid⟩⟩ := hWF b hbOld
+    exact ⟨⟨fc, hfc, hfcid⟩, ⟨fp, hfp, hfpid⟩⟩
+  | inr hbNew =>
+    constructor
+    · -- Consumer frame exists: b.consumerFrame = fd.frameId (by freezeValid)
+      unfold freezeValid at hValid
+      have hAll := hValid.2.2
+      rw [List.all_eq_true] at hAll
+      have hBeq := hAll b hbNew
+      simp at hBeq
+      obtain ⟨f, hf, hfid⟩ := hFrameExists
+      exact ⟨f, hf, hBeq ▸ hfid⟩
+    · -- Producer frame exists: by freezeBindingsRefFrames
+      exact hProducers b hbNew
+
+-- Non-binding-adding operations trivially preserve bindingsWellFormed.
+theorem pour_preserves_bindingsWellFormed (r : Retort) (pd : PourData)
+    (hWF : bindingsWellFormed r) :
+    bindingsWellFormed (applyOp r (.pour pd)) := by
+  unfold bindingsWellFormed applyOp at *
+  simp only
+  intro b hb
+  obtain ⟨⟨fc, hfc, hfcid⟩, ⟨fp, hfp, hfpid⟩⟩ := hWF b hb
+  exact ⟨⟨fc, List.mem_append_left _ hfc, hfcid⟩, ⟨fp, List.mem_append_left _ hfp, hfpid⟩⟩
+
+theorem claim_preserves_bindingsWellFormed (r : Retort) (cd : ClaimData)
+    (hWF : bindingsWellFormed r) :
+    bindingsWellFormed (applyOp r (.claim cd)) := by
+  unfold bindingsWellFormed applyOp at *; simp only; exact hWF
+
+theorem release_preserves_bindingsWellFormed (r : Retort) (rd : ReleaseData)
+    (hWF : bindingsWellFormed r) :
+    bindingsWellFormed (applyOp r (.release rd)) := by
+  unfold bindingsWellFormed applyOp at *; simp only; exact hWF
+
+theorem createFrame_preserves_bindingsWellFormed (r : Retort) (cfd : CreateFrameData)
+    (hWF : bindingsWellFormed r) :
+    bindingsWellFormed (applyOp r (.createFrame cfd)) := by
+  unfold bindingsWellFormed applyOp at *
+  simp only
+  intro b hb
+  obtain ⟨⟨fc, hfc, hfcid⟩, ⟨fp, hfp, hfpid⟩⟩ := hWF b hb
+  exact ⟨⟨fc, List.mem_append_left _ hfc, hfcid⟩, ⟨fp, List.mem_append_left _ hfp, hfpid⟩⟩
+
+/-! I5: claimsWellFormed preservation -/
+
+-- Claim adds one claim. claimValid ensures the frame exists.
+theorem claim_preserves_claimsWellFormed (r : Retort) (cd : ClaimData)
+    (hWF : claimsWellFormed r)
+    (hValid : claimValid r cd) :
+    claimsWellFormed (applyOp r (.claim cd)) := by
+  unfold claimsWellFormed applyOp at *
+  simp only
+  intro c hc
+  rw [List.mem_append] at hc
+  cases hc with
+  | inl hcOld => exact hWF c hcOld
+  | inr hcNew =>
+    simp at hcNew
+    rw [hcNew]
+    unfold claimValid at hValid
+    obtain ⟨⟨f, hf, hfid, _⟩, _⟩ := hValid
+    exact ⟨f, hf, hfid⟩
+
+-- Freeze removes claims via filter: subset of original claims.
+theorem freeze_preserves_claimsWellFormed (r : Retort) (fd : FreezeData)
+    (hWF : claimsWellFormed r) :
+    claimsWellFormed (applyOp r (.freeze fd)) := by
+  unfold claimsWellFormed applyOp at *
+  simp only
+  intro c hc
+  rw [List.mem_filter] at hc
+  exact hWF c hc.1
+
+-- Release removes claims via filter.
+theorem release_preserves_claimsWellFormed (r : Retort) (rd : ReleaseData)
+    (hWF : claimsWellFormed r) :
+    claimsWellFormed (applyOp r (.release rd)) := by
+  unfold claimsWellFormed applyOp at *
+  simp only
+  intro c hc
+  rw [List.mem_filter] at hc
+  exact hWF c hc.1
+
+-- Pour doesn't change claims; frames grow so references still valid.
+theorem pour_preserves_claimsWellFormed (r : Retort) (pd : PourData)
+    (hWF : claimsWellFormed r) :
+    claimsWellFormed (applyOp r (.pour pd)) := by
+  unfold claimsWellFormed applyOp at *
+  simp only
+  intro c hc
+  obtain ⟨f, hf, hfid⟩ := hWF c hc
+  exact ⟨f, List.mem_append_left _ hf, hfid⟩
+
+-- CreateFrame doesn't change claims; frames grow.
+theorem createFrame_preserves_claimsWellFormed (r : Retort) (cfd : CreateFrameData)
+    (hWF : claimsWellFormed r) :
+    claimsWellFormed (applyOp r (.createFrame cfd)) := by
+  unfold claimsWellFormed applyOp at *
+  simp only
+  intro c hc
+  obtain ⟨f, hf, hfid⟩ := hWF c hc
+  exact ⟨f, List.mem_append_left _ hf, hfid⟩
+
+/-! I7: yieldUnique preservation -/
+
+-- Precondition: freeze yields are internally unique (no duplicate frame/field pairs)
+-- and don't conflict with existing yields.
+def freezeYieldsUnique (r : Retort) (fd : FreezeData) : Prop :=
+  -- New yields are internally unique on (frameId, field)
+  (∀ y1 y2, y1 ∈ fd.yields → y2 ∈ fd.yields →
+    y1.frameId = y2.frameId → y1.field = y2.field → y1.value = y2.value) ∧
+  -- New yields don't conflict with existing yields
+  (∀ ny ∈ fd.yields, ∀ ey ∈ r.yields,
+    ny.frameId = ey.frameId → ny.field = ey.field → ny.value = ey.value)
+
+theorem freeze_preserves_yieldUnique (r : Retort) (fd : FreezeData)
+    (hWF : yieldUnique r)
+    (hFresh : freezeYieldsUnique r fd) :
+    yieldUnique (applyOp r (.freeze fd)) := by
+  unfold yieldUnique applyOp at *
+  simp only
+  intro y1 y2 hy1 hy2 hfid hfield
+  rw [List.mem_append] at hy1 hy2
+  cases hy1 with
+  | inl hy1Old =>
+    cases hy2 with
+    | inl hy2Old => exact hWF y1 y2 hy1Old hy2Old hfid hfield
+    | inr hy2New => exact (hFresh.2 y2 hy2New y1 hy1Old hfid.symm hfield.symm).symm
+  | inr hy1New =>
+    cases hy2 with
+    | inl hy2Old => exact hFresh.2 y1 hy1New y2 hy2Old hfid hfield
+    | inr hy2New => exact hFresh.1 y1 y2 hy1New hy2New hfid hfield
+
+-- Non-yield-adding operations trivially preserve yieldUnique.
+theorem pour_preserves_yieldUnique (r : Retort) (pd : PourData)
+    (hWF : yieldUnique r) :
+    yieldUnique (applyOp r (.pour pd)) := by
+  unfold yieldUnique applyOp at *; simp only; exact hWF
+
+theorem claim_preserves_yieldUnique (r : Retort) (cd : ClaimData)
+    (hWF : yieldUnique r) :
+    yieldUnique (applyOp r (.claim cd)) := by
+  unfold yieldUnique applyOp at *; simp only; exact hWF
+
+theorem release_preserves_yieldUnique (r : Retort) (rd : ReleaseData)
+    (hWF : yieldUnique r) :
+    yieldUnique (applyOp r (.release rd)) := by
+  unfold yieldUnique applyOp at *; simp only; exact hWF
+
+theorem createFrame_preserves_yieldUnique (r : Retort) (cfd : CreateFrameData)
+    (hWF : yieldUnique r) :
+    yieldUnique (applyOp r (.createFrame cfd)) := by
+  unfold yieldUnique applyOp at *; simp only; exact hWF
+
+/-! ====================================================================
+    POSTCONDITION THEOREMS
+    ==================================================================== -/
+
+-- Claim actually adds a claim (claims list grows by exactly one).
+theorem claim_adds_claim (r : Retort) (cd : ClaimData) :
+    (applyOp r (.claim cd)).claims.length = r.claims.length + 1 := by
+  simp [applyOp, List.length_append]
+
+-- Freeze actually removes the claim: if a claim existed for that frame,
+-- the resulting claims list is strictly shorter.
+-- Helper: List.filter removing at least one element decreases length.
+private theorem filter_remove_decreases {α : Type} (p : α → Bool) (l : List α) (x : α)
+    (hx : x ∈ l) (hpx : p x = false) :
+    (l.filter p).length < l.length := by
+  induction l generalizing x with
+  | nil => simp at hx
+  | cons a t ih =>
+    cases hpa : p a with
+    | false =>
+      simp [List.filter, hpa]
+      exact Nat.lt_succ_of_le (List.length_filter_le p t)
+    | true =>
+      rcases List.mem_cons.mp hx with heq | ht
+      · subst heq; simp [hpx] at hpa
+      · have ihResult := ih x ht hpx
+        show (List.filter p (a :: t)).length < (a :: t).length
+        rw [List.filter_cons, if_pos hpa]
+        simp only [List.length_cons]
+        omega
+
+theorem freeze_removes_claim (r : Retort) (fd : FreezeData)
+    (hClaimed : (r.frameClaim fd.frameId).isSome) :
+    (applyOp r (.freeze fd)).claims.length < r.claims.length := by
+  unfold applyOp
+  simp only
+  unfold Retort.frameClaim at hClaimed
+  have hSome := List.find?_isSome.mp hClaimed
+  obtain ⟨c, hc, hpc⟩ := hSome
+  apply filter_remove_decreases _ r.claims c hc
+  have hEq : c.frameId = fd.frameId := eq_of_beq hpc
+  simp [hEq]
+
+-- CreateFrame adds exactly one frame, and that frame is in the result.
+theorem createFrame_adds_frame (r : Retort) (cfd : CreateFrameData) :
+    cfd.frame ∈ (applyOp r (.createFrame cfd)).frames := by
+  unfold applyOp
+  simp only
+  exact List.mem_append_right _ (List.mem_singleton.mpr rfl)
+
+/-! ====================================================================
+    COMPOSITE WELL-FORMEDNESS PRESERVATION
+    ==================================================================== -/
+
+-- Aggregate precondition: what makes an operation valid for wellFormed preservation.
+def validOp (r : Retort) : RetortOp → Prop
+  | .pour pd =>
+    pourValid r pd ∧ pourInternallyUnique r pd ∧ pourFramesUnique r pd
+  | .claim cd =>
+    claimValid r cd
+  | .freeze fd =>
+    freezeValid r fd ∧ freezeBindingsWitnessed r fd ∧
+    freezeFrameExists r fd ∧ freezeBindingsRefFrames r fd ∧
+    freezeYieldsUnique r fd
+  | .release _ => True
+  | .createFrame cfd => createFrameUnique r cfd
+
+-- The master preservation theorem: any valid operation preserves wellFormed.
+theorem wellFormed_preserved (r : Retort) (op : RetortOp)
+    (hWF : wellFormed r)
+    (hValid : validOp r op) :
+    wellFormed (applyOp r op) := by
+  unfold wellFormed at *
+  obtain ⟨hI1, hI2, hI3, hI4, hI5, hI6, hI7⟩ := hWF
+  cases op with
+  | pour pd =>
+    unfold validOp at hValid
+    obtain ⟨hPourValid, hPourInternal, hPourFrames⟩ := hValid
+    exact ⟨pour_preserves_cellNamesUnique r pd hI1 hPourValid hPourInternal,
+           pour_preserves_framesUnique r pd hI2 hPourFrames,
+           pour_preserves_yieldsWellFormed r pd hI3,
+           pour_preserves_bindingsWellFormed r pd hI4,
+           pour_preserves_claimsWellFormed r pd hI5,
+           -- pour doesn't add claims, claimMutex trivially preserved
+           (by unfold claimMutex applyOp at *; simp only; exact hI6),
+           pour_preserves_yieldUnique r pd hI7⟩
+  | claim cd =>
+    unfold validOp at hValid
+    exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
+           claim_preserves_framesUnique r cd hI2,
+           claim_preserves_yieldsWellFormed r cd hI3,
+           claim_preserves_bindingsWellFormed r cd hI4,
+           claim_preserves_claimsWellFormed r cd hI5 hValid,
+           claim_preserves_claimMutex r cd hI6 hValid,
+           claim_preserves_yieldUnique r cd hI7⟩
+  | freeze fd =>
+    unfold validOp at hValid
+    obtain ⟨hFreezeValid, hWitnessed, hFrameExists, hProducers, hYieldsUnique⟩ := hValid
+    exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
+           freeze_preserves_framesUnique r fd hI2,
+           freeze_preserves_yieldsWellFormed r fd hI3 hFreezeValid hFrameExists,
+           freeze_preserves_bindingsWellFormed r fd hI4 hFreezeValid hFrameExists hProducers,
+           freeze_preserves_claimsWellFormed r fd hI5,
+           freeze_preserves_claimMutex r fd hI6,
+           freeze_preserves_yieldUnique r fd hI7 hYieldsUnique⟩
+  | release rd =>
+    unfold validOp at hValid
+    exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
+           release_preserves_framesUnique r rd hI2,
+           release_preserves_yieldsWellFormed r rd hI3,
+           release_preserves_bindingsWellFormed r rd hI4,
+           release_preserves_claimsWellFormed r rd hI5,
+           release_preserves_claimMutex r rd hI6,
+           release_preserves_yieldUnique r rd hI7⟩
+  | createFrame cfd =>
+    unfold validOp at hValid
+    exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
+           createFrame_preserves_framesUnique r cfd hI2 hValid,
+           createFrame_preserves_yieldsWellFormed r cfd hI3,
+           createFrame_preserves_bindingsWellFormed r cfd hI4,
+           createFrame_preserves_claimsWellFormed r cfd hI5,
+           -- createFrame doesn't change claims
+           (by unfold claimMutex applyOp at *; simp only; exact hI6),
+           createFrame_preserves_yieldUnique r cfd hI7⟩
+
+/-! ====================================================================
     PROOFS: Cells are stable after pour
     ==================================================================== -/
 
@@ -1069,22 +1517,47 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   OPERATION PRECONDITIONS:
   - pourValid: new cell (program, name) pairs don't conflict with existing
   - pourInternallyUnique: new cells among themselves are unique
+  - pourFramesUnique: new frames don't conflict on (cell, generation)
   - claimValid: frame exists, is ready, and not already claimed
   - freezeValid: frame is claimed, yields/bindings reference correct frame
   - freezeBindingsWitnessed: every binding has a matching yield
+  - freezeFrameExists: the frozen frame exists in retort
+  - freezeBindingsRefFrames: binding producer frames exist
+  - freezeYieldsUnique: new yields don't conflict on (frame, field)
+  - createFrameUnique: new frame doesn't conflict on (cell, generation)
+  - validOp: composite precondition dispatching per operation
 
   PROVEN PROPERTIES:
+  Append-only:
   - all_ops_appendOnly: every operation preserves append-only
   - cells_stable_non_pour: cell defs never change after pour
   - givens_stable_non_pour: givens never change after pour
   - evalCycle_appendOnly: full eval cycles preserve append-only
   - always_appendOnly: □appendOnly on valid traces
   - data_persists: data from time T exists at all T' > T (transitive)
-  - pour_preserves_cellNamesUnique: valid pour preserves I1
-  - non_pour_preserves_cellNamesUnique: non-pour ops preserve I1
-  - claim_preserves_claimMutex: valid claim preserves I6
-  - freeze_preserves_claimMutex: freeze preserves I6 (filter only removes)
-  - release_preserves_claimMutex: release preserves I6 (filter only removes)
+
+  Invariant preservation (all 7 invariants, all 5 operations):
+  - I1 cellNamesUnique: pour (with precond), non-pour (trivial)
+  - I2 framesUnique: pour, createFrame (with precond), others (trivial)
+  - I3 yieldsWellFormed: freeze (with precond), pour/createFrame (frames grow),
+      claim/release (trivial)
+  - I4 bindingsWellFormed: freeze (with precond), pour/createFrame (frames grow),
+      claim/release (trivial)
+  - I5 claimsWellFormed: claim (with precond), freeze/release (filter),
+      pour/createFrame (frames grow)
+  - I6 claimMutex: claim (with precond), freeze/release (filter),
+      pour/createFrame (trivial)
+  - I7 yieldUnique: freeze (with precond), others (trivial)
+
+  Postconditions:
+  - claim_adds_claim: claims.length grows by 1
+  - freeze_removes_claim: claims.length strictly decreases
+  - createFrame_adds_frame: new frame is in result
+
+  Composite:
+  - wellFormed_preserved: validOp + wellFormed => wellFormed after applyOp
+
+  Monotonicity:
   - freeze_preserves_bindingsMonotone: freeze with witnessed bindings
       preserves the invariant that every binding has a matching yield
 

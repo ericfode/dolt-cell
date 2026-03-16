@@ -38,6 +38,7 @@ Usage:
   ct status <program-id>                              Show program state
   ct yields <program-id>                              Show frozen yields
   ct history <program-id>                             Show execution history
+  ct graph <program-id>                               Show DAG (dependency graph from bindings)
   ct reset <program-id>                               Reset program
 
 The piston is YOU (the LLM session using this tool) or a polecat you sling to.
@@ -137,6 +138,9 @@ func main() {
 	case "history":
 		need(args, 1, "ct history <program-id>")
 		cmdHistory(db, args[0])
+	case "graph":
+		need(args, 1, "ct graph <program-id>")
+		cmdGraph(db, args[0])
 	case "reset":
 		need(args, 1, "ct reset <program-id>")
 		cmdReset(db, args[0])
@@ -545,6 +549,85 @@ func pourExecSQL(db *sql.DB, name, sqlText string) {
 func cmdReset(db *sql.DB, progID string) {
 	resetProgram(db, progID)
 	fmt.Printf("✓ Reset %s\n", progID)
+}
+
+func cmdGraph(db *sql.DB, progID string) {
+	// Get all cells and their states
+	type cellInfo struct {
+		name, state, bodyType string
+	}
+	var cells []cellInfo
+	rows, err := db.Query(
+		"SELECT name, state, body_type FROM cells WHERE program_id = ? ORDER BY name", progID)
+	if err != nil {
+		fatal("graph: %v", err)
+	}
+	for rows.Next() {
+		var c cellInfo
+		rows.Scan(&c.name, &c.state, &c.bodyType)
+		cells = append(cells, c)
+	}
+	rows.Close()
+
+	// Get bindings
+	type edge struct {
+		from, to, field string
+	}
+	var edges []edge
+	brows, err := db.Query(`
+		SELECT cf.cell_name AS consumer, pf.cell_name AS producer, b.field_name
+		FROM bindings b
+		JOIN frames cf ON cf.id = b.consumer_frame
+		JOIN frames pf ON pf.id = b.producer_frame
+		WHERE cf.program_id = ?
+		ORDER BY cf.cell_name`, progID)
+	if err == nil {
+		for brows.Next() {
+			var e edge
+			brows.Scan(&e.to, &e.from, &e.field)
+			edges = append(edges, e)
+		}
+		brows.Close()
+	}
+
+	// If no bindings yet, fall back to givens (static DAG)
+	if len(edges) == 0 {
+		grows, _ := db.Query(`
+			SELECT c.name, g.source_cell, g.source_field
+			FROM givens g JOIN cells c ON c.id = g.cell_id
+			WHERE c.program_id = ?
+			ORDER BY c.name`, progID)
+		if grows != nil {
+			for grows.Next() {
+				var e edge
+				grows.Scan(&e.to, &e.from, &e.field)
+				edges = append(edges, e)
+			}
+			grows.Close()
+		}
+	}
+
+	// Print ASCII DAG
+	stateIcon := map[string]string{"frozen": "■", "computing": "▶", "declared": "○", "bottom": "⊥"}
+	for _, c := range cells {
+		icon := stateIcon[c.state]
+		if icon == "" {
+			icon = "?"
+		}
+		fmt.Printf("  %s %s [%s]\n", icon, c.name, c.bodyType)
+	}
+	fmt.Println()
+	for _, e := range edges {
+		fmt.Printf("  %s ──[%s]──→ %s\n", e.from, e.field, e.to)
+	}
+
+	// Print DOT format
+	fmt.Printf("\n  // Graphviz DOT:\n")
+	fmt.Printf("  // digraph %s {\n", progID)
+	for _, e := range edges {
+		fmt.Printf("  //   \"%s\" -> \"%s\" [label=\"%s\"];\n", e.from, e.to, e.field)
+	}
+	fmt.Printf("  // }\n")
 }
 
 // recordBindings writes binding edges for a frozen cell: which frames it read from.

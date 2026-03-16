@@ -41,6 +41,40 @@ structure FieldName where
   deriving Repr, DecidableEq, BEq
 
 /-! ====================================================================
+    LAWFUL BEQ INSTANCES (needed for precondition proofs)
+    ==================================================================== -/
+
+instance : LawfulBEq CellName where
+  eq_of_beq {a b} h := by
+    have : a.val = b.val := eq_of_beq (α := String) h
+    cases a; cases b; simp_all
+  rfl {a} := beq_self_eq_true a.val
+
+instance : LawfulBEq ProgramId where
+  eq_of_beq {a b} h := by
+    have : a.val = b.val := eq_of_beq (α := String) h
+    cases a; cases b; simp_all
+  rfl {a} := beq_self_eq_true a.val
+
+instance : LawfulBEq FrameId where
+  eq_of_beq {a b} h := by
+    have : a.val = b.val := eq_of_beq (α := String) h
+    cases a; cases b; simp_all
+  rfl {a} := beq_self_eq_true a.val
+
+instance : LawfulBEq PistonId where
+  eq_of_beq {a b} h := by
+    have : a.val = b.val := eq_of_beq (α := String) h
+    cases a; cases b; simp_all
+  rfl {a} := beq_self_eq_true a.val
+
+instance : LawfulBEq FieldName where
+  eq_of_beq {a b} h := by
+    have : a.val = b.val := eq_of_beq (α := String) h
+    cases a; cases b; simp_all
+  rfl {a} := beq_self_eq_true a.val
+
+/-! ====================================================================
     CELL DEFINITIONS (immutable after pour)
     ==================================================================== -/
 
@@ -461,6 +495,203 @@ theorem all_ops_appendOnly (r : Retort) (op : RetortOp) :
   | createFrame cfd => exact createFrame_appendOnly r cfd
 
 /-! ====================================================================
+    OPERATION PRECONDITIONS
+    ==================================================================== -/
+
+-- Precondition: a pour is valid if new cell names don't conflict with existing
+-- ones within the same program.
+def pourValid (r : Retort) (pd : PourData) : Prop :=
+  ∀ c ∈ pd.cells, ∀ ec ∈ r.cells, c.program = ec.program → c.name ≠ ec.name
+
+-- Precondition: new cells among themselves also have unique (program, name) pairs.
+def pourInternallyUnique (_r : Retort) (pd : PourData) : Prop :=
+  ∀ c1 c2, c1 ∈ pd.cells → c2 ∈ pd.cells →
+    c1.program = c2.program → c1.name = c2.name → c1 = c2
+
+-- Precondition: a claim is valid if the frame exists, is ready, and not already claimed.
+def claimValid (r : Retort) (cd : ClaimData) : Prop :=
+  (∃ f ∈ r.frames, f.id = cd.frameId ∧ r.frameReady f) ∧
+  (r.frameClaim cd.frameId).isNone
+
+-- Precondition: a freeze is valid if the frame is currently claimed.
+def freezeValid (r : Retort) (fd : FreezeData) : Prop :=
+  (r.frameClaim fd.frameId).isSome ∧
+  -- yields reference the right frame
+  fd.yields.all (fun y => y.frameId == fd.frameId) ∧
+  -- bindings reference existing frames as consumers
+  fd.bindings.all (fun b => b.consumerFrame == fd.frameId)
+
+-- Precondition: every binding in a freeze has a matching yield in the
+-- same freeze (the piston already read from a frozen producer frame, and the
+-- yield must exist in the retort OR be produced by this freeze).
+def freezeBindingsWitnessed (r : Retort) (fd : FreezeData) : Prop :=
+  ∀ b ∈ fd.bindings,
+    ∃ y ∈ r.yields ++ fd.yields,
+      y.frameId = b.producerFrame ∧ y.field = b.givenField
+
+/-! ====================================================================
+    PROOFS: Well-formedness preservation
+    ==================================================================== -/
+
+-- Helper: membership in appended lists
+private theorem mem_append_of_mem_left {α : Type} {x : α} {l1 l2 : List α}
+    (h : x ∈ l1) : x ∈ l1 ++ l2 :=
+  List.mem_append_left l2 h
+
+private theorem mem_append_of_mem_right {α : Type} {x : α} {l1 l2 : List α}
+    (h : x ∈ l2) : x ∈ l1 ++ l2 :=
+  List.mem_append_right l1 h
+
+-- Pour preserves cellNamesUnique when the pour is valid and internally unique.
+theorem pour_preserves_cellNamesUnique (r : Retort) (pd : PourData)
+    (hWF : cellNamesUnique r)
+    (hValid : pourValid r pd)
+    (hInternal : pourInternallyUnique r pd) :
+    cellNamesUnique (applyOp r (.pour pd)) := by
+  unfold cellNamesUnique applyOp at *
+  simp only
+  intro c1 c2 hc1 hc2 hProg hName
+  -- c1 and c2 are each in r.cells ++ pd.cells
+  rw [List.mem_append] at hc1 hc2
+  cases hc1 with
+  | inl hc1L =>
+    cases hc2 with
+    | inl hc2L =>
+      -- Both from original cells: use existing wellFormedness
+      exact hWF c1 c2 hc1L hc2L hProg hName
+    | inr hc2R =>
+      -- c1 from original, c2 from new: violates pourValid
+      exfalso
+      have := hValid c2 hc2R c1 hc1L (hProg.symm)
+      exact this hName.symm
+  | inr hc1R =>
+    cases hc2 with
+    | inl hc2L =>
+      -- c1 from new, c2 from original: violates pourValid
+      exfalso
+      have := hValid c1 hc1R c2 hc2L hProg
+      exact this hName
+    | inr hc2R =>
+      -- Both from new cells: use pourInternallyUnique
+      exact hInternal c1 c2 hc1R hc2R hProg hName
+
+-- Non-pour operations trivially preserve cellNamesUnique (cells list unchanged).
+theorem non_pour_preserves_cellNamesUnique (r : Retort) (op : RetortOp)
+    (hWF : cellNamesUnique r)
+    (hNotPour : ∀ pd, op ≠ .pour pd) :
+    cellNamesUnique (applyOp r op) := by
+  -- Prove cells are unchanged by case analysis (same proof as cells_stable_non_pour)
+  have hEq : (applyOp r op).cells = r.cells := by
+    cases op with
+    | pour pd => exact absurd rfl (hNotPour pd)
+    | claim _ => rfl
+    | freeze _ => rfl
+    | release _ => rfl
+    | createFrame _ => rfl
+  unfold cellNamesUnique at *
+  intro c1 c2 h1 h2
+  have h1' : c1 ∈ r.cells := hEq ▸ h1
+  have h2' : c2 ∈ r.cells := hEq ▸ h2
+  exact hWF c1 c2 h1' h2'
+
+-- Helper: if List.find? returns none, no element satisfies the predicate.
+private theorem find?_isNone_forall_neg {α : Type} {p : α → Bool} {l : List α}
+    (h : (l.find? p).isNone = true) :
+    ∀ x ∈ l, p x ≠ true := by
+  intro x hx hpx
+  have : (l.find? p).isSome = true := by
+    rw [List.find?_isSome]
+    exact ⟨x, hx, hpx⟩
+  cases hopt : l.find? p <;> simp_all
+
+-- Claim adds exactly one entry to the claims list.  If claimValid ensures
+-- no existing claim has the same frameId, the mutex is preserved.
+theorem claim_preserves_claimMutex (r : Retort) (cd : ClaimData)
+    (hWF : claimMutex r)
+    (hValid : claimValid r cd) :
+    claimMutex (applyOp r (.claim cd)) := by
+  unfold claimMutex applyOp at *
+  simp only
+  intro c1 c2 hc1 hc2 hSameFrame
+  rw [List.mem_append] at hc1 hc2
+  -- Extract the isNone hypothesis from claimValid
+  have hNoClaim : (r.claims.find? (fun c => c.frameId == cd.frameId)).isNone = true := by
+    unfold claimValid Retort.frameClaim at hValid
+    exact hValid.2
+  have hNoPrev := find?_isNone_forall_neg hNoClaim
+  cases hc1 with
+  | inl hc1L =>
+    cases hc2 with
+    | inl hc2L =>
+      exact hWF c1 c2 hc1L hc2L hSameFrame
+    | inr hc2R =>
+      -- c1 is old, c2 is the new claim
+      exfalso
+      simp at hc2R
+      -- c2.frameId = cd.frameId
+      have hc2fid : c2.frameId = cd.frameId := by rw [hc2R]
+      -- c1.frameId = cd.frameId (via hSameFrame)
+      have hc1fid : c1.frameId = cd.frameId := hSameFrame ▸ hc2fid
+      -- But no old claim has frameId == cd.frameId
+      exact hNoPrev c1 hc1L (by rw [hc1fid]; exact beq_self_eq_true cd.frameId)
+  | inr hc1R =>
+    cases hc2 with
+    | inl hc2L =>
+      -- c1 is new, c2 is old (symmetric)
+      exfalso
+      simp at hc1R
+      have hc1fid : c1.frameId = cd.frameId := by rw [hc1R]
+      have hc2fid : c2.frameId = cd.frameId := hSameFrame.symm ▸ hc1fid
+      exact hNoPrev c2 hc2L (by rw [hc2fid]; exact beq_self_eq_true cd.frameId)
+    | inr hc2R =>
+      -- Both are the new claim
+      simp at hc1R hc2R
+      rw [hc1R, hc2R]
+
+-- Freeze preserves bindingsMonotone: newly added bindings have witnessed yields.
+theorem freeze_preserves_bindingsMonotone (r : Retort) (fd : FreezeData)
+    (hWF : bindingsMonotone r)
+    (hWitnessed : freezeBindingsWitnessed r fd) :
+    bindingsMonotone (applyOp r (.freeze fd)) := by
+  unfold bindingsMonotone applyOp at *
+  simp only
+  intro f hf b hb hConsumer
+  rw [List.mem_append] at hb
+  cases hb with
+  | inl hbOld =>
+    -- Old binding: use existing monotonicity, yields only grew
+    obtain ⟨y, hy, hfid, hfield⟩ := hWF f hf b hbOld hConsumer
+    exact ⟨y, List.mem_append_left _ hy, hfid, hfield⟩
+  | inr hbNew =>
+    -- New binding from this freeze: use freezeBindingsWitnessed
+    unfold freezeBindingsWitnessed at hWitnessed
+    obtain ⟨y, hy, hfid, hfield⟩ := hWitnessed b hbNew
+    exact ⟨y, hy, hfid, hfield⟩
+
+-- Release and createFrame trivially preserve claimMutex and bindingsMonotone,
+-- since they don't add claims or bindings (release only removes claims).
+
+-- Release preserves claimMutex (it only removes claims via filter).
+theorem release_preserves_claimMutex (r : Retort) (rd : ReleaseData)
+    (hWF : claimMutex r) :
+    claimMutex (applyOp r (.release rd)) := by
+  unfold claimMutex applyOp at *
+  simp only
+  intro c1 c2 hc1 hc2 hSameFrame
+  rw [List.mem_filter] at hc1 hc2
+  exact hWF c1 c2 hc1.1 hc2.1 hSameFrame
+
+-- Freeze preserves claimMutex (it only removes claims via filter).
+theorem freeze_preserves_claimMutex (r : Retort) (fd : FreezeData)
+    (hWF : claimMutex r) :
+    claimMutex (applyOp r (.freeze fd)) := by
+  unfold claimMutex applyOp at *
+  simp only
+  intro c1 c2 hc1 hc2 hSameFrame
+  rw [List.mem_filter] at hc1 hc2
+  exact hWF c1 c2 hc1.1 hc2.1 hSameFrame
+
+/-! ====================================================================
     PROOFS: Cells are stable after pour
     ==================================================================== -/
 
@@ -835,6 +1066,13 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   - I6: claimMutex — at most one claim per frame
   - I7: yieldUnique — each (frame, field) has at most one value
 
+  OPERATION PRECONDITIONS:
+  - pourValid: new cell (program, name) pairs don't conflict with existing
+  - pourInternallyUnique: new cells among themselves are unique
+  - claimValid: frame exists, is ready, and not already claimed
+  - freezeValid: frame is claimed, yields/bindings reference correct frame
+  - freezeBindingsWitnessed: every binding has a matching yield
+
   PROVEN PROPERTIES:
   - all_ops_appendOnly: every operation preserves append-only
   - cells_stable_non_pour: cell defs never change after pour
@@ -842,6 +1080,13 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   - evalCycle_appendOnly: full eval cycles preserve append-only
   - always_appendOnly: □appendOnly on valid traces
   - data_persists: data from time T exists at all T' > T (transitive)
+  - pour_preserves_cellNamesUnique: valid pour preserves I1
+  - non_pour_preserves_cellNamesUnique: non-pour ops preserve I1
+  - claim_preserves_claimMutex: valid claim preserves I6
+  - freeze_preserves_claimMutex: freeze preserves I6 (filter only removes)
+  - release_preserves_claimMutex: release preserves I6 (filter only removes)
+  - freeze_preserves_bindingsMonotone: freeze with witnessed bindings
+      preserves the invariant that every binding has a matching yield
 
   THE EVAL LOOP (EvalCycle):
   1. claim → adds to claims + claimLog

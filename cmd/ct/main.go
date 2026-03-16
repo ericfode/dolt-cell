@@ -393,6 +393,7 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 		}
 		var n int
 		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&n)
+		ensureFrames(db, name)
 		fmt.Printf("✓ %s: %d cells (from .sql)\n", name, n)
 		return
 	}
@@ -411,6 +412,7 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 		}
 		var n int
 		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&n)
+		ensureFrames(db, name)
 		fmt.Printf("✓ %s: %d cells (Phase B parser)\n", name, n)
 		return
 	}
@@ -545,8 +547,27 @@ func cmdReset(db *sql.DB, progID string) {
 	fmt.Printf("✓ Reset %s\n", progID)
 }
 
+// ensureFrames creates gen-0 frames for non-stem cells that don't have frames yet.
+func ensureFrames(db *sql.DB, progID string) {
+	rows, err := db.Query(
+		"SELECT id, name, body_type FROM cells WHERE program_id = ? AND body_type != 'stem'", progID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cellID, name, bodyType string
+		rows.Scan(&cellID, &name, &bodyType)
+		frameID := "f-" + cellID + "-0"
+		db.Exec(
+			"INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES (?, ?, ?, 0)",
+			frameID, name, progID)
+	}
+}
+
 func resetProgram(db *sql.DB, progID string) {
 	mustExec(db, "SET @@dolt_transaction_commit = 0")
+	// v1 tables (cell_id based)
 	for _, t := range []string{"trace", "cell_claims", "oracles", "yields", "givens", "cells"} {
 		q := fmt.Sprintf("DELETE FROM %s WHERE ", t)
 		if t == "trace" || t == "cell_claims" || t == "oracles" || t == "yields" || t == "givens" {
@@ -555,6 +576,19 @@ func resetProgram(db *sql.DB, progID string) {
 			q += "program_id = ?"
 		}
 		mustExecDB(db, q, progID)
+	}
+	// v2 tables (program_id based)
+	for _, t := range []string{"claim_log", "bindings", "frames"} {
+		q := fmt.Sprintf("DELETE FROM %s WHERE ", t)
+		if t == "bindings" {
+			q += "consumer_frame IN (SELECT id FROM frames WHERE program_id = ?)"
+		} else if t == "claim_log" {
+			q += "frame_id IN (SELECT id FROM frames WHERE program_id = ?)"
+		} else {
+			q += "program_id = ?"
+		}
+		// Use db.Exec (not mustExecDB) — these tables may not exist in older DBs
+		db.Exec(q, progID)
 	}
 	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "reset: "+progID)
 }

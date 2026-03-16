@@ -592,6 +592,14 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 		"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES ('%s', '%s', '%s', '%s', '%s', '%s');\n",
 		escape(cellID), escape(programID), escape(c.name), c.bodyType, escape(body), state))
 
+	// Frame (v2): non-stem cells get gen-0 frame at pour time
+	if c.bodyType != "stem" {
+		frameID := "f-" + cellID + "-0"
+		sb.WriteString(fmt.Sprintf(
+			"INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES ('%s', '%s', '%s', 0);\n",
+			escape(frameID), escape(c.name), escape(programID)))
+	}
+
 	// Givens
 	for _, g := range c.givens {
 		gID := fmt.Sprintf("g-%s-%s-%s-%s", prefix, c.name, g.sourceCell, g.sourceField)

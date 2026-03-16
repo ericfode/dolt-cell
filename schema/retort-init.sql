@@ -127,7 +127,46 @@ CREATE TABLE IF NOT EXISTS pistons (
 );
 
 -- ---------------------------------------------------------------------------
--- 4. Views
+-- 4. Frame model tables (v2, append-only)
+-- ---------------------------------------------------------------------------
+
+-- Frames: execution instances of cells. Append-only.
+-- Non-stem cells get one frame (gen 0) at pour time.
+-- Stem cells get frames on demand, gen incrementing.
+CREATE TABLE IF NOT EXISTS frames (
+    id          VARCHAR(64) PRIMARY KEY,
+    cell_name   VARCHAR(128) NOT NULL,
+    program_id  VARCHAR(64) NOT NULL,
+    generation  INT NOT NULL DEFAULT 0,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE INDEX idx_frames_cell_gen (program_id, cell_name, generation),
+    INDEX idx_frames_program (program_id)
+);
+
+-- Bindings: resolved given edges. Append-only.
+-- Records "consumer frame X read field F from producer frame Y".
+CREATE TABLE IF NOT EXISTS bindings (
+    id              VARCHAR(64) PRIMARY KEY,
+    consumer_frame  VARCHAR(64) NOT NULL,
+    producer_frame  VARCHAR(64) NOT NULL,
+    field_name      VARCHAR(64) NOT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_bindings_consumer (consumer_frame),
+    INDEX idx_bindings_producer (producer_frame)
+);
+
+-- Claim log: append-only audit trail for claims.
+CREATE TABLE IF NOT EXISTS claim_log (
+    id          VARCHAR(64) PRIMARY KEY,
+    frame_id    VARCHAR(64) NOT NULL,
+    piston_id   VARCHAR(255) NOT NULL,
+    action      VARCHAR(16) NOT NULL COMMENT 'claimed|released|completed|timed_out',
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_claim_log_frame (frame_id)
+);
+
+-- ---------------------------------------------------------------------------
+-- 5. Views
 -- ---------------------------------------------------------------------------
 
 -- ready_cells: cells whose ALL non-optional givens have frozen yields

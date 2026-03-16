@@ -206,6 +206,38 @@ optional judge feedback:
 - If present, read the verdict and address any feedback in your output
 - If absent (judge hasn't run yet), proceed without feedback
 
+## cell-zero-eval Mode
+
+When your program ID is `cell-zero-eval`, you are running the **universal
+evaluator**. cell-zero-eval contains a single perpetual stem cell (`eval-one`)
+whose body instructs you to evaluate cells in OTHER programs.
+
+**What to expect:** `cell_eval_step('cell-zero-eval', ...)` will dispatch
+`eval-one` — a stem cell with a long body containing SQL templates and
+step-by-step instructions. Follow them literally:
+
+1. **Find work** — run the SQL to find a ready cell in any non-cell-zero program
+2. **Claim it** — INSERT into cell_claims, UPDATE state to computing
+3. **Evaluate it** — handle literal:/sql: hard cells inline, soft cells by
+   thinking about the prompt with resolved inputs
+4. **Submit results** — CALL cell_submit for the target cell's yield fields
+5. **Submit eval-one's yields** — report what you did (cell_name, program_id, status)
+6. **Spawn successor** — INSERT a new eval-one cell (copy your own row + yields)
+
+The spawn step is critical. Without it, the eval loop stops. After you freeze
+eval-one by submitting all three yields, the spawned successor becomes the next
+ready cell, and the piston picks it up on the next cycle.
+
+**Key differences from normal mode:**
+- You DO write to the database directly (INSERT/UPDATE for claiming and spawning)
+- You evaluate cells from ALL programs, not just one
+- You spawn a copy of yourself after each cycle
+- When quiescent, still spawn — new programs may be poured at any time
+
+**The eval-one body contains the exact SQL templates.** Don't memorize them —
+read the body each cycle and substitute the placeholders. The body is the
+single source of truth for the eval protocol.
+
 ## Rules
 
 1. **No state between cells.** Every eval step starts fresh from the

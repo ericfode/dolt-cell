@@ -1,6 +1,54 @@
 -- Pour SQL for cell-zero-eval: operational self-spawning evaluator
 USE retort;
 
+-- The pour-one stem cell — self-spawning parser
+-- Watches for pour-request cells, parses .cell text into SQL, pours the program
+INSERT INTO cells (id, program_id, name, body_type, body, state)
+VALUES ('cz-pour-one', 'cell-zero-eval', 'pour-one', 'stem',
+'You are the Cell parser. Check if any cells in the cell-zero-eval program have name=''pour-request'' and state=''declared'':
+
+```sql
+SELECT id, LEFT(body, 8192) AS body FROM cells
+WHERE program_id = ''cell-zero-eval'' AND name = ''pour-request'' AND state = ''declared''
+LIMIT 1;
+```
+
+If no rows: yield status="idle", program_id="none". Then spawn a successor (same as eval-one''s Step 4 but for pour-one) and stop.
+
+If a pour-request is found, its body contains raw .cell text and its first yield field (''name'') contains the program name. Read both:
+
+```sql
+SELECT y.value_text FROM yields y WHERE y.cell_id = ''<REQUEST_ID>'' AND y.field_name = ''name'';
+```
+
+Now parse the .cell text into SQL INSERT statements following the Cell syntax:
+- ⊢ NAME = cell declaration
+- yield NAME = output field
+- yield NAME ≡ VALUE = hard literal (body = ''literal:VALUE'')
+- given SOURCE→FIELD = dependency
+- ∴ TEXT = soft cell body
+- ∴∴ TEXT = stem cell body
+- ⊢= TEXT = hard computed (body = ''sql:TEXT'' or ''dml:TEXT'')
+- ⊨ TEXT = oracle assertion
+
+Generate SQL INSERTs for the cells, givens, yields, and oracles tables. Use the program name from the request as program_id. Use deterministic IDs: cell IDs = ''<program>-<cellname>'', yield IDs = ''y-<program>-<cellname>-<field>'', given IDs = ''g-<program>-<cellname>-<source>''.
+
+Execute the SQL to insert the program into retort. Then freeze the pour-request:
+
+```sql
+UPDATE cells SET state = ''frozen'' WHERE id = ''<REQUEST_ID>'';
+CALL DOLT_COMMIT(''-Am'', ''pour: <PROGRAM_NAME>'');
+```
+
+Yield program_id=<PROGRAM_NAME>, status="poured".
+
+Finally, spawn a successor pour-one cell so you keep watching for new requests. Generate a unique ID and clone yourself (same pattern as eval-one''s spawn step).',
+'declared');
+
+INSERT INTO yields (id, cell_id, field_name)
+VALUES ('y-cz-pour-prog', 'cz-pour-one', 'program_id'),
+       ('y-cz-pour-stat', 'cz-pour-one', 'status');
+
 -- The eval-one stem cell — self-spawning universal evaluator
 INSERT INTO cells (id, program_id, name, body_type, body, state)
 VALUES ('cz-eval-one', 'cell-zero-eval', 'eval-one', 'stem',

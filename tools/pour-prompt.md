@@ -28,6 +28,7 @@ oracles(id VARCHAR(64), cell_id VARCHAR(64), oracle_type VARCHAR(16),
 | `⊢ NAME` | Cell declaration | INSERT into cells |
 | `given X→Y` | Input dependency | INSERT into givens: source_cell=X, source_field=Y |
 | `given? X→Y` | Optional input | INSERT into givens: source_cell=X, source_field=Y, is_optional=TRUE |
+| `given NAME-*→Y` | Gather all iteration steps | Expands to N givens: NAME-1→Y, NAME-2→Y, ..., NAME-N→Y |
 | `yield NAME` | Output declaration | INSERT into yields: field_name=NAME |
 | `yield NAME ≡ VALUE` | Pre-bound output | INSERT into yields + cell is hard/literal |
 | `∴ TEXT` | Soft cell body | body_type='soft', body=TEXT (with «» refs kept) |

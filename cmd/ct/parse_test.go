@@ -561,3 +561,83 @@ func TestIterationTemplateReferenceDoesNotAffectExplicit(t *testing.T) {
 		t.Error("template reference refine→text should resolve to refine-3")
 	}
 }
+
+func TestGatherWildcard(t *testing.T) {
+	input := `⊢ topic
+  yield question ≡ How do LLMs work?
+
+⊢∘ research × 3
+  given topic→question
+  yield finding
+  ∴∴ Research a unique aspect of «question». Return one key finding.
+
+⊢ synthesize
+  given research-*→finding
+  yield summary
+  ∴ Combine all findings into a coherent summary.
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	sql := cellsToSQL("gather-test", cells)
+
+	// synthesize should have 3 givens (research-1, research-2, research-3)
+	for i := 1; i <= 3; i++ {
+		ref := fmt.Sprintf("'research-%d', 'finding'", i)
+		if !strings.Contains(sql, ref) {
+			t.Errorf("synthesize should have given research-%d→finding", i)
+		}
+	}
+
+	// Should NOT contain the wildcard form
+	if strings.Contains(sql, "research-*") {
+		t.Error("wildcard research-* should be expanded, not literal")
+	}
+
+	t.Logf("✓ gather wildcard expanded:\n%s", sql)
+}
+
+func TestGatherWildcardWithTemplateRef(t *testing.T) {
+	// Both gather and template ref in same program
+	input := `⊢ seed
+  yield text ≡ Hello.
+
+⊢∘ step × 4
+  given seed→text
+  yield result
+  ∴∴ Process «text».
+
+⊢ collect
+  given step-*→result
+  yield all
+  ∴ Collect all results.
+
+⊢ final
+  given step→result
+  yield summary
+  ∴ Use the final result.
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	sql := cellsToSQL("both-test", cells)
+
+	// collect should have 4 givens (step-1..step-4)
+	for i := 1; i <= 4; i++ {
+		ref := fmt.Sprintf("'step-%d', 'result'", i)
+		if !strings.Contains(sql, ref) {
+			t.Errorf("collect should have given step-%d→result", i)
+		}
+	}
+
+	// final should have only step-4 (template ref = last)
+	// Count occurrences of step-4 in givens — should appear for both collect AND final
+	count := strings.Count(sql, "'step-4', 'result'")
+	if count < 2 {
+		t.Errorf("step-4→result should appear in both collect and final givens, got %d occurrences", count)
+	}
+}

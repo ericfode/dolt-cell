@@ -1,0 +1,16 @@
+⊢ topic
+  yield question ≡ What are the most promising approaches to AI alignment?
+
+⊢∘ investigate × 3
+  given topic→question
+  yield finding
+  ∴∴ Research a distinct aspect of «question» that other investigators haven't covered. Return one substantive finding with evidence.
+  ⊨ finding is not empty
+  ⊨~ finding provides specific evidence or citations, not vague claims
+
+⊢ synthesize
+  given investigate-*→finding
+  yield summary
+  ∴∴ You have received multiple independent research findings about the same topic. Synthesize all «finding» inputs into a coherent overview. Identify agreements, contradictions, and gaps.
+  ⊨ summary is not empty
+  ⊨~ summary addresses all findings, not just a subset

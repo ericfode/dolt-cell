@@ -275,17 +275,34 @@ func cellsToSQL(programID string, cells []parsedCell) string {
 		}
 	}
 
-	// Rewrite givens that reference iteration templates to the last step.
-	// "given refine→text" → "given refine-3→text" when ⊢∘ refine × 3 exists.
+	// Resolve iteration references in givens (non-template cells only).
 	for i := range cells {
 		if cells[i].iterate > 0 {
 			continue // don't rewrite the template's own givens
 		}
-		for j := range cells[i].givens {
-			if n, ok := iterTemplates[cells[i].givens[j].sourceCell]; ok {
-				cells[i].givens[j].sourceCell = fmt.Sprintf("%s-%d", cells[i].givens[j].sourceCell, n)
+		var expanded []parsedGiven
+		for _, g := range cells[i].givens {
+			// Gather wildcard: "given refine-*→text" → all iteration steps
+			if strings.HasSuffix(g.sourceCell, "-*") {
+				base := strings.TrimSuffix(g.sourceCell, "-*")
+				if n, ok := iterTemplates[base]; ok {
+					for k := 1; k <= n; k++ {
+						expanded = append(expanded, parsedGiven{
+							sourceCell:  fmt.Sprintf("%s-%d", base, k),
+							sourceField: g.sourceField,
+							optional:    g.optional,
+						})
+					}
+					continue
+				}
 			}
+			// Template reference: "given refine→text" → last step
+			if n, ok := iterTemplates[g.sourceCell]; ok {
+				g.sourceCell = fmt.Sprintf("%s-%d", g.sourceCell, n)
+			}
+			expanded = append(expanded, g)
 		}
+		cells[i].givens = expanded
 	}
 
 	for _, c := range cells {

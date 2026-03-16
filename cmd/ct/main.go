@@ -54,7 +54,7 @@ func main() {
 		dsn = "root@tcp(127.0.0.1:3308)/retort"
 	}
 
-	db, err := sql.Open("mysql", dsn+"?multiStatements=true&parseTime=true")
+	db, err := sql.Open("mysql", dsn+"?multiStatements=true&parseTime=true&tls=false")
 	if err != nil {
 		fatal("connect: %v", err)
 	}

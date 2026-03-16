@@ -30,13 +30,15 @@ Usage:
   ct yields <program-id>                              Show frozen yields
   ct history <program-id>                             Show execution history
   ct graph <program-id>                               Show DAG (dependency graph from bindings)
+  ct auto <program-id> [--max N] [--model M]           Autonomous LLM piston (calls Claude API)
   ct reset <program-id>                               Reset program
 
 The piston is YOU (the LLM session using this tool) or a polecat you sling to.
-ct handles the plumbing. You handle the thinking.
+ct auto uses Claude API directly — set ANTHROPIC_API_KEY.
 
 Environment:
-  RETORT_DSN   Dolt DSN (default: root@tcp(127.0.0.1:3308)/retort)
+  RETORT_DSN      Dolt DSN (default: root@tcp(127.0.0.1:3308)/retort)
+  ANTHROPIC_API_KEY  API key for ct auto (Claude API)
 `
 
 func main() {
@@ -88,6 +90,25 @@ func main() {
 	}
 
 	switch cmd {
+	case "auto":
+		progID := ""
+		maxCalls := 20
+		model := "claude-haiku-4-5-20251001"
+		for i := 0; i < len(args); i++ {
+			if args[i] == "--max" && i+1 < len(args) {
+				i++
+				fmt.Sscanf(args[i], "%d", &maxCalls)
+			} else if args[i] == "--model" && i+1 < len(args) {
+				i++
+				model = args[i]
+			} else {
+				progID = args[i]
+			}
+		}
+		if progID == "" {
+			fatal("usage: ct auto <program-id> [--max N] [--model M]")
+		}
+		cmdAuto(db, progID, maxCalls, model)
 	case "piston":
 		progID := ""
 		if len(args) > 0 {

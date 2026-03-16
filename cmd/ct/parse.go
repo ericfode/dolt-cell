@@ -50,17 +50,30 @@ func parseCellFile(text string) []parsedCell {
 	lines := strings.Split(text, "\n")
 	var cells []parsedCell
 	var cur *parsedCell
+	inBody := false // true while accumulating multi-line body text
 
 	for _, raw := range lines {
 		line := strings.TrimRight(raw, " \t\r")
 		trimmed := strings.TrimSpace(line)
+		isIndented := len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
 
+		// Blank line: preserve in multi-line body, skip otherwise
 		if trimmed == "" {
+			if inBody && cur != nil {
+				cur.body += "\n"
+			}
+			continue
+		}
+
+		// Comment lines (-- ...) — skip
+		if strings.HasPrefix(trimmed, "--") {
 			continue
 		}
 
 		// Cell declaration: ⊢ NAME or ⊢∘ NAME × N
+		// Always breaks body continuation.
 		if strings.HasPrefix(trimmed, "⊢∘ ") {
+			inBody = false
 			if cur != nil {
 				cells = append(cells, *cur)
 			}
@@ -84,6 +97,7 @@ func parseCellFile(text string) []parsedCell {
 		}
 
 		if strings.HasPrefix(trimmed, "⊢ ") {
+			inBody = false
 			if cur != nil {
 				cells = append(cells, *cur)
 			}
@@ -96,50 +110,57 @@ func parseCellFile(text string) []parsedCell {
 			continue // skip lines before first cell
 		}
 
-		// Given: given X→Y or given? X→Y
-		if strings.HasPrefix(trimmed, "given? ") || strings.HasPrefix(trimmed, "given ") {
-			optional := strings.HasPrefix(trimmed, "given? ")
-			rest := trimmed
-			if optional {
-				rest = strings.TrimPrefix(trimmed, "given? ")
-			} else {
-				rest = strings.TrimPrefix(trimmed, "given ")
+		// Structural keywords: only recognized when indented (under ⊢ declaration).
+		// Unindented "given" or "yield" in body text won't be misinterpreted.
+		if isIndented {
+			// Given: given X→Y or given? X→Y
+			if strings.HasPrefix(trimmed, "given? ") || strings.HasPrefix(trimmed, "given ") {
+				inBody = false
+				optional := strings.HasPrefix(trimmed, "given? ")
+				rest := trimmed
+				if optional {
+					rest = strings.TrimPrefix(trimmed, "given? ")
+				} else {
+					rest = strings.TrimPrefix(trimmed, "given ")
+				}
+				// Parse X→Y
+				parts := strings.SplitN(rest, "→", 2)
+				if len(parts) != 2 {
+					return nil
+				}
+				cur.givens = append(cur.givens, parsedGiven{
+					sourceCell:  strings.TrimSpace(parts[0]),
+					sourceField: strings.TrimSpace(parts[1]),
+					optional:    optional,
+				})
+				continue
 			}
-			// Parse X→Y
-			parts := strings.SplitN(rest, "→", 2)
-			if len(parts) != 2 {
-				return nil
-			}
-			cur.givens = append(cur.givens, parsedGiven{
-				sourceCell:  strings.TrimSpace(parts[0]),
-				sourceField: strings.TrimSpace(parts[1]),
-				optional:    optional,
-			})
-			continue
-		}
 
-		// Yield: yield NAME ≡ VALUE or yield NAME
-		if strings.HasPrefix(trimmed, "yield ") {
-			rest := strings.TrimPrefix(trimmed, "yield ")
-			if strings.Contains(rest, "≡") {
-				parts := strings.SplitN(rest, "≡", 2)
-				cur.yields = append(cur.yields, parsedYield{
-					fieldName: strings.TrimSpace(parts[0]),
-					prebound:  strings.TrimSpace(parts[1]),
-				})
-				cur.bodyType = "hard"
-			} else {
-				cur.yields = append(cur.yields, parsedYield{
-					fieldName: strings.TrimSpace(rest),
-				})
+			// Yield: yield NAME ≡ VALUE or yield NAME
+			if strings.HasPrefix(trimmed, "yield ") {
+				inBody = false
+				rest := strings.TrimPrefix(trimmed, "yield ")
+				if strings.Contains(rest, "≡") {
+					parts := strings.SplitN(rest, "≡", 2)
+					cur.yields = append(cur.yields, parsedYield{
+						fieldName: strings.TrimSpace(parts[0]),
+						prebound:  strings.TrimSpace(parts[1]),
+					})
+					cur.bodyType = "hard"
+				} else {
+					cur.yields = append(cur.yields, parsedYield{
+						fieldName: strings.TrimSpace(rest),
+					})
+				}
+				continue
 			}
-			continue
 		}
 
 		// Stem cell body: ∴∴ TEXT
 		if strings.HasPrefix(trimmed, "∴∴ ") {
 			cur.body = strings.TrimPrefix(trimmed, "∴∴ ")
 			cur.bodyType = "stem"
+			inBody = true
 			continue
 		}
 
@@ -147,6 +168,7 @@ func parseCellFile(text string) []parsedCell {
 		if strings.HasPrefix(trimmed, "∴ ") {
 			cur.body = strings.TrimPrefix(trimmed, "∴ ")
 			cur.bodyType = "soft"
+			inBody = true
 			continue
 		}
 
@@ -154,11 +176,13 @@ func parseCellFile(text string) []parsedCell {
 		if strings.HasPrefix(trimmed, "⊢= ") {
 			cur.body = strings.TrimPrefix(trimmed, "⊢= ")
 			cur.bodyType = "hard"
+			inBody = true
 			continue
 		}
 
 		// Explicit semantic oracle: ⊨~ TEXT (always semantic, never auto-classified)
 		if strings.HasPrefix(trimmed, "⊨~ ") {
+			inBody = false
 			assertion := strings.TrimPrefix(trimmed, "⊨~ ")
 			cur.oracles = append(cur.oracles, parsedOracle{
 				assertion:  assertion,
@@ -167,8 +191,9 @@ func parseCellFile(text string) []parsedCell {
 			continue
 		}
 
-		// Oracle: ⊨ TEXT (must check before continuation lines)
+		// Oracle: ⊨ TEXT
 		if strings.HasPrefix(trimmed, "⊨ ") {
+			inBody = false
 			assertion := strings.TrimPrefix(trimmed, "⊨ ")
 			o := parsedOracle{assertion: assertion, oracleType: "semantic"}
 			// Classify deterministic oracles
@@ -202,14 +227,20 @@ func parseCellFile(text string) []parsedCell {
 			continue
 		}
 
-		// Continuation line: indented, not a keyword — append to current body
-		if cur.body != "" && len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
-			cur.body += " " + trimmed
+		// Body continuation: any unmatched line when in body mode
+		if inBody && cur != nil {
+			cur.body += "\n" + trimmed
 			continue
 		}
 	}
 	if cur != nil {
+		cur.body = strings.TrimRight(cur.body, " \t\n\r")
 		cells = append(cells, *cur)
+	}
+
+	// Trim trailing whitespace from all bodies
+	for i := range cells {
+		cells[i].body = strings.TrimRight(cells[i].body, " \t\n\r")
 	}
 
 	return cells

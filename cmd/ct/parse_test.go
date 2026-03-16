@@ -450,6 +450,46 @@ func TestMixedOracles(t *testing.T) {
 	t.Logf("✓ mixed oracles SQL:\n%s", sql)
 }
 
+func TestHaikuMultiLineBody(t *testing.T) {
+	data, err := os.ReadFile("../../examples/haiku.cell")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cells := parseCellFile(string(data))
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	// Find critique cell
+	var critique *parsedCell
+	for i := range cells {
+		if cells[i].name == "critique" {
+			critique = &cells[i]
+			break
+		}
+	}
+	if critique == nil {
+		t.Fatal("critique cell not found")
+	}
+
+	// Check that critique body includes the multi-line content
+	if !strings.Contains(critique.body, "Critique this haiku") {
+		t.Error("critique body missing first line")
+	}
+
+	// The ⊨ oracle should be parsed, not eaten by continuation
+	if len(critique.oracles) != 1 {
+		t.Errorf("critique: expected 1 oracle, got %d", len(critique.oracles))
+	} else if !strings.Contains(critique.oracles[0].assertion, "at least 2 sentences") {
+		t.Errorf("critique oracle assertion=%q", critique.oracles[0].assertion)
+	}
+
+	t.Logf("✓ haiku critique body: %q", critique.body)
+	t.Logf("  body_type: %s, givens: %d, yields: %d, oracles: %d",
+		critique.bodyType, len(critique.givens), len(critique.yields), len(critique.oracles))
+}
+
 func TestIterationTemplateReference(t *testing.T) {
 	// "given refine→text" should auto-resolve to "given refine-3→text"
 	// when ⊢∘ refine × 3 exists

@@ -10,7 +10,18 @@ import (
 	"time"
 )
 
+// execDB wraps db.Exec and returns the error. Use for critical paths
+// where silent failure would corrupt state (freeze, claim, submit, commit).
+func execDB(db *sql.DB, query string, args ...interface{}) error {
+	_, err := db.Exec(query, args...)
+	if err != nil {
+		log.Printf("ERROR: exec failed: %v (query: %s)", err, query)
+	}
+	return err
+}
+
 // mustExecDB wraps db.Exec with a non-fatal warning log on error.
+// Use only for best-effort paths (heartbeat, trace, cleanup).
 func mustExecDB(db *sql.DB, query string, args ...interface{}) {
 	if _, err := db.Exec(query, args...); err != nil {
 		log.Printf("WARN: exec failed: %v (query: %s)", err, query)

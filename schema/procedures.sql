@@ -19,10 +19,12 @@
 --     cell_claims, pistons
 --   - Views: ready_cells, cell_program_status
 --
--- DOLT WORKAROUND: Uses session variables (@_*) instead of DECLARE variables.
--- Dolt (as of v1.83) has bugs where DECLARE variables are not resolved in
--- INSERT VALUES, UPDATE SET, and SELECT INTO contexts within stored procedures.
--- Session variables work around this limitation.
+-- DOLT WORKAROUNDS (v1.83): Multiple stored procedure variable bugs:
+--   1. DECLARE/param vars in UPDATE SET → Dolt treats as column names → use @session vars
+--   2. SELECT TEXT INTO DECLARE var → returns internal pointer garbage → use LEFT(col, N)
+--   3. CAST(TEXT AS CHAR) → returns NULL → use LEFT() instead
+--   4. Session vars (@_*) in SELECT INTO → "variable not found" → use DECLARE vars
+-- Strategy: DECLARE for SELECT INTO / INSERT / WHERE; session vars for UPDATE SET.
 --
 -- The REPL (ct repl) uses Go-native SQL instead of calling these procedures,
 -- which is the preferred approach. These procedures exist for the piston
@@ -40,8 +42,9 @@
 -- Finds the next ready cell in a program, atomically claims it via INSERT
 -- IGNORE into cell_claims (first piston wins), and returns dispatch info.
 --
--- Hard cells (body_type='hard', body LIKE 'literal:%') are evaluated inline:
--- the literal value is written as a frozen yield and the cell is frozen.
+-- Hard cells are evaluated inline:
+--   body LIKE 'literal:%' → literal value written as frozen yield
+--   body LIKE 'sql:%'     → SQL query executed via prepared statement, result frozen
 --
 -- Soft cells are marked 'computing' and returned with resolved input values
 -- so the piston can evaluate them.
@@ -64,6 +67,12 @@ CREATE PROCEDURE cell_eval_step(
     IN p_piston_id  VARCHAR(255)
 )
 BEGIN
+    -- DOLT WORKAROUND (v1.83): Variables (DECLARE or params) break in
+    -- UPDATE SET contexts — Dolt treats them as column names.
+    -- DECLARE vars DO work in SELECT INTO and INSERT VALUES.
+    -- Session vars break in SELECT INTO but work in UPDATE SET.
+    -- Strategy: DECLARE for SELECT INTO / INSERT / WHERE / control flow,
+    -- session vars (@_es_*) for UPDATE SET values only.
     DECLARE v_cell_id    VARCHAR(255) DEFAULT NULL;
     DECLARE v_cell_name  VARCHAR(255);
     DECLARE v_body       TEXT;
@@ -71,8 +80,7 @@ BEGIN
     DECLARE v_model_hint VARCHAR(100);
     DECLARE v_claimed    INT DEFAULT 0;
     DECLARE v_attempts   INT DEFAULT 0;
-    DECLARE v_max_attempts INT DEFAULT 50;
-    DECLARE v_literal_val TEXT;
+
 
     -- Fast path: check if program is complete (all cells frozen or bottom)
     IF NOT EXISTS (
@@ -88,29 +96,25 @@ BEGIN
                NULL        AS model_hint,
                NULL        AS resolved_inputs;
     ELSE
-        -- Try to claim a ready cell using INSERT IGNORE loop.
-        -- Each iteration picks the first unclaimed ready cell and attempts
-        -- an atomic INSERT. If another piston claimed it between our SELECT
-        -- and INSERT, ROW_COUNT() = 0 and we retry with the next cell.
+        -- Claim loop: INSERT IGNORE into cell_claims, first piston wins.
         claim_block: BEGIN
-            WHILE v_claimed = 0 AND v_attempts < v_max_attempts DO
+            WHILE v_claimed = 0 AND v_attempts < 50 DO
                 SET v_attempts = v_attempts + 1;
                 SET v_cell_id = NULL;
 
-                -- Find first unclaimed ready cell
-                SELECT rc.id, rc.name, rc.body, rc.body_type, rc.model_hint
+                -- LEFT() works around Dolt bug: SELECT TEXT INTO returns
+                -- internal pointer garbage. CAST also fails. LEFT materializes.
+                SELECT rc.id, rc.name, LEFT(rc.body, 4096), rc.body_type, rc.model_hint
                   INTO v_cell_id, v_cell_name, v_body, v_body_type, v_model_hint
                   FROM ready_cells rc
                  WHERE rc.program_id = p_program_id
                    AND rc.id NOT IN (SELECT cell_id FROM cell_claims)
                  LIMIT 1;
 
-                -- No unclaimed ready cells left
                 IF v_cell_id IS NULL THEN
                     LEAVE claim_block;
                 END IF;
 
-                -- Atomic claim: INSERT IGNORE silently fails on duplicate PK
                 INSERT IGNORE INTO cell_claims (cell_id, piston_id, claimed_at)
                 VALUES (v_cell_id, p_piston_id, NOW());
 
@@ -121,7 +125,6 @@ BEGIN
         END claim_block;
 
         IF v_claimed = 0 THEN
-            -- No ready cells available
             SELECT 'quiescent' AS action,
                    NULL        AS cell_id,
                    NULL        AS cell_name,
@@ -131,41 +134,79 @@ BEGIN
                    NULL        AS resolved_inputs;
 
         ELSEIF v_body_type = 'hard' THEN
-            -- Hard cell: evaluate inline in SQL
+            -- Hard cell: evaluate inline
+            -- UPDATE SET needs session vars (Dolt workaround)
+            SET @_es_piston_id = p_piston_id;
             UPDATE cells
                SET state = 'computing',
                    computing_since = NOW(),
-                   assigned_piston = p_piston_id
+                   assigned_piston = @_es_piston_id
              WHERE id = v_cell_id;
 
             IF v_body LIKE 'literal:%' THEN
-                SET v_literal_val = SUBSTRING(v_body, 9);
+                SET @_es_body = v_body;
+                SET @_es_literal_val = SUBSTRING(@_es_body, 9);
 
-                -- Write the frozen yield
-                DELETE FROM yields WHERE cell_id = v_cell_id AND field_name = 'value';
-                INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at)
-                VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), v_cell_id, 'value',
-                        v_literal_val, TRUE, NOW());
+                UPDATE yields
+                   SET value_text = @_es_literal_val,
+                       is_frozen = TRUE,
+                       frozen_at = NOW()
+                 WHERE cell_id = v_cell_id
+                   AND is_frozen = FALSE;
 
-                -- Freeze the cell
                 UPDATE cells
                    SET state = 'frozen',
                        computing_since = NULL,
                        assigned_piston = NULL
                  WHERE id = v_cell_id;
 
-                -- Clean up claim
                 DELETE FROM cell_claims WHERE cell_id = v_cell_id;
 
-                -- Update piston stats
                 UPDATE pistons
                    SET cells_completed = cells_completed + 1,
                        last_heartbeat = NOW()
-                 WHERE id = p_piston_id;
+                 WHERE id = @_es_piston_id;
 
                 INSERT INTO trace (id, cell_id, event_type, detail, created_at)
                 VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), v_cell_id, 'frozen',
                         'Hard cell evaluated: literal value', NOW());
+
+                CALL DOLT_COMMIT('-Am', CONCAT('cell: freeze hard cell ', v_cell_name));
+
+            ELSEIF v_body LIKE 'sql:%' THEN
+                -- Execute SQL query via prepared statement, capture scalar result.
+                -- Must copy v_body to session var: Dolt can't resolve DECLARE vars
+                -- in SET expressions that feed PREPARE.
+                SET @_es_body = v_body;
+                SET @_eval_sql = CONCAT('SELECT (', TRIM(SUBSTRING(@_es_body, 5)), ') INTO @_eval_result');
+                PREPARE _eval_stmt FROM @_eval_sql;
+                EXECUTE _eval_stmt;
+                DEALLOCATE PREPARE _eval_stmt;
+
+                -- UPDATE SET needs session var (Dolt workaround)
+                UPDATE yields
+                   SET value_text = @_eval_result,
+                       is_frozen = TRUE,
+                       frozen_at = NOW()
+                 WHERE cell_id = v_cell_id
+                   AND is_frozen = FALSE;
+
+                UPDATE cells
+                   SET state = 'frozen',
+                       computing_since = NULL,
+                       assigned_piston = NULL
+                 WHERE id = v_cell_id;
+
+                DELETE FROM cell_claims WHERE cell_id = v_cell_id;
+
+                UPDATE pistons
+                   SET cells_completed = cells_completed + 1,
+                       last_heartbeat = NOW()
+                 WHERE id = @_es_piston_id;
+
+                INSERT INTO trace (id, cell_id, event_type, detail, created_at)
+                VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), v_cell_id, 'frozen',
+                        'Hard cell evaluated: sql query', NOW());
 
                 CALL DOLT_COMMIT('-Am', CONCAT('cell: freeze hard cell ', v_cell_name));
             END IF;
@@ -180,10 +221,11 @@ BEGIN
 
         ELSE
             -- Soft cell: mark computing and dispatch to piston
+            SET @_es_piston_id = p_piston_id;
             UPDATE cells
                SET state = 'computing',
                    computing_since = NOW(),
-                   assigned_piston = p_piston_id
+                   assigned_piston = @_es_piston_id
              WHERE id = v_cell_id;
 
             INSERT INTO trace (id, cell_id, event_type, detail, created_at)
@@ -192,7 +234,6 @@ BEGIN
 
             CALL DOLT_COMMIT('-Am', CONCAT('cell: claim soft cell ', v_cell_name));
 
-            -- Return dispatch with resolved input values
             SELECT 'dispatch'    AS action,
                    v_cell_id     AS cell_id,
                    v_cell_name   AS cell_name,

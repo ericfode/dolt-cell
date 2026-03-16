@@ -2659,6 +2659,10 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 			continue
 		}
 
+		// Log claim (v2 frame model audit trail)
+		db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), CONCAT('f-', ?, '-0'), ?, 'claimed')",
+			rc.cellID, pistonID)
+
 		// Claimed! Handle hard vs soft
 		if rc.bodyType == "hard" {
 			mustExecDB(db,
@@ -2857,8 +2861,12 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'All yields frozen', NOW())",
 			cellID)
 
-		// Record bindings (v2 frame model): which frames this cell read from
+		// Record bindings + claim completion (v2 frame model)
 		recordBindings(db, progID, cellName, cellID)
+		if claimPiston != "" {
+			db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), CONCAT('f-', ?, '-0'), ?, 'completed')",
+				cellID, claimPiston)
+		}
 
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))
 

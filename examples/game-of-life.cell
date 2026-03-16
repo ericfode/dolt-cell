@@ -1,8 +1,11 @@
-⊢ seed
-  yield grid ≡ ["..........","..........","....#.....","..###.....","..#.......","..........","..........","..........","..........",".........."]
+cell seed
+  yield grid = ["..........","..........","....#.....","..###.....","..#.......","..........","..........","..........","..........",".........."]
 
-⊢∘ evolve × 5
-  given seed→grid
+cell evolve (stem)
+  given seed.grid
   yield grid
-  ∴∴ Apply one step of Conway's Game of Life to «grid». Each row is a string of . (dead) and # (alive). Rules: alive cell with 2-3 alive neighbors survives, dead cell with exactly 3 alive neighbors becomes alive, all others die. Grid wraps at edges. Compute by writing and running code. Return the next generation as a JSON array of 10 strings.
-  ⊨ grid is a valid JSON array
+  recur (max 5)
+  ---
+  Apply one step of Conway's Game of Life to «grid». Each row is a string of . (dead) and # (alive). Rules: alive cell with 2-3 alive neighbors survives, dead cell with exactly 3 alive neighbors becomes alive, all others die. Grid wraps at edges. Compute by writing and running code. Return the next generation as a JSON array of 10 strings.
+  ---
+  check grid is a valid JSON array

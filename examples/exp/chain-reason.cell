@@ -1,0 +1,36 @@
+-- Multi-step LLM reasoning chain
+
+cell topic
+  yield subject = the trolley problem
+
+cell define
+  given topic.subject
+  yield definition
+  ---
+  Define «subject» in exactly two sentences. Be precise and academic.
+  ---
+
+cell argue-for
+  given topic.subject
+  given define.definition
+  yield argument
+  ---
+  Given this definition of «subject»: «definition». Write a compelling argument FOR the utilitarian position (pull the lever). Three sentences max.
+  ---
+
+cell argue-against
+  given topic.subject
+  given define.definition
+  yield argument
+  ---
+  Given this definition of «subject»: «definition». Write a compelling argument AGAINST pulling the lever (deontological position). Three sentences max.
+  ---
+
+cell synthesize
+  given argue-for.argument
+  given argue-against.argument
+  yield synthesis
+  ---
+  You have two arguments about the trolley problem. FOR pulling the lever: «argument». AGAINST pulling the lever: «argument». Write a balanced two-sentence synthesis that acknowledges both positions without taking a side.
+  ---
+  check synthesis is not empty

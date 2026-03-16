@@ -3,20 +3,23 @@
 -- No SQL query can factor integers, but any SQL can multiply to verify.
 -- This asymmetry (hard to solve, easy to check) is the essence of NP vs P.
 
-⊢ target
-  yield number ≡ 5963
+cell target
+  yield number = 5963
 
-⊢ factor
-  given target→number
+cell factor
+  given target.number
   yield factors
-  ∴ Find two non-trivial factors (both greater than 1) of the integer «number». Return as a JSON array of exactly two integers, e.g. [67, 89].
-  ⊨ factors is a valid JSON array
+  ---
+  Find two non-trivial factors (both greater than 1) of the integer «number». Return as a JSON array of exactly two integers, e.g. [67, 89].
+  ---
+  check factors is a valid JSON array
 
-⊢ verify-product
-  given factor→factors
-  given target→number
+cell verify-product
+  given factor.factors
+  given target.number
   yield result
-  ⊢= sql: SELECT CASE
+  ---
+  sql: SELECT CASE
        WHEN CAST(JSON_EXTRACT(f.value_text, '$[0]') AS SIGNED)
           * CAST(JSON_EXTRACT(f.value_text, '$[1]') AS SIGNED)
           = CAST(n.value_text AS SIGNED)
@@ -27,9 +30,12 @@
           yields n JOIN cells cn ON n.cell_id = cn.id
      WHERE cf.name = 'factor' AND f.field_name = 'factors' AND f.is_frozen = 1
        AND cn.name = 'target' AND n.field_name = 'number' AND n.is_frozen = 1
+  ---
 
-⊢ certificate
-  given factor→factors
-  given verify-product→result
+cell certificate
+  given factor.factors
+  given verify-product.result
   yield report
-  ∴ Write a proof certificate. The factors found are «factors» and the verification status is «result». Explain why finding factors is computationally hard (NP) but verifying by multiplication is easy (P). This asymmetry is the foundation of public-key cryptography.
+  ---
+  Write a proof certificate. The factors found are «factors» and the verification status is «result». Explain why finding factors is computationally hard (NP) but verifying by multiplication is easy (P). This asymmetry is the foundation of public-key cryptography.
+  ---

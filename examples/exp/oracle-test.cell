@@ -1,0 +1,23 @@
+-- Test various oracle types
+
+cell seed
+  yield data = [3, 1, 4, 1, 5, 9, 2, 6]
+
+cell sort-json
+  given seed.data
+  yield sorted
+  ---
+  Sort «data» in ascending order. Output ONLY a JSON array of numbers, nothing else.
+  ---
+  check sorted is valid json array
+  check~ sorted is a permutation of data
+  check~ sorted is in ascending order
+
+cell summarize
+  given seed.data
+  given sort-json.sorted
+  yield report
+  ---
+  The original data was «data» and the sorted result is «sorted». Write a JSON object with fields: "count" (number of elements), "min" (smallest), "max" (largest), "sorted" (the sorted array).
+  ---
+  check report is not empty

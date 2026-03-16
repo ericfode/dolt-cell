@@ -1,66 +1,84 @@
-⊢ context
-  yield schema ≡ cells(id, program_id, name, body_type[soft|stem|hard], body, state[declared|computing|frozen|bottom]), givens(cell_id, source_cell, source_field, is_optional), yields(cell_id, field_name, value_text, is_frozen), oracles(cell_id, oracle_type[deterministic|semantic], assertion, condition_expr[not_empty|is_json_array|length_matches:CELL]), cell_claims(cell_id, piston_id), ready_cells VIEW
-  yield syntax ≡ ⊢ NAME = cell, given X→Y = dependency, given? X→Y = optional dependency, given NAME-*→Y = gather all iteration steps, yield NAME = output, yield NAME ≡ VALUE = hard literal, ∴ TEXT = soft body, ∴∴ TEXT = stem body (permanently soft), ⊢= TEXT = hard computed, ⊨ TEXT = oracle (auto-classified), ⊨~ TEXT = semantic oracle (always semantic, generates judge stem cell), ⊢∘ NAME × N = iteration (expands to N chained cells; given NAME→Y = last step)
+cell context
+  yield schema = cells(id, program_id, name, body_type[soft|stem|hard], body, state[declared|computing|frozen|bottom]), givens(cell_id, source_cell, source_field, is_optional), yields(cell_id, field_name, value_text, is_frozen), oracles(cell_id, oracle_type[deterministic|semantic], assertion, condition_expr[not_empty|is_json_array|length_matches:CELL]), cell_claims(cell_id, piston_id), ready_cells VIEW
+  yield syntax = cell NAME = cell, given X.Y = dependency, given? X.Y = optional dependency, given NAME[*].Y = gather all iteration steps, yield NAME = output, yield NAME = VALUE = hard literal, --- body --- = soft body, cell NAME (stem) + --- body --- = stem body (permanently soft), cell NAME + --- sql: QUERY --- = hard computed, check TEXT = oracle (auto-classified), check~ TEXT = semantic oracle (always semantic, generates judge stem cell), cell NAME + recur until GUARD (max N) = iteration (expands to N chained cells; given NAME.Y = last step)
 
-⊢ pour
-  given context→schema
-  given context→syntax
+cell pour (stem)
+  given context.schema
+  given context.syntax
   yield description
-  ∴∴ Describe how the Cell pour operation works: given «syntax» as input and «schema» as the target, explain the parsing rules that transform turnstyle syntax into SQL INSERT statements. Cover cell types, ID conventions, oracle classification, and iteration expansion. This is the stem cell that defines how .cell programs become data in Dolt.
-  ⊨ description is not empty
+  ---
+  Describe how the Cell pour operation works: given «syntax» as input and «schema» as the target, explain the parsing rules that transform cell syntax into SQL INSERT statements. Cover cell types, ID conventions, oracle classification, and iteration expansion. This is the stem cell that defines how .cell programs become data in Dolt.
+  ---
+  check description is not empty
 
-⊢ oracle-semantic
-  given context→schema
+cell oracle-semantic (stem)
+  given context.schema
   yield description
-  ∴∴ Describe how semantic oracle checking should work. Given the oracle table in «schema» where oracle_type='semantic' and condition_expr is NULL, explain how an LLM piston should evaluate whether a cell's output satisfies the natural-language assertion. Cover: how to present the assertion and value to the judge, what constitutes a pass vs fail, how to provide actionable feedback on failure for retry.
-  ⊨ description is not empty
+  ---
+  Describe how semantic oracle checking should work. Given the oracle table in «schema» where oracle_type='semantic' and condition_expr is NULL, explain how an LLM piston should evaluate whether a cell's output satisfies the natural-language assertion. Cover: how to present the assertion and value to the judge, what constitutes a pass vs fail, how to provide actionable feedback on failure for retry.
+  ---
+  check description is not empty
 
-⊢ claim
-  given context→schema
+cell claim (stem)
+  given context.schema
   yield description
-  ∴∴ Describe how a piston claims a ready cell. Given the tables in «schema» — especially ready_cells VIEW and cell_claims — explain the atomic claiming protocol: how INSERT IGNORE ensures exactly one piston wins each cell, how ready_cells surfaces cells whose givens are all frozen, and how a piston retries if its claim is beaten by another piston.
-  ⊨ description is not empty
+  ---
+  Describe how a piston claims a ready cell. Given the tables in «schema» -- especially ready_cells VIEW and cell_claims -- explain the atomic claiming protocol: how INSERT IGNORE ensures exactly one piston wins each cell, how ready_cells surfaces cells whose givens are all frozen, and how a piston retries if its claim is beaten by another piston.
+  ---
+  check description is not empty
 
-⊢ dispatch
-  given context→schema
-  given claim→description
+cell dispatch (stem)
+  given context.schema
+  given claim.description
   yield description
-  ∴∴ Describe how a claimed cell is dispatched to its piston. Given «schema» and the claiming process in «description», explain: how resolved_inputs are built by joining givens to frozen yields, how the cell body (∴ or ∴∴ text) becomes the piston prompt, how «guillemet» references map to resolved_inputs, and the difference between hard-cell inline evaluation and soft-cell dispatch.
-  ⊨ description is not empty
+  ---
+  Describe how a claimed cell is dispatched to its piston. Given «schema» and the claiming process in «description», explain: how resolved_inputs are built by joining givens to frozen yields, how the cell body (soft or stem text) becomes the piston prompt, how «guillemet» references map to resolved_inputs, and the difference between hard-cell inline evaluation and soft-cell dispatch.
+  ---
+  check description is not empty
 
-⊢ evaluate
-  given dispatch→description
+cell evaluate (stem)
+  given dispatch.description
   yield description
-  ∴∴ Describe how a piston evaluates a dispatched soft cell. Given the dispatch process in «description», explain: how the piston reads the body as an instruction, substitutes «guillemet» references with resolved input values, uses tools (code execution, file I/O, web search) when the task requires computation, and produces output for each yield field the cell declares.
-  ⊨ description is not empty
+  ---
+  Describe how a piston evaluates a dispatched soft cell. Given the dispatch process in «description», explain: how the piston reads the body as an instruction, substitutes «guillemet» references with resolved input values, uses tools (code execution, file I/O, web search) when the task requires computation, and produces output for each yield field the cell declares.
+  ---
+  check description is not empty
 
-⊢ submit
-  given context→schema
-  given evaluate→description
-  given oracle-semantic→description
+cell submit (stem)
+  given context.schema
+  given evaluate.description
+  given oracle-semantic.description
   yield description
-  ∴∴ Describe how a piston submits its output and the runtime freezes a cell. Given «schema», evaluation from «description», and semantic oracle rules from «description»: explain how cell_submit writes the yield value, how deterministic oracles (not_empty, is_json_array, length_matches) are checked in SQL, how semantic oracles are logged for piston self-judgment, how oracle failure triggers revision and resubmission, and how a cell transitions computing→frozen when all yields are frozen.
-  ⊨ description is not empty
+  ---
+  Describe how a piston submits its output and the runtime freezes a cell. Given «schema», evaluation from «description», and semantic oracle rules from «description»: explain how cell_submit writes the yield value, how deterministic oracles (not_empty, is_json_array, length_matches) are checked in SQL, how semantic oracles are logged for piston self-judgment, how oracle failure triggers revision and resubmission, and how a cell transitions computing->frozen when all yields are frozen.
+  ---
+  check description is not empty
 
-⊢ eval-loop
-  given claim→description
-  given dispatch→description
-  given evaluate→description
-  given submit→description
+cell eval-loop (stem)
+  given claim.description
+  given dispatch.description
+  given evaluate.description
+  given submit.description
   yield description
-  ∴∴ Describe the full piston eval loop that ties the four phases into a repeating cycle. Given claiming (from claim «description»), dispatching (from dispatch «description»), evaluation (from evaluate «description»), and submission (from submit «description»): explain how the loop repeats until action='complete' or action='quiescent', how multiple pistons run concurrently via atomic claiming, how each iteration is stateless (fresh database read), and how this cycle is the fundamental heartbeat of the Cell runtime.
-  ⊨ description is not empty
+  ---
+  Describe the full piston eval loop that ties the four phases into a repeating cycle. Given claiming (from claim «description»), dispatching (from dispatch «description»), evaluation (from evaluate «description»), and submission (from submit «description»): explain how the loop repeats until action='complete' or action='quiescent', how multiple pistons run concurrently via atomic claiming, how each iteration is stateless (fresh database read), and how this cycle is the fundamental heartbeat of the Cell runtime.
+  ---
+  check description is not empty
 
-⊢ spawn
-  given context→schema
-  given context→syntax
+cell spawn (stem)
+  given context.schema
+  given context.syntax
   yield description
-  ∴∴ Describe how cell spawning should work. A running cell needs to create new cells in the same program (dynamic DAG growth). Given «schema» and «syntax», explain: how a cell's yield can contain .cell syntax that the runtime pours, how iteration (⊢∘) is a static spawn (expanded at pour time) while dynamic spawn happens at eval time, and how spawned cells integrate into the existing dependency graph.
-  ⊨ description is not empty
+  ---
+  Describe how cell spawning should work. A running cell needs to create new cells in the same program (dynamic DAG growth). Given «schema» and «syntax», explain: how a cell's yield can contain .cell syntax that the runtime pours, how iteration (recur) is a static spawn (expanded at pour time) while dynamic spawn happens at eval time, and how spawned cells integrate into the existing dependency graph.
+  ---
+  check description is not empty
 
-⊢ crystallize
-  given pour→description
-  given oracle-semantic→description
+cell crystallize (stem)
+  given pour.description
+  given oracle-semantic.description
   yield description
-  ∴∴ Describe the crystallization process: how a soft cell becomes a hard cell. Given the pour process (from «description») and semantic oracle checking (from «description»), explain: when to crystallize (same output across N runs), how to verify equivalence (the soft cell's output becomes the test oracle for the hard replacement), and which cells can never crystallize (stem cells — parsers, semantic oracles, judgment that must stay LLM-evaluated).
-  ⊨ description is not empty
+  ---
+  Describe the crystallization process: how a soft cell becomes a hard cell. Given the pour process (from «description») and semantic oracle checking (from «description»), explain: when to crystallize (same output across N runs), how to verify equivalence (the soft cell's output becomes the test oracle for the hard replacement), and which cells can never crystallize (stem cells -- parsers, semantic oracles, judgment that must stay LLM-evaluated).
+  ---
+  check description is not empty

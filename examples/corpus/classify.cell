@@ -1,10 +1,12 @@
-⊢ input
-  yield text ≡ The service was terrible and I want a refund immediately!
+cell input
+  yield text = The service was terrible and I want a refund immediately!
 
-⊢ classify
-  given input→text
+cell classify
+  given input.text
   yield sentiment
   yield confidence
-  ∴ Classify the sentiment of «text» as one of: positive, negative, neutral. Also provide a confidence score from 0.0 to 1.0.
-  ⊨ sentiment is one of positive, negative, or neutral
-  ⊨ confidence is a number between 0.0 and 1.0
+  ---
+  Classify the sentiment of «text» as one of: positive, negative, neutral. Also provide a confidence score from 0.0 to 1.0.
+  ---
+  check sentiment is one of positive, negative, or neutral
+  check confidence is a number between 0.0 and 1.0

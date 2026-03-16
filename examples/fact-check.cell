@@ -1,17 +1,21 @@
-⊢ topic
-  yield question ≡ What are the three laws of thermodynamics? Explain each in one sentence.
+cell topic
+  yield question = "What are the three laws of thermodynamics? Explain each in one sentence."
 
-⊢ answer
-  given topic→question
+cell answer
+  given topic.question
   yield explanation
-  ∴ Answer «question» clearly and accurately.
-  ⊨ explanation is not empty
-  ⊨~ each law is stated correctly with no factual errors
-  ⊨~ explanation covers all three laws, not just one or two
+  ---
+  Answer «question» clearly and accurately.
+  ---
+  check explanation is not empty
+  check~ each law is stated correctly with no factual errors
+  check~ explanation covers all three laws, not just one or two
 
-⊢ simplify
-  given answer→explanation
+cell simplify (stem)
+  given answer.explanation
   yield summary
-  ∴∴ Rewrite «explanation» at a 6th-grade reading level. Keep it accurate but use simple words.
-  ⊨ summary is not empty
-  ⊨~ summary preserves the scientific accuracy of the original
+  ---
+  Rewrite «explanation» at a 6th-grade reading level. Keep it accurate but use simple words.
+  ---
+  check summary is not empty
+  check~ summary preserves the scientific accuracy of the original

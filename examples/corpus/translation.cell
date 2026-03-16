@@ -1,15 +1,19 @@
-⊢ source
-  yield text ≡ Hello, how are you today?
-  yield target_lang ≡ Spanish
+cell source
+  yield text = Hello, how are you today?
+  yield target_lang = Spanish
 
-⊢ translate
-  given source→text
-  given source→target_lang
+cell translate
+  given source.text
+  given source.target_lang
   yield translated
-  ∴ Translate «text» into «target_lang».
+  ---
+  Translate «text» into «target_lang».
+  ---
 
-⊢ back_translate
-  given translate→translated
+cell back_translate
+  given translate.translated
   yield round_trip
-  ∴ Translate «translated» back into English.
-  ⊨ round_trip preserves the meaning of the original text
+  ---
+  Translate «translated» back into English.
+  ---
+  check round_trip preserves the meaning of the original text

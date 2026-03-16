@@ -1,0 +1,26 @@
+-- LLM solves, hard cell verifies (proof-carrying computation)
+
+cell problem
+  yield equation = 3x + 7 = 22
+
+cell solve
+  given problem.equation
+  yield x
+  ---
+  Solve the equation «equation» for x. Output ONLY the numeric value, nothing else.
+  ---
+
+cell verify
+  given solve.x
+  yield check
+  ---
+  sql: SELECT CASE WHEN CAST(y.value_text AS DECIMAL) * 3 + 7 = 22 THEN 'PASS' ELSE 'FAIL' END FROM yields y JOIN cells c ON y.cell_id = c.id WHERE c.program_id = 'math-verify' AND c.name = 'solve' AND y.field_name = 'x' AND y.is_frozen = 1
+  ---
+
+cell explain
+  given solve.x
+  given verify.check
+  yield summary
+  ---
+  The equation was «equation». The LLM solved x = «x». Verification result: «check». Write a one-sentence explanation.
+  ---

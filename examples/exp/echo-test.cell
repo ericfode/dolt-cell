@@ -1,0 +1,9 @@
+cell greeting
+  yield message = Hello from Cell!
+
+cell shout
+  given greeting.message
+  yield loud
+  ---
+  Convert «message» to ALL CAPS. Output only the uppercase text, nothing else.
+  ---

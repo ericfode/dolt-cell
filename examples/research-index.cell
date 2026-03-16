@@ -1,45 +1,57 @@
-⊢ question
-  yield topic ≡ "How do production systems verify LLM outputs? Survey approaches, tools, and tradeoffs."
+cell question
+  yield topic = "How do production systems verify LLM outputs? Survey approaches, tools, and tradeoffs."
 
-⊢ scan-academic
-  given question→topic
+cell scan-academic
+  given question.topic
   yield papers
-  ∴ Survey academic research on «topic». List 6-8 key papers or approaches with one-sentence summaries. Format as a JSON array of objects: [{"name": "...", "approach": "...", "key_insight": "..."}].
-  ⊨ papers is a valid JSON array
+  ---
+  Survey academic research on «topic». List 6-8 key papers or approaches with one-sentence summaries. Format as a JSON array of objects: [{"name": "...", "approach": "...", "key_insight": "..."}].
+  ---
+  check papers is a valid JSON array
 
-⊢ scan-industry
-  given question→topic
+cell scan-industry
+  given question.topic
   yield tools
-  ∴ Survey production tools and frameworks for LLM output verification. Cover Guardrails AI, NeMo Guardrails, LMQL, Guidance, Outlines, Instructor, and others you know. Format as a JSON array: [{"name": "...", "type": "...", "mechanism": "..."}].
-  ⊨ tools is a valid JSON array
+  ---
+  Survey production tools and frameworks for LLM output verification. Cover Guardrails AI, NeMo Guardrails, LMQL, Guidance, Outlines, Instructor, and others you know. Format as a JSON array: [{"name": "...", "type": "...", "mechanism": "..."}].
+  ---
+  check tools is a valid JSON array
 
-⊢ scan-patterns
-  given question→topic
+cell scan-patterns
+  given question.topic
   yield patterns
-  ∴ Identify recurring design patterns for verifying LLM output. Categories: structural (schema validation), semantic (meaning checks), statistical (distribution monitoring), adversarial (red-teaming), human-in-loop. For each give name, description, when to use it. JSON array format.
-  ⊨ patterns is a valid JSON array
+  ---
+  Identify recurring design patterns for verifying LLM output. Categories: structural (schema validation), semantic (meaning checks), statistical (distribution monitoring), adversarial (red-teaming), human-in-loop. For each give name, description, when to use it. JSON array format.
+  ---
+  check patterns is a valid JSON array
 
-⊢ cross-reference
-  given scan-academic→papers
-  given scan-industry→tools
-  given scan-patterns→patterns
+cell cross-reference
+  given scan-academic.papers
+  given scan-industry.tools
+  given scan-patterns.patterns
   yield matrix
-  ∴ Cross-reference the research. For each tool in «tools», identify which patterns from «patterns» it implements and which papers from «papers» it draws from. Produce a markdown table with columns: Tool | Patterns Used | Related Papers | Gaps.
-  ⊨ matrix is not empty
+  ---
+  Cross-reference the research. For each tool in «tools», identify which patterns from «patterns» it implements and which papers from «papers» it draws from. Produce a markdown table with columns: Tool | Patterns Used | Related Papers | Gaps.
+  ---
+  check matrix is not empty
 
-⊢ assess-for-cell
-  given scan-patterns→patterns
-  given cross-reference→matrix
+cell assess-for-cell
+  given scan-patterns.patterns
+  given cross-reference.matrix
   yield recommendations
-  ∴ Cell uses two oracle types: deterministic (SQL checks like length_matches, is_json_array, not_empty) and semantic (LLM-judged assertions). Given the patterns in «patterns» and the landscape in «matrix», what verification approaches should Cell adopt next? Rank by impact × implementation ease. Numbered list, 5 items max.
-  ⊨ recommendations is not empty
+  ---
+  Cell uses two oracle types: deterministic (SQL checks like length_matches, is_json_array, not_empty) and semantic (LLM-judged assertions). Given the patterns in «patterns» and the landscape in «matrix», what verification approaches should Cell adopt next? Rank by impact × implementation ease. Numbered list, 5 items max.
+  ---
+  check recommendations is not empty
 
-⊢ build-index
-  given scan-academic→papers
-  given scan-industry→tools
-  given scan-patterns→patterns
-  given cross-reference→matrix
-  given assess-for-cell→recommendations
+cell build-index
+  given scan-academic.papers
+  given scan-industry.tools
+  given scan-patterns.patterns
+  given cross-reference.matrix
+  given assess-for-cell.recommendations
   yield index
-  ∴ Compile a structured research index from all upstream findings. Sections: (1) Executive Summary (3 sentences), (2) Academic Landscape [«papers»], (3) Production Tools [«tools»], (4) Design Patterns [«patterns»], (5) Cross-Reference Matrix [«matrix»], (6) Recommendations for Cell [«recommendations»]. Markdown format.
-  ⊨ index is not empty
+  ---
+  Compile a structured research index from all upstream findings. Sections: (1) Executive Summary (3 sentences), (2) Academic Landscape [«papers»], (3) Production Tools [«tools»], (4) Design Patterns [«patterns»], (5) Cross-Reference Matrix [«matrix»], (6) Recommendations for Cell [«recommendations»]. Markdown format.
+  ---
+  check index is not empty

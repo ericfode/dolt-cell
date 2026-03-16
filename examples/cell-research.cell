@@ -3,80 +3,90 @@
 -- read design documents, identify gaps, or propose next steps.
 -- This is Cell developing itself.
 
-⊢ survey-state
+cell survey-state
   yield summary
-  ∴ Read the current Cell runtime design and implementation state.
-    Key files to read:
-    - docs/plans/2026-03-14-cell-repl-design-v2.md (architecture)
-    - docs/plans/2026-03-14-retort-schema-v2.md (database schema)
-    - docs/plans/2026-03-14-cell-pour-design.md (parser bootstrap)
-    - docs/plans/2026-03-14-oracle-system-design.md (verification)
-    - docs/plans/2026-03-14-crystallization-design.md (soft→hard)
-    - cmd/ct/main.go (the CLI tool)
-    - schema/procedures.sql (stored procedures)
-    - poc/test-poc.sh (what was tested)
+  ---
+  Read the current Cell runtime design and implementation state.
+  Key files to read:
+  - docs/plans/2026-03-14-cell-repl-design-v2.md (architecture)
+  - docs/plans/2026-03-14-retort-schema-v2.md (database schema)
+  - docs/plans/2026-03-14-cell-pour-design.md (parser bootstrap)
+  - docs/plans/2026-03-14-oracle-system-design.md (verification)
+  - docs/plans/2026-03-14-crystallization-design.md (soft→hard)
+  - cmd/ct/main.go (the CLI tool)
+  - schema/procedures.sql (stored procedures)
+  - poc/test-poc.sh (what was tested)
 
-    Produce a structured summary: what is BUILT and working, what is
-    DESIGNED but not built, and what is UNDESIGNED (known gaps).
-    Be specific — cite file names and line counts.
+  Produce a structured summary: what is BUILT and working, what is
+  DESIGNED but not built, and what is UNDESIGNED (known gaps).
+  Be specific — cite file names and line counts.
+  ---
 
-⊢ survey-reviews
+cell survey-reviews
   yield findings
-  ∴ Read the adversarial review documents and extract unresolved concerns:
-    - docs/reviews/mara-v2-review.md
-    - docs/reviews/deng-v2-review.md
-    - docs/reviews/ravi-v2-review.md
-    - docs/reviews/kai-v2-review.md
-    - docs/reviews/priya-v2-review.md
+  ---
+  Read the adversarial review documents and extract unresolved concerns:
+  - docs/reviews/mara-v2-review.md
+  - docs/reviews/deng-v2-review.md
+  - docs/reviews/ravi-v2-review.md
+  - docs/reviews/kai-v2-review.md
+  - docs/reviews/priya-v2-review.md
 
-    For each reviewer, list: (1) their v1 concerns that v2 resolved,
-    (2) NEW concerns they raised in v2, (3) whether those new concerns
-    have been addressed by subsequent work. Focus on concerns that are
-    still OPEN — things nobody has fixed yet.
+  For each reviewer, list: (1) their v1 concerns that v2 resolved,
+  (2) NEW concerns they raised in v2, (3) whether those new concerns
+  have been addressed by subsequent work. Focus on concerns that are
+  still OPEN — things nobody has fixed yet.
+  ---
 
-⊢ identify-gaps
-  given survey-state→summary
-  given survey-reviews→findings
+cell identify-gaps
+  given survey-state.summary
+  given survey-reviews.findings
   yield gaps
-  ∴ Given the state of what's built («summary») and the unresolved review
-    concerns («findings»), identify the 5 most critical gaps. For each gap:
-    - What is missing?
-    - Why does it matter? (What breaks or is blocked without it?)
-    - How hard is it to fix? (Hours? Days? Weeks?)
-    - Who should fix it? (A polecat? The crew member? Needs design first?)
+  ---
+  Given the state of what's built («summary») and the unresolved review
+  concerns («findings»), identify the 5 most critical gaps. For each gap:
+  - What is missing?
+  - Why does it matter? (What breaks or is blocked without it?)
+  - How hard is it to fix? (Hours? Days? Weeks?)
+  - Who should fix it? (A polecat? The crew member? Needs design first?)
 
-    Rank by impact × feasibility. The best gap to close is high-impact
-    AND quick to fix.
+  Rank by impact × feasibility. The best gap to close is high-impact
+  AND quick to fix.
+  ---
 
-⊢ research-prior-art
-  given identify-gaps→gaps
+cell research-prior-art
+  given identify-gaps.gaps
   yield research
-  ∴ For the top 3 gaps identified in «gaps», research how other systems
-    solve the same problem. Search the web for prior art. Consider:
-    - Other reactive dataflow systems (Airflow, Prefect, Temporal, Dagster)
-    - Other database-as-runtime approaches (Dolt, SQLite, PostgreSQL)
-    - Other LLM orchestration systems (LangGraph, CrewAI, AutoGen)
-    - Academic literature on dual-substrate computation
+  ---
+  For the top 3 gaps identified in «gaps», research how other systems
+  solve the same problem. Search the web for prior art. Consider:
+  - Other reactive dataflow systems (Airflow, Prefect, Temporal, Dagster)
+  - Other database-as-runtime approaches (Dolt, SQLite, PostgreSQL)
+  - Other LLM orchestration systems (LangGraph, CrewAI, AutoGen)
+  - Academic literature on dual-substrate computation
 
-    For each gap, provide 2-3 concrete approaches from prior art,
-    with tradeoffs and applicability to Cell's specific architecture
-    (Dolt stored procedures + LLM pistons).
+  For each gap, provide 2-3 concrete approaches from prior art,
+  with tradeoffs and applicability to Cell's specific architecture
+  (Dolt stored procedures + LLM pistons).
+  ---
 
-⊢ synthesize
-  given identify-gaps→gaps
-  given research-prior-art→research
+cell synthesize
+  given identify-gaps.gaps
+  given research-prior-art.research
   yield plan
-  ∴ Given the gaps («gaps») and the prior art research («research»),
-    write a concrete plan for the next sprint of Cell development.
+  ---
+  Given the gaps («gaps») and the prior art research («research»),
+  write a concrete plan for the next sprint of Cell development.
 
-    The plan should have exactly 5 items, ordered by priority:
-    1. The most impactful thing to build next
-    2-4. Supporting work
-    5. A stretch goal
+  The plan should have exactly 5 items, ordered by priority:
+  1. The most impactful thing to build next
+  2-4. Supporting work
+  5. A stretch goal
 
-    For each item: what to build, why it matters, estimated effort,
-    concrete acceptance criteria (how do you know it's done?),
-    and which files/procedures to modify.
+  For each item: what to build, why it matters, estimated effort,
+  concrete acceptance criteria (how do you know it's done?),
+  and which files/procedures to modify.
 
-    This plan should be immediately actionable — a polecat should be
-    able to pick up item 1 and start working without asking questions.
+  This plan should be immediately actionable — a polecat should be
+  able to pick up item 1 and start working without asking questions.
+  ---

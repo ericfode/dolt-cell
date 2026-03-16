@@ -7,10 +7,11 @@
 -- To submit work: insert a pour-request cell with the .cell text as body,
 -- then eval-one will pour it and start evaluating.
 
-⊢ pour-one
+cell pour-one (stem)
   yield program_id
   yield status
-  ∴∴ You are the Cell parser. Check if any cells in the cell-zero-eval program
+  ---
+  You are the Cell parser. Check if any cells in the cell-zero-eval program
 have name='pour-request' and state='declared':
 
 ```sql
@@ -30,14 +31,14 @@ SELECT y.value_text FROM yields y WHERE y.cell_id = '<REQUEST_ID>' AND y.field_n
 ```
 
 Now parse the .cell text into SQL INSERT statements following the Cell syntax:
-- ⊢ NAME = cell declaration
+- cell NAME = cell declaration
 - yield NAME = output field
-- yield NAME ≡ VALUE = hard literal (body = 'literal:VALUE')
-- given SOURCE→FIELD = dependency
-- ∴ TEXT = soft cell body
-- ∴∴ TEXT = stem cell body
-- ⊢= TEXT = hard computed (body = 'sql:TEXT' or 'dml:TEXT')
-- ⊨ TEXT = oracle assertion
+- yield NAME = VALUE = hard literal (body = 'literal:VALUE')
+- given SOURCE.FIELD = dependency
+- --- body --- = soft cell body
+- cell NAME (stem) + --- body --- = stem cell body
+- cell NAME + --- sql: QUERY --- = hard computed (body = 'sql:QUERY')
+- check TEXT = oracle assertion
 
 Generate SQL INSERTs for the cells, givens, yields, and oracles tables.
 Use the program name from the request as program_id. Use deterministic IDs:
@@ -54,12 +55,14 @@ CALL DOLT_COMMIT('-Am', 'pour: <PROGRAM_NAME>');
 Yield program_id=<PROGRAM_NAME>, status="poured".
 
 Finally, spawn a successor pour-one (same pattern as eval-one's spawn).
+  ---
 
-⊢ eval-one
+cell eval-one (stem)
   yield cell_name
   yield program_id
   yield status
-  ∴∴ You are the Cell runtime evaluator. Your job: find one ready cell across
+  ---
+  You are the Cell runtime evaluator. Your job: find one ready cell across
 all programs in this retort database, evaluate it, submit the result, then
 spawn a fresh copy of yourself so evaluation continues.
 
@@ -97,7 +100,7 @@ CALL DOLT_COMMIT('-Am', 'cell-zero: claim <CELL_NAME>');
 
 Now evaluate based on body_type:
 
-**Hard cell (literal:)** — Extract the value after "literal:", freeze yields:
+**Hard cell (literal:)** -- Extract the value after "literal:", freeze yields:
 ```sql
 UPDATE yields SET value_text = '<LITERAL_VALUE>', is_frozen = TRUE, frozen_at = NOW()
 WHERE cell_id = '<CELL_ID>' AND is_frozen = FALSE;
@@ -107,10 +110,10 @@ DELETE FROM cell_claims WHERE cell_id = '<CELL_ID>';
 CALL DOLT_COMMIT('-Am', 'cell: freeze hard cell <CELL_NAME>');
 ```
 
-**Hard cell (sql:)** — Execute the SQL after "sql:" prefix, freeze with result:
+**Hard cell (sql:)** -- Execute the SQL after "sql:" prefix, freeze with result:
 Run the query, take the scalar result, freeze yields same as literal.
 
-**Soft/stem cell** — Read the body as a prompt. Look up resolved inputs:
+**Soft/stem cell** -- Read the body as a prompt. Look up resolved inputs:
 ```sql
 SELECT CONCAT(g.source_cell, '.', g.source_field) AS input_key,
        LEFT(COALESCE(y.value_text, CAST(y.value_json AS CHAR)), 4096) AS input_val
@@ -160,3 +163,4 @@ CALL DOLT_COMMIT('-Am', 'cell-zero: spawn eval-one successor');
 ```
 
 This ensures there is always an eval-one cell ready for the next cycle.
+  ---

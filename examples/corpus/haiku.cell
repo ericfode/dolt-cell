@@ -1,9 +1,11 @@
-⊢ topic
-  yield subject ≡ autumn leaves
+cell topic
+  yield subject = autumn leaves
 
-⊢ compose
-  given topic→subject
+cell compose
+  given topic.subject
   yield poem
-  ∴ Write a haiku about «subject».
-  ⊨ poem has exactly three lines
-  ⊨ poem follows 5-7-5 syllable pattern
+  ---
+  Write a haiku about «subject».
+  ---
+  check poem has exactly three lines
+  check poem follows 5-7-5 syllable pattern

@@ -1,16 +1,21 @@
-⊢ topic
-  yield question ≡ What are the most promising approaches to AI alignment?
+cell topic
+  yield question = "What are the most promising approaches to AI alignment?"
 
-⊢∘ investigate × 3
-  given topic→question
+cell investigate (stem)
+  given topic.question
   yield finding
-  ∴∴ Research a distinct aspect of «question» that other investigators haven't covered. Return one substantive finding with evidence.
-  ⊨ finding is not empty
-  ⊨~ finding provides specific evidence or citations, not vague claims
+  recur (max 3)
+  ---
+  Research a distinct aspect of «question» that other investigators haven't covered. Return one substantive finding with evidence.
+  ---
+  check finding is not empty
+  check~ finding provides specific evidence or citations, not vague claims
 
-⊢ synthesize
-  given investigate-*→finding
+cell synthesize (stem)
+  given investigate[*].finding
   yield summary
-  ∴∴ You have received multiple independent research findings about the same topic. Synthesize all «finding» inputs into a coherent overview. Identify agreements, contradictions, and gaps.
-  ⊨ summary is not empty
-  ⊨~ summary addresses all findings, not just a subset
+  ---
+  You have received multiple independent research findings about the same topic. Synthesize all «finding» inputs into a coherent overview. Identify agreements, contradictions, and gaps.
+  ---
+  check summary is not empty
+  check~ summary addresses all findings, not just a subset

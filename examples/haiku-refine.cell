@@ -3,24 +3,28 @@
 -- Each iteration reads the previous poem, critiques it, and produces
 -- a tighter version until the haiku settles into its final form.
 
-⊢ topic
-  yield subject ≡ "lantern light on snow — a door left open at dusk"
+cell topic
+  yield subject = "lantern light on snow — a door left open at dusk"
 
-⊢ compose
-  given topic→subject
+cell compose
+  given topic.subject
   yield poem
   yield notes
-  ∴ Write a haiku about «subject». Follow the traditional 5-7-5 syllable structure across exactly three lines. Aim for a seasonal reference (kigo) and a cutting moment (kireji) that juxtaposes two images.
+  ---
+  Write a haiku about «subject». Follow the traditional 5-7-5 syllable structure across exactly three lines. Aim for a seasonal reference (kigo) and a cutting moment (kireji) that juxtaposes two images.
 
 Return the haiku on the first three lines, then a blank line, then one sentence of notes on your choices.
+  ---
 
-⊢∘ reflect × 4
-  given compose→poem
-  given compose→notes
+cell reflect (stem)
+  given compose.poem
+  given compose.notes
   yield poem
   yield notes
   yield settled
-  ∴∴ You are refining a haiku through successive passes. Here is the current version:
+  recur until settled = "SETTLED" (max 4)
+  ---
+  You are refining a haiku through successive passes. Here is the current version:
 
 «poem»
 
@@ -38,22 +42,26 @@ Return exactly this format:
 Line 1-3: the (possibly revised) haiku
 Line 5: SETTLED or REVISING
 Line 6: one sentence explaining what changed or why it's settled.
-  ⊨ poem has exactly three lines
-  ⊨~ poem follows 5-7-5 syllable pattern
-  ⊨~ settled is either "SETTLED" or "REVISING"
+  ---
+  check poem has exactly three lines
+  check~ poem follows 5-7-5 syllable pattern
+  check~ settled is either "SETTLED" or "REVISING"
 
-⊢ poem
-  given reflect→poem
+cell poem
+  given reflect.poem
   yield final
-  ∴ Return «poem» exactly as-is, with no changes or commentary. This is the finished haiku.
-  ⊨ final has exactly three lines
+  ---
+  Return «poem» exactly as-is, with no changes or commentary. This is the finished haiku.
+  ---
+  check final has exactly three lines
 
-⊢ evolution
-  given compose→poem
-  given reflect-*→poem
-  given reflect-*→settled
+cell evolution
+  given compose.poem
+  given reflect[*].poem
+  given reflect[*].settled
   yield timeline
-  ∴∴ You have received every version of the haiku from first draft through all refinement passes. Compile them into a numbered list showing how the poem evolved:
+  ---
+  You have received every version of the haiku from first draft through all refinement passes. Compile them into a numbered list showing how the poem evolved:
 
 Draft 0 (compose): «compose.poem»
 
@@ -63,4 +71,5 @@ Format each entry as:
   Pass N: <the three-line haiku, on one line separated by " / "> — <SETTLED or REVISING>
 
 End with a one-sentence observation about the trajectory of revision.
-  ⊨ timeline is not empty
+  ---
+  check timeline is not empty

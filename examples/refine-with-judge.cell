@@ -1,15 +1,20 @@
-⊢ prompt
-  yield topic ≡ Write a haiku about recursion.
+cell prompt
+  yield topic = "Write a haiku about recursion."
 
-⊢ draft
-  given prompt→topic
+cell draft (stem)
+  given prompt.topic
   yield text
-  ∴∴ Write a first attempt responding to «topic».
-  ⊨ text is not empty
+  ---
+  Write a first attempt responding to «topic».
+  ---
+  check text is not empty
 
-⊢∘ refine × 3
-  given draft→text
+cell refine (stem)
+  given draft.text
   yield text
-  ∴∴ Improve «text». Make it more evocative and precise. Keep the 5-7-5 syllable structure.
-  ⊨~ text follows the 5-7-5 syllable pattern exactly
-  ⊨~ text is poetic and captures the essence of recursion
+  recur until text = text (max 3)
+  ---
+  Improve «text». Make it more evocative and precise. Keep the 5-7-5 syllable structure.
+  ---
+  check~ text follows the 5-7-5 syllable pattern exactly
+  check~ text is poetic and captures the essence of recursion

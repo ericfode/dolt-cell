@@ -1,15 +1,19 @@
-⊢ source
-  yield code ≡ function add(a, b) { return a + b; }
-  yield language ≡ javascript
+cell source
+  yield code = function add(a, b) { return a + b; }
+  yield language = javascript
 
-⊢ analyze
-  given source→code
-  given source→language
+cell analyze
+  given source.code
+  given source.language
   yield findings
-  ∴ Review «code» written in «language». List bugs, style issues, and improvements as a JSON array of objects with keys: severity, category, message.
-  ⊨ findings is a valid JSON array
+  ---
+  Review «code» written in «language». List bugs, style issues, and improvements as a JSON array of objects with keys: severity, category, message.
+  ---
+  check findings is a valid JSON array
 
-⊢ summary
-  given analyze→findings
+cell summary
+  given analyze.findings
   yield report
-  ∴ Summarize the code review findings into a one-paragraph report.
+  ---
+  Summarize the code review findings into a one-paragraph report.
+  ---

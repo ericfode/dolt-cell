@@ -1,14 +1,18 @@
-⊢ data
-  yield items ≡ [4, 1, 7, 3, 9, 2]
+cell data
+  yield items = [4, 1, 7, 3, 9, 2]
 
-⊢ sort
-  given data→items
+cell sort
+  given data.items
   yield sorted
-  ∴ Sort «items» in ascending order.
-  ⊨ sorted is a permutation of items
-  ⊨ sorted is in ascending order
+  ---
+  Sort «items» in ascending order.
+  ---
+  check sorted is a permutation of items
+  check sorted is in ascending order
 
-⊢ report
-  given sort→sorted
+cell report
+  given sort.sorted
   yield summary
-  ∴ Write a one-sentence summary of the sort result.
+  ---
+  Write a one-sentence summary of the sort result.
+  ---

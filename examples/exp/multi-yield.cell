@@ -1,0 +1,23 @@
+-- Test multiple yields from one cell
+
+cell input
+  yield text = The quick brown fox jumps over the lazy dog near the riverbank at sunset.
+
+cell analyze
+  given input.text
+  yield word_count
+  yield char_count
+  yield longest_word
+  ---
+  Analyze «text». Return three lines, each with ONLY the value:
+  Line 1: word count (just the number)
+  Line 2: character count including spaces (just the number)
+  Line 3: the longest word (just the word)
+  ---
+
+cell verify-count
+  given analyze.word_count
+  yield check
+  ---
+  sql: SELECT CASE WHEN CAST(y.value_text AS UNSIGNED) > 0 THEN 'PASS' ELSE 'FAIL' END FROM yields y JOIN cells c ON y.cell_id = c.id WHERE c.program_id = 'multi-yield' AND c.name = 'analyze' AND y.field_name = 'word_count' AND y.is_frozen = 1
+  ---

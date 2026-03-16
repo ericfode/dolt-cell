@@ -1,9 +1,11 @@
-⊢ seed
-  yield n ≡ 10
+cell seed
+  yield n = 10
 
-⊢ compute
-  given seed→n
+cell compute
+  given seed.n
   yield sequence
-  ∴ Generate the first «n» Fibonacci numbers as a JSON array.
-  ⊨ sequence is a valid JSON array
-  ⊨ sequence has exactly «n» elements
+  ---
+  Generate the first «n» Fibonacci numbers as a JSON array.
+  ---
+  check sequence is a valid JSON array
+  check sequence has exactly «n» elements

@@ -1,21 +1,28 @@
-⊢ prompt
-  yield topic ≡ Explain why content-addressable storage matters for version control, in 3 sentences.
+cell prompt
+  yield topic = "Explain why content-addressable storage matters for version control, in 3 sentences."
 
-⊢ draft
-  given prompt→topic
+cell draft (stem)
+  given prompt.topic
   yield text
-  ∴∴ Write a first draft responding to «topic». Be concise but substantive.
-  ⊨ text is not empty
+  ---
+  Write a first draft responding to «topic». Be concise but substantive.
+  ---
+  check text is not empty
 
-⊢∘ refine × 3
-  given draft→text
+cell refine (stem)
+  given draft.text
   yield text
-  ∴∴ Improve «text». Make it clearer, more precise, and more compelling. Keep the same length (3 sentences). Return only the improved text, no commentary.
-  ⊨ text is not empty
+  recur until text = text (max 3)
+  ---
+  Improve «text». Make it clearer, more precise, and more compelling. Keep the same length (3 sentences). Return only the improved text, no commentary.
+  ---
+  check text is not empty
 
-⊢ judge
-  given draft→text
-  given refine→text
+cell judge (stem)
+  given draft.text
+  given refine.text
   yield verdict
-  ∴∴ Compare the original draft «draft.text» with the refined version «refine-3.text». Which is better and why? One paragraph.
-  ⊨ verdict is not empty
+  ---
+  Compare the original draft «draft.text» with the refined version «refine.text». Which is better and why? One paragraph.
+  ---
+  check verdict is not empty

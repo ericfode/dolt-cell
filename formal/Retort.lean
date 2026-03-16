@@ -21,7 +21,9 @@ import Core
     CELL DEFINITIONS (immutable after pour)
     ==================================================================== -/
 
-structure CellDef where
+-- Renamed to RCellDef to avoid collision with Denotational.CellDef
+-- when both modules are imported by Refinement.lean.
+structure RCellDef where
   name      : CellName
   program   : ProgramId
   bodyType  : BodyType
@@ -83,7 +85,7 @@ structure Claim where
     ==================================================================== -/
 
 structure Retort where
-  cells    : List CellDef          -- immutable after pour
+  cells    : List RCellDef          -- immutable after pour
   givens   : List GivenSpec        -- immutable after pour
   frames   : List Frame            -- append-only
   yields   : List Yield            -- append-only
@@ -112,7 +114,7 @@ def Retort.frameYields (r : Retort) (fid : FrameId) : List Yield :=
 def Retort.frameClaim (r : Retort) (fid : FrameId) : Option Claim :=
   r.claims.find? (fun c => c.frameId == fid)
 
-def Retort.cellDef (r : Retort) (name : CellName) : Option CellDef :=
+def Retort.cellDef (r : Retort) (name : CellName) : Option RCellDef :=
   r.cells.find? (fun c => c.name == name)
 
 def Retort.frameStatus (r : Retort) (f : Frame) : FrameStatus :=
@@ -202,7 +204,7 @@ def bindingsMonotone (r : Retort) : Prop :=
 
 -- Pour: add cell definitions, givens, and initial frames
 structure PourData where
-  cells  : List CellDef
+  cells  : List RCellDef
   givens : List GivenSpec
   frames : List Frame            -- gen-0 frames for non-stem cells
   deriving Repr
@@ -1098,7 +1100,7 @@ theorem createFrame_adds_frame (r : Retort) (cfd : CreateFrameData) :
 -- Helper: when cellDef is some, frameStatus = declared implies frameClaim is none.
 -- This is because the 'some cd' branch of frameStatus returns .declared only
 -- when (a) not all fields are frozen AND (b) frameClaim is none.
-private theorem declared_of_some_implies_no_claim (r : Retort) (f : Frame) (cd : CellDef)
+private theorem declared_of_some_implies_no_claim (r : Retort) (f : Frame) (cd : RCellDef)
     (hCellDef : r.cellDef f.cellName = some cd)
     (hStatus : r.frameStatus f = .declared) :
     (r.frameClaim f.id).isNone = true := by
@@ -1165,7 +1167,7 @@ theorem progress (r : Retort) (f : Frame)
     ==================================================================== -/
 
 -- Postcondition: poured cells are in the result.
-theorem pour_adds_cells (r : Retort) (pd : PourData) (c : CellDef)
+theorem pour_adds_cells (r : Retort) (pd : PourData) (c : RCellDef)
     (hc : c ∈ pd.cells) :
     c ∈ (applyOp r (.pour pd)).cells := by
   unfold applyOp
@@ -1182,7 +1184,7 @@ theorem pour_adds_frames (r : Retort) (pd : PourData) (f : Frame)
 
 -- Postcondition: after freeze, if the cell definition exists and the freeze
 -- yields cover all fields of the cell, the frame's status is frozen.
-theorem freeze_makes_frozen (r : Retort) (fd : FreezeData) (f : Frame) (cd : CellDef)
+theorem freeze_makes_frozen (r : Retort) (fd : FreezeData) (f : Frame) (cd : RCellDef)
     (_hFrame : f ∈ r.frames)
     (_hFrameId : f.id = fd.frameId)
     (hCellDef : (applyOp r (.freeze fd)).cellDef f.cellName = some cd)
@@ -1775,7 +1777,7 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
     ====================================================================
 
   TYPES:
-  - CellDef, GivenSpec: immutable definitions (set at pour time)
+  - RCellDef, GivenSpec: immutable definitions (set at pour time)
   - Frame: immutable execution instances (append-only)
   - Yield: immutable outputs (append-only)
   - Binding: immutable resolved givens (append-only, DAG edges)

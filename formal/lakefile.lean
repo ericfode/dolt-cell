@@ -16,3 +16,6 @@ lean_lib Retort where
 
 lean_lib Denotational where
   roots := #[`Denotational]
+
+lean_lib Refinement where
+  roots := #[`Refinement]

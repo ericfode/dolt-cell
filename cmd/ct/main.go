@@ -2544,9 +2544,67 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'All yields frozen', NOW())",
 			cellID)
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))
+
+		// Stem cell respawn: replace frozen stem with fresh declared copy
+		var bodyType string
+		db.QueryRow("SELECT body_type FROM cells WHERE id = ?", cellID).Scan(&bodyType)
+		if bodyType == "stem" {
+			replRespawnStem(db, progID, cellName, cellID)
+		}
 	}
 
 	return "ok", fmt.Sprintf("Yield frozen: %s.%s", cellName, fieldName)
+}
+
+// replRespawnStem replaces a frozen stem cell with a fresh declared copy.
+// The UNIQUE(program_id, name) constraint requires deleting the old cell first.
+func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
+	// Read the body and yield field names from the frozen cell
+	var body sql.NullString
+	if err := db.QueryRow("SELECT body FROM cells WHERE id = ?", frozenID).Scan(&body); err != nil {
+		log.Printf("WARN: respawn %s: read body: %v", cellName, err)
+		return
+	}
+
+	var yieldFields []string
+	rows, err := db.Query("SELECT field_name FROM yields WHERE cell_id = ?", frozenID)
+	if err == nil {
+		for rows.Next() {
+			var f string
+			rows.Scan(&f)
+			yieldFields = append(yieldFields, f)
+		}
+		rows.Close()
+	}
+
+	// Delete frozen cell (yields first due to FK)
+	mustExecDB(db, "DELETE FROM yields WHERE cell_id = ?", frozenID)
+	mustExecDB(db, "DELETE FROM cells WHERE id = ?", frozenID)
+
+	// Insert fresh declared copy with new ID
+	var newID string
+	db.QueryRow("SELECT CONCAT(?, '-', SUBSTR(MD5(RAND()), 1, 8))", progID[:min(8, len(progID))]).Scan(&newID)
+
+	mustExecDB(db,
+		"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, ?, 'stem', ?, 'declared')",
+		newID, progID, cellName, body.String)
+
+	for _, f := range yieldFields {
+		var yID string
+		db.QueryRow("SELECT CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8))").Scan(&yID)
+		mustExecDB(db,
+			"INSERT INTO yields (id, cell_id, field_name) VALUES (?, ?, ?)",
+			yID, newID, f)
+	}
+
+	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: respawn stem %s", cellName))
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // replCellCounts returns (total, frozen, ready) cell counts for a program.

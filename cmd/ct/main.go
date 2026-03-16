@@ -1232,9 +1232,12 @@ func cmdNext(db *sql.DB, progID string, wait bool, modelHint string) {
 		fmt.Printf("ACTION: frozen\n")
 
 	case "dispatch":
-		// Soft cell claimed. Track for cleanup on interrupt.
-		claimedCellID = es.cellID
-		claimedPistonID = pistonID
+		// Soft cell claimed. Do NOT release on normal exit — the piston
+		// needs the cell to stay in 'computing' for ct submit to find it.
+		// Only release on interrupt (handled by signal handler above).
+		// Clear the defer-tracked ID so the defer is a no-op on normal return.
+		claimedCellID = ""
+		claimedPistonID = ""
 
 		// Print everything the piston needs.
 		fmt.Printf("PROGRAM: %s\n", es.progID)

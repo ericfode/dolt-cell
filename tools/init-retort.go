@@ -42,7 +42,7 @@ func main() {
 
 	// Find project root (walk up looking for schema/)
 	root := "."
-	for _, try := range []string{".", "../..", "../../.."} {
+	for _, try := range []string{".", "..", "../..", "../../.."} {
 		if _, err := os.Stat(try + "/schema/retort-init.sql"); err == nil {
 			root = try
 			break

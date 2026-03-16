@@ -24,7 +24,8 @@ type parsedCell struct {
 	givens   []parsedGiven
 	yields   []parsedYield
 	oracles  []parsedOracle
-	iterate  int // >0 means ⊢∘ expansion count
+	iterate  int    // >0 means iteration expansion count
+	guard    string // guard expression for guarded recursion (e.g., `settled = "SETTLED"`)
 }
 
 type parsedGiven struct {
@@ -44,9 +45,264 @@ type parsedOracle struct {
 	condExpr   string // condition_expr or empty
 }
 
-// parseCell parses .cell turnstyle syntax into structured cells.
-// Returns nil if the syntax can't be handled deterministically.
+// parseCellFile parses .cell syntax. Tries v2 (ASCII) first, falls back to v1 (Unicode).
 func parseCellFile(text string) []parsedCell {
+	if cells := parseCellFileV2(text); cells != nil {
+		return cells
+	}
+	return parseCellFileV1(text)
+}
+
+// parseCellFileV2 parses v2 ASCII syntax: cell NAME, ---, given X.Y, check, recur.
+func parseCellFileV2(text string) []parsedCell {
+	lines := strings.Split(text, "\n")
+
+	// Quick detect: v2 files have "cell " at column 0, not "⊢ "
+	hasV2 := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "cell ") && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			hasV2 = true
+			break
+		}
+	}
+	if !hasV2 {
+		return nil
+	}
+
+	var cells []parsedCell
+	var cur *parsedCell
+	inBody := false
+
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, " \t\r")
+		trimmed := strings.TrimSpace(line)
+		isIndented := len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
+
+		// Blank line
+		if trimmed == "" {
+			if inBody && cur != nil {
+				cur.body += "\n"
+			}
+			continue
+		}
+
+		// Inside body fence — check BEFORE comment/cell-decl to avoid mismatches
+		if inBody && cur != nil {
+			if isIndented && trimmed == "---" {
+				// Closing fence
+				inBody = false
+				// Infer hard type from sql: body
+				body := strings.TrimRight(cur.body, " \t\n\r")
+				cur.body = body
+				if cur.bodyType != "stem" && (strings.HasPrefix(body, "sql:") || strings.HasPrefix(body, "dml:")) {
+					cur.bodyType = "hard"
+				}
+				continue
+			}
+			// Body content
+			if cur.body == "" {
+				cur.body = trimmed
+			} else {
+				cur.body += "\n" + trimmed
+			}
+			continue
+		}
+
+		// Comment (but not --- fence)
+		if strings.HasPrefix(trimmed, "--") && trimmed != "---" {
+			continue
+		}
+
+		// Cell declaration at column 0: cell NAME or cell NAME (stem)
+		if strings.HasPrefix(trimmed, "cell ") && !isIndented {
+			if cur != nil {
+				cur.body = strings.TrimRight(cur.body, " \t\n\r")
+				cells = append(cells, *cur)
+			}
+			cur = &parsedCell{bodyType: "soft"}
+			rest := strings.TrimPrefix(trimmed, "cell ")
+			if strings.HasSuffix(rest, "(stem)") {
+				cur.name = strings.TrimSpace(strings.TrimSuffix(rest, "(stem)"))
+				cur.bodyType = "stem"
+			} else {
+				cur.name = strings.TrimSpace(rest)
+			}
+			continue
+		}
+
+		if cur == nil {
+			continue
+		}
+
+		// Indented structural keywords
+		if isIndented {
+			// Body fence opening: ---
+			if trimmed == "---" {
+				inBody = true
+				cur.body = ""
+				continue
+			}
+
+			// Given: given X.Y, given? X.Y, given X[*].Y
+			if strings.HasPrefix(trimmed, "given? ") || strings.HasPrefix(trimmed, "given ") {
+				optional := strings.HasPrefix(trimmed, "given? ")
+				rest := trimmed
+				if optional {
+					rest = strings.TrimPrefix(trimmed, "given? ")
+				} else {
+					rest = strings.TrimPrefix(trimmed, "given ")
+				}
+
+				// Parse dot notation: X.Y, X[*].Y, X[N].Y
+				dotIdx := strings.LastIndex(rest, ".")
+				if dotIdx < 0 {
+					return nil
+				}
+				source := strings.TrimSpace(rest[:dotIdx])
+				field := strings.TrimSpace(rest[dotIdx+1:])
+
+				// Handle bracket notation
+				if bracketIdx := strings.Index(source, "["); bracketIdx >= 0 {
+					baseName := source[:bracketIdx]
+					closeBracket := strings.Index(source, "]")
+					if closeBracket < 0 {
+						return nil
+					}
+					idx := source[bracketIdx+1 : closeBracket]
+					if idx == "*" {
+						source = baseName + "-*"
+					} else {
+						source = baseName + "-" + idx
+					}
+				}
+
+				cur.givens = append(cur.givens, parsedGiven{
+					sourceCell:  source,
+					sourceField: field,
+					optional:    optional,
+				})
+				continue
+			}
+
+			// Yield: yield NAME = VALUE or yield NAME
+			if strings.HasPrefix(trimmed, "yield ") {
+				rest := strings.TrimPrefix(trimmed, "yield ")
+				if eqIdx := strings.Index(rest, " = "); eqIdx >= 0 {
+					name := strings.TrimSpace(rest[:eqIdx])
+					value := strings.TrimSpace(rest[eqIdx+3:])
+					// Strip surrounding quotes if present
+					if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+						value = value[1 : len(value)-1]
+					}
+					cur.yields = append(cur.yields, parsedYield{
+						fieldName: name,
+						prebound:  value,
+					})
+					if cur.bodyType != "stem" {
+						cur.bodyType = "hard"
+					}
+				} else {
+					// strip : TYPE suffix if present
+					fname := strings.TrimSpace(rest)
+					if colonIdx := strings.Index(fname, " : "); colonIdx >= 0 {
+						fname = strings.TrimSpace(fname[:colonIdx])
+					}
+					cur.yields = append(cur.yields, parsedYield{
+						fieldName: fname,
+					})
+				}
+				continue
+			}
+
+			// Recur: recur until GUARD (max N) or recur (max N)
+			if strings.HasPrefix(trimmed, "recur ") {
+				rest := strings.TrimPrefix(trimmed, "recur ")
+				// Find (max N)
+				maxIdx := strings.Index(rest, "(max ")
+				if maxIdx < 0 {
+					return nil
+				}
+				closeIdx := strings.Index(rest[maxIdx:], ")")
+				if closeIdx < 0 {
+					return nil
+				}
+				nStr := strings.TrimSpace(rest[maxIdx+5 : maxIdx+closeIdx])
+				n, err := strconv.Atoi(nStr)
+				if err != nil {
+					return nil
+				}
+				cur.iterate = n
+
+				// Parse guard if present
+				if strings.HasPrefix(rest, "until ") {
+					guardStr := strings.TrimSpace(rest[6:maxIdx])
+					cur.guard = guardStr
+				}
+				continue
+			}
+
+			// Oracle: check~ TEXT (always semantic)
+			if strings.HasPrefix(trimmed, "check~ ") {
+				assertion := strings.TrimPrefix(trimmed, "check~ ")
+				cur.oracles = append(cur.oracles, parsedOracle{
+					assertion:  assertion,
+					oracleType: "semantic",
+				})
+				continue
+			}
+
+			// Oracle: check TEXT (auto-classified)
+			if strings.HasPrefix(trimmed, "check ") {
+				assertion := strings.TrimPrefix(trimmed, "check ")
+				o := parsedOracle{assertion: assertion, oracleType: "semantic"}
+				// Classify deterministic oracles
+				lower := strings.ToLower(assertion)
+				if strings.Contains(lower, "not empty") || strings.Contains(lower, "is not empty") {
+					o.oracleType = "deterministic"
+					o.condExpr = "not_empty"
+				} else if strings.Contains(lower, "valid json array") || strings.Contains(lower, "is a valid json array") {
+					o.oracleType = "deterministic"
+					o.condExpr = "is_json_array"
+				} else if strings.Contains(lower, "permutation of") {
+					idx := strings.Index(lower, "permutation of ")
+					if idx >= 0 {
+						rest := assertion[idx+len("permutation of "):]
+						refField := strings.Fields(rest)[0]
+						srcCellName := refField
+						for _, g := range cur.givens {
+							if g.sourceField == refField {
+								srcCellName = g.sourceCell
+								break
+							}
+						}
+						o.oracleType = "deterministic"
+						o.condExpr = "length_matches:" + srcCellName
+					}
+				}
+				cur.oracles = append(cur.oracles, o)
+				continue
+			}
+		}
+
+	}
+
+	if cur != nil {
+		cur.body = strings.TrimRight(cur.body, " \t\n\r")
+		cells = append(cells, *cur)
+	}
+
+	// Trim all bodies
+	for i := range cells {
+		cells[i].body = strings.TrimRight(cells[i].body, " \t\n\r")
+	}
+
+	return cells
+}
+
+// parseCellFileV1 parses v1 Unicode turnstyle syntax (⊢, ∴, ⊨, →).
+// Returns nil if the syntax can't be handled deterministically.
+func parseCellFileV1(text string) []parsedCell {
 	lines := strings.Split(text, "\n")
 	var cells []parsedCell
 	var cur *parsedCell

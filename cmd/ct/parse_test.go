@@ -599,6 +599,464 @@ func TestGatherWildcard(t *testing.T) {
 	t.Logf("✓ gather wildcard expanded:\n%s", sql)
 }
 
+// ===================================================================
+// v2 syntax tests
+// ===================================================================
+
+func TestV2BasicCellDecl(t *testing.T) {
+	input := `cell topic
+  yield subject = "autumn rain"
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	if len(cells) != 1 {
+		t.Fatalf("expected 1 cell, got %d", len(cells))
+	}
+	c := cells[0]
+	if c.name != "topic" {
+		t.Errorf("name=%q, want topic", c.name)
+	}
+	if c.bodyType != "hard" {
+		t.Errorf("bodyType=%q, want hard", c.bodyType)
+	}
+	if len(c.yields) != 1 || c.yields[0].prebound != "autumn rain" {
+		t.Errorf("yield prebound=%q, want 'autumn rain'", c.yields[0].prebound)
+	}
+}
+
+func TestV2StemCell(t *testing.T) {
+	input := `cell eval-one (stem)
+  yield status
+  ---
+  Find work and evaluate it.
+  ---
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	if len(cells) != 1 {
+		t.Fatalf("expected 1 cell, got %d", len(cells))
+	}
+	c := cells[0]
+	if c.name != "eval-one" {
+		t.Errorf("name=%q, want eval-one", c.name)
+	}
+	if c.bodyType != "stem" {
+		t.Errorf("bodyType=%q, want stem", c.bodyType)
+	}
+	if !strings.Contains(c.body, "Find work") {
+		t.Errorf("body=%q, missing 'Find work'", c.body)
+	}
+}
+
+func TestV2DotNotationGiven(t *testing.T) {
+	input := `cell topic
+  yield subject = "cats"
+
+cell compose
+  given topic.subject
+  yield poem
+  ---
+  Write about «subject».
+  ---
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	if len(cells) != 2 {
+		t.Fatalf("expected 2 cells, got %d", len(cells))
+	}
+	compose := cells[1]
+	if len(compose.givens) != 1 {
+		t.Fatalf("compose: expected 1 given, got %d", len(compose.givens))
+	}
+	g := compose.givens[0]
+	if g.sourceCell != "topic" || g.sourceField != "subject" {
+		t.Errorf("given: %s.%s, want topic.subject", g.sourceCell, g.sourceField)
+	}
+	if g.optional {
+		t.Error("given should not be optional")
+	}
+}
+
+func TestV2OptionalGiven(t *testing.T) {
+	input := `cell refine (stem)
+  given? judge.verdict
+  yield text
+  ---
+  Revise based on feedback.
+  ---
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	g := cells[0].givens[0]
+	if !g.optional {
+		t.Error("given? should be optional")
+	}
+	if g.sourceCell != "judge" || g.sourceField != "verdict" {
+		t.Errorf("given: %s.%s, want judge.verdict", g.sourceCell, g.sourceField)
+	}
+}
+
+func TestV2FencedBody(t *testing.T) {
+	input := `cell compose
+  given topic.subject
+  yield poem
+  ---
+  Write a haiku about «subject».
+
+  Follow the 5-7-5 structure.
+  Return three lines.
+  ---
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	c := cells[0]
+	if !strings.Contains(c.body, "Write a haiku") {
+		t.Errorf("body missing 'Write a haiku': %q", c.body)
+	}
+	if !strings.Contains(c.body, "Return three lines") {
+		t.Errorf("body missing 'Return three lines': %q", c.body)
+	}
+	// Blank line preserved
+	if !strings.Contains(c.body, "\n\n") {
+		t.Errorf("body should preserve blank line: %q", c.body)
+	}
+}
+
+func TestV2HardComputedSQL(t *testing.T) {
+	input := `cell count-words
+  given compose.poem
+  yield total
+  ---
+  sql: SELECT COUNT(*) FROM items
+  ---
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	c := cells[0]
+	if c.bodyType != "hard" {
+		t.Errorf("bodyType=%q, want hard (sql: body)", c.bodyType)
+	}
+	if !strings.HasPrefix(c.body, "sql:") {
+		t.Errorf("body should start with 'sql:': %q", c.body)
+	}
+}
+
+func TestV2CheckOracle(t *testing.T) {
+	input := `cell answer
+  given topic.question
+  yield text
+  ---
+  Answer «question».
+  ---
+  check text is not empty
+  check~ text is factually accurate
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	c := cells[0]
+	if len(c.oracles) != 2 {
+		t.Fatalf("expected 2 oracles, got %d", len(c.oracles))
+	}
+	// check → deterministic (auto-classified)
+	if c.oracles[0].oracleType != "deterministic" {
+		t.Errorf("oracle[0]: type=%q, want deterministic", c.oracles[0].oracleType)
+	}
+	if c.oracles[0].condExpr != "not_empty" {
+		t.Errorf("oracle[0]: condExpr=%q, want not_empty", c.oracles[0].condExpr)
+	}
+	// check~ → semantic
+	if c.oracles[1].oracleType != "semantic" {
+		t.Errorf("oracle[1]: type=%q, want semantic", c.oracles[1].oracleType)
+	}
+}
+
+func TestV2GatherBracket(t *testing.T) {
+	input := `cell topic
+  yield question = "How do LLMs work?"
+
+cell research (stem)
+  given topic.question
+  yield finding
+  recur (max 3)
+  ---
+  Research a unique aspect of «question».
+  ---
+
+cell synthesize
+  given research[*].finding
+  yield summary
+  ---
+  Combine all findings.
+  ---
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	// Find synthesize cell
+	var synth *parsedCell
+	for i := range cells {
+		if cells[i].name == "synthesize" {
+			synth = &cells[i]
+			break
+		}
+	}
+	if synth == nil {
+		t.Fatal("synthesize cell not found")
+	}
+
+	// Gather bracket should expand to research-1, research-2, research-3
+	sql := cellsToSQL("gather-v2", cells)
+	for i := 1; i <= 3; i++ {
+		ref := fmt.Sprintf("'research-%d', 'finding'", i)
+		if !strings.Contains(sql, ref) {
+			t.Errorf("synthesize should have given research-%d.finding in SQL", i)
+		}
+	}
+}
+
+func TestV2RecurIteration(t *testing.T) {
+	input := `cell seed
+  yield text = "Draft about cats."
+
+cell refine (stem)
+  given seed.text
+  yield text
+  recur (max 3)
+  ---
+  Improve «text».
+  ---
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	// refine has recur (max 3) — should expand to refine-1, refine-2, refine-3
+	sql := cellsToSQL("recur-v2", cells)
+	for i := 1; i <= 3; i++ {
+		name := fmt.Sprintf("'refine-%d'", i)
+		if !strings.Contains(sql, name) {
+			t.Errorf("SQL should contain expanded cell %s", name)
+		}
+	}
+
+	// refine-2 should chain from refine-1
+	if !strings.Contains(sql, "'refine-1', 'text'") {
+		t.Error("refine-2 should have given refine-1.text")
+	}
+}
+
+func TestV2RecurWithGuard(t *testing.T) {
+	input := `cell compose
+  yield poem
+
+cell reflect (stem)
+  given compose.poem
+  yield poem
+  yield settled
+  recur until settled = "SETTLED" (max 4)
+  ---
+  Refine «poem». Return SETTLED or REVISING.
+  ---
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	// reflect should have iterate=4 and a guard
+	var reflect *parsedCell
+	for i := range cells {
+		if cells[i].name == "reflect" {
+			reflect = &cells[i]
+			break
+		}
+	}
+	if reflect == nil {
+		t.Fatal("reflect cell not found")
+	}
+	if reflect.iterate != 4 {
+		t.Errorf("iterate=%d, want 4", reflect.iterate)
+	}
+	if reflect.guard == "" {
+		t.Error("guard should not be empty")
+	}
+}
+
+func TestV2ParseCellZero(t *testing.T) {
+	data, err := os.ReadFile("../../examples/cell-zero.cell")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	cells := parseCellFile(string(data))
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil — cannot parse v2 cell-zero.cell")
+	}
+
+	// cell-zero has: context, pour, oracle-semantic, claim, dispatch, evaluate, submit, eval-loop, spawn, crystallize
+	if len(cells) != 10 {
+		t.Fatalf("expected 10 cells, got %d", len(cells))
+	}
+
+	// context is a hard cell with 2 prebound yields
+	if cells[0].name != "context" {
+		t.Errorf("cell[0].name=%q, want context", cells[0].name)
+	}
+	if cells[0].bodyType != "hard" {
+		t.Errorf("context bodyType=%q, want hard", cells[0].bodyType)
+	}
+
+	// pour is a stem cell
+	pour := cells[1]
+	if pour.name != "pour" {
+		t.Errorf("cell[1].name=%q, want pour", pour.name)
+	}
+	if pour.bodyType != "stem" {
+		t.Errorf("pour bodyType=%q, want stem", pour.bodyType)
+	}
+	if len(pour.givens) != 2 {
+		t.Errorf("pour: %d givens, want 2", len(pour.givens))
+	}
+
+	// Verify SQL generation works
+	sql := cellsToSQL("cell-zero", cells)
+	if sql == "" {
+		t.Fatal("cellsToSQL returned empty")
+	}
+}
+
+func TestV2ParseHaiku(t *testing.T) {
+	data, err := os.ReadFile("../../examples/haiku.cell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells := parseCellFile(string(data))
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil — cannot parse v2 haiku.cell")
+	}
+	if len(cells) != 4 {
+		t.Fatalf("expected 4 cells, got %d", len(cells))
+	}
+
+	// Verify critique has a semantic oracle
+	var critique *parsedCell
+	for i := range cells {
+		if cells[i].name == "critique" {
+			critique = &cells[i]
+		}
+	}
+	if critique == nil {
+		t.Fatal("critique not found")
+	}
+	if len(critique.oracles) != 1 {
+		t.Fatalf("critique: expected 1 oracle, got %d", len(critique.oracles))
+	}
+	if critique.oracles[0].oracleType != "semantic" {
+		t.Errorf("critique oracle type=%q, want semantic", critique.oracles[0].oracleType)
+	}
+}
+
+func TestV2ParseHaikuRefine(t *testing.T) {
+	data, err := os.ReadFile("../../examples/haiku-refine.cell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells := parseCellFile(string(data))
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil — cannot parse v2 haiku-refine.cell")
+	}
+
+	// haiku-refine: topic, compose, reflect(stem+recur), poem, evolution
+	if len(cells) != 5 {
+		t.Fatalf("expected 5 cells, got %d", len(cells))
+	}
+
+	// reflect has recur until settled = "SETTLED" (max 4)
+	var reflect *parsedCell
+	for i := range cells {
+		if cells[i].name == "reflect" {
+			reflect = &cells[i]
+		}
+	}
+	if reflect == nil {
+		t.Fatal("reflect not found")
+	}
+	if reflect.bodyType != "stem" {
+		t.Errorf("reflect bodyType=%q, want stem", reflect.bodyType)
+	}
+	if reflect.iterate != 4 {
+		t.Errorf("reflect iterate=%d, want 4", reflect.iterate)
+	}
+
+	// evolution gathers reflect[*].poem and reflect[*].settled
+	var evo *parsedCell
+	for i := range cells {
+		if cells[i].name == "evolution" {
+			evo = &cells[i]
+		}
+	}
+	if evo == nil {
+		t.Fatal("evolution not found")
+	}
+	// Should have gather givens: compose.poem + reflect[*].poem + reflect[*].settled = 3 raw givens
+	// The [*] will expand during SQL generation
+	if len(evo.givens) < 3 {
+		t.Errorf("evolution: expected at least 3 givens, got %d", len(evo.givens))
+	}
+}
+
+func TestV2YieldUnquoted(t *testing.T) {
+	// yield NAME = VALUE without quotes should work
+	input := `cell topic
+  yield subject = autumn rain on a temple roof
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	if cells[0].yields[0].prebound != "autumn rain on a temple roof" {
+		t.Errorf("prebound=%q, want 'autumn rain on a temple roof'", cells[0].yields[0].prebound)
+	}
+}
+
+func TestV2AllExamplesParse(t *testing.T) {
+	files, err := filepath.Glob("../../examples/*.cell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed []string
+	for _, f := range files {
+		name := filepath.Base(f)
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		cells := parseCellFile(string(data))
+		if cells == nil {
+			failed = append(failed, name)
+		}
+	}
+	if len(failed) > 0 {
+		t.Errorf("failed to parse %d v2 files: %v", len(failed), failed)
+	}
+}
+
 func TestGatherWildcardWithTemplateRef(t *testing.T) {
 	// Both gather and template ref in same program
 	input := `⊢ seed

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -123,7 +124,7 @@ func main() {
 // cmdRun drives the eval loop. Hard cells freeze inline. Soft cells print
 // the resolved prompt and stop — the piston (you) evaluates and calls ct submit.
 func cmdRun(db *sql.DB, progID string) {
-	pistonID := fmt.Sprintf("ct-run-%d", time.Now().UnixNano()%100000000)
+	pistonID := genPistonID()
 	for {
 		mustExec(db, "SET @@dolt_transaction_commit = 0")
 		rows, err := db.Query("CALL cell_eval_step(?, ?)", progID, pistonID)
@@ -640,6 +641,12 @@ func trunc(s string, n int) string {
 	return s[:n] + "..."
 }
 
+func genPistonID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("piston-%s", hex.EncodeToString(b))
+}
+
 func fmtDuration(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
@@ -678,7 +685,7 @@ func fmtDuration(d time.Duration) string {
 // soft cell or quiescent."
 
 func cmdPiston(db *sql.DB, progID string) {
-	pistonID := fmt.Sprintf("piston-%d", time.Now().UnixNano()%100000000)
+	pistonID := genPistonID()
 
 	// Register
 	db.Exec("DELETE FROM pistons WHERE id = ?", pistonID)
@@ -772,7 +779,7 @@ func cmdPiston(db *sql.DB, progID string) {
 //   2 = no ready cells (quiescent)
 
 func cmdNext(db *sql.DB, progID string, wait bool) {
-	pistonID := fmt.Sprintf("piston-%d", time.Now().UnixNano()%100000000)
+	pistonID := genPistonID()
 
 	// Register piston (lightweight — just so claims have a valid piston_id)
 	db.Exec("DELETE FROM pistons WHERE id = ?", pistonID)
@@ -783,6 +790,15 @@ func cmdNext(db *sql.DB, progID string, wait bool) {
 	// Clean exit on Ctrl-C during wait
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
+
+	// Track whether we claimed a cell so we can release on interrupt
+	var claimedCellID, claimedPistonID string
+	defer func() {
+		if claimedCellID != "" {
+			db.Exec("DELETE FROM cell_claims WHERE cell_id = ? AND piston_id = ?", claimedCellID, claimedPistonID)
+			db.Exec("UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE id = ? AND state = 'computing'", claimedCellID)
+		}
+	}()
 
 	var es evalStepResult
 	for {
@@ -825,7 +841,11 @@ func cmdNext(db *sql.DB, progID string, wait bool) {
 		fmt.Printf("ACTION: frozen\n")
 
 	case "dispatch":
-		// Soft cell claimed. Print everything the piston needs.
+		// Soft cell claimed. Track for cleanup on interrupt.
+		claimedCellID = es.cellID
+		claimedPistonID = pistonID
+
+		// Print everything the piston needs.
 		fmt.Printf("PROGRAM: %s\n", es.progID)
 		fmt.Printf("CELL: %s\n", es.cellName)
 		fmt.Printf("CELL_ID: %s\n", es.cellID)
@@ -927,6 +947,10 @@ type watchModel struct {
 	// Search
 	filtering  bool
 	filterText string
+	// Help overlay
+	showHelp bool
+	// Auto-retry state
+	retryCountdown int // seconds until next retry (0 = not retrying)
 	// Session stats
 	stats watchStats
 }
@@ -984,10 +1008,17 @@ type traceEvent struct {
 	createdAt         time.Time
 }
 
+type yieldInfo struct {
+	fieldName string
+	valueText string
+	isFrozen  bool
+}
+
 type cellDetail struct {
 	body, bodyType, modelHint string
 	assignedPiston            string
 	givens                    []givenInfo
+	yields                    []yieldInfo
 	oracles                   []oracleInfo
 	trace                     []traceEvent
 }
@@ -1019,6 +1050,17 @@ func queryDetailData(db *sql.DB, cellID, progID string) (*cellDetail, error) {
 			var gi givenInfo
 			gRows.Scan(&gi.sourceCell, &gi.sourceField, &gi.optional, &gi.value, &gi.frozen)
 			d.givens = append(d.givens, gi)
+		}
+	}
+
+	// Yields
+	yRows, err := db.Query("SELECT field_name, COALESCE(value_text, ''), is_frozen FROM yields WHERE cell_id = ?", cellID)
+	if err == nil {
+		defer yRows.Close()
+		for yRows.Next() {
+			var yi yieldInfo
+			yRows.Scan(&yi.fieldName, &yi.valueText, &yi.isFrozen)
+			d.yields = append(d.yields, yi)
 		}
 	}
 
@@ -1117,6 +1159,26 @@ func (m watchModel) renderDetail() string {
 				val = trunc(val, maxW-30)
 			}
 			buf.WriteString(fmt.Sprintf("    %s %s→%s%s = %s\n", frozen, g.sourceCell, g.sourceField, opt, val))
+		}
+	}
+
+	// Yields
+	if len(d.yields) > 0 {
+		buf.WriteString(detailLabelStyle.Render("  YIELDS") + "\n")
+		for _, y := range d.yields {
+			icon := "○"
+			valStyle := pendValStyle
+			if y.isFrozen {
+				icon = frozenValStyle.Render("■")
+				valStyle = frozenValStyle
+			}
+			val := y.valueText
+			if val == "" {
+				val = detailDimStyle.Render("—")
+			} else {
+				val = valStyle.Render(trunc(val, maxW-30))
+			}
+			buf.WriteString(fmt.Sprintf("    %s %s = %s\n", icon, y.fieldName, val))
 		}
 	}
 
@@ -1345,10 +1407,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetching = false
 		if msg.err != nil {
 			m.err = msg.err
+			m.retryCountdown = 4 // will retry in 4s (ticks every 2s, decrements by 2)
 		} else {
 			m.cells = msg.cells
 			m.programs = msg.programs
 			m.err = nil
+			m.retryCountdown = 0
 			m.lastFetch = time.Now()
 			m.progOrder = m.progOrder[:0]
 			seen := make(map[string]bool)
@@ -1373,6 +1437,14 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickRefresh:
+		if m.retryCountdown > 2 {
+			m.retryCountdown -= 2
+			if m.ready {
+				m.viewport.SetContent(m.renderContent())
+			}
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickRefresh{} })
+		}
+		m.retryCountdown = 0
 		m.fetching = true
 		return m, m.fetchCmd()
 
@@ -1389,6 +1461,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		// Help overlay intercepts all keys — any key dismisses it
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
+
 		// Filter mode intercepts most keys
 		if m.filtering {
 			switch msg.String() {
@@ -1549,12 +1627,21 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "esc":
+			if m.showDetail {
+				m.showDetail = false
+				m = m.updateViewportSizes()
+				return m, nil
+			}
 			if m.filterText != "" {
 				m.filterText = ""
 				m.clampCursor()
 				m.viewport.SetContent(m.renderContent())
 				return m, nil
 			}
+
+		case "?":
+			m.showHelp = !m.showHelp
+			return m, nil
 		}
 	}
 
@@ -1590,7 +1677,11 @@ func (m watchModel) renderContent() string {
 	}
 
 	if m.err != nil {
-		buf.WriteString(errStyle.Render(fmt.Sprintf("  error: %v", m.err)))
+		retryInfo := ""
+		if m.retryCountdown > 0 {
+			retryInfo = fmt.Sprintf(" (retry in %ds)", m.retryCountdown)
+		}
+		buf.WriteString(errStyle.Render(fmt.Sprintf("  error: %v%s", m.err, retryInfo)))
 		buf.WriteString("\n")
 		if !m.lastFetch.IsZero() {
 			buf.WriteString(footerStyle.Render(fmt.Sprintf("  last ok: %s", m.lastFetch.Format("15:04:05"))))
@@ -1775,6 +1866,29 @@ func (m watchModel) View() tea.View {
 		return v
 	}
 
+	// Help overlay
+	if m.showHelp {
+		help := headerStyle.Render("  ct watch — keybindings") + "\n\n"
+		help += "  j / down       Move cursor down\n"
+		help += "  k / up         Move cursor up\n"
+		help += "  enter / space  Toggle expand/collapse on cell or program\n"
+		help += "  e              Expand all programs and cells\n"
+		help += "  c              Collapse all cells\n"
+		help += "  tab            Jump to next program\n"
+		help += "  shift+tab      Jump to previous program\n"
+		help += "  g              Jump to top\n"
+		help += "  G              Jump to bottom\n"
+		help += "  d              Toggle detail pane\n"
+		help += "  /              Search / filter cells\n"
+		help += "  esc            Close detail, clear filter\n"
+		help += "  ?              Toggle this help\n"
+		help += "  q / ctrl+c     Quit\n"
+		help += "\n" + footerStyle.Render("  Press any key to dismiss")
+		v := tea.NewView(help)
+		v.AltScreen = true
+		return v
+	}
+
 	var buf strings.Builder
 
 	// Header with aggregate stats
@@ -1833,7 +1947,7 @@ func (m watchModel) View() tea.View {
 	if m.showDetail {
 		detailKey = "d hide"
 	}
-	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · tab prog · g/G top/bot · enter toggle · %s · / search · q quit", detailKey)))
+	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · tab/S-tab prog · g/G top/bot · enter toggle · e expand · c collapse · %s · / search · esc back · ? help · q quit", detailKey)))
 
 	v := tea.NewView(buf.String())
 	v.AltScreen = true
@@ -1934,7 +2048,7 @@ func cmdRepl(db *sql.DB, args []string) {
 		fatal("usage: ct repl | ct repl <program-id> | ct repl <name> <file.cell>")
 	}
 
-	pistonID := fmt.Sprintf("piston-%d", time.Now().UnixNano()%100000000)
+	pistonID := genPistonID()
 	watch := progID == ""
 
 	// Register piston (program_id = '' for watch mode)

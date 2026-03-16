@@ -547,6 +547,52 @@ func cmdReset(db *sql.DB, progID string) {
 	fmt.Printf("✓ Reset %s\n", progID)
 }
 
+// recordBindings writes binding edges for a frozen cell: which frames it read from.
+func recordBindings(db *sql.DB, progID, cellName, cellID string) {
+	// Find the consumer frame
+	var consumerFrame string
+	err := db.QueryRow(
+		"SELECT id FROM frames WHERE program_id = ? AND cell_name = ? ORDER BY generation DESC LIMIT 1",
+		progID, cellName).Scan(&consumerFrame)
+	if err != nil {
+		return // no frame yet (possible for old .sql-poured programs)
+	}
+
+	// Find all resolved givens and their producer frames
+	rows, err := db.Query(`
+		SELECT g.source_cell, g.source_field
+		FROM givens g WHERE g.cell_id = ?`, cellID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var srcCell, srcField string
+		rows.Scan(&srcCell, &srcField)
+
+		// Find the producer frame (latest frozen frame for source cell)
+		var producerFrame string
+		err := db.QueryRow(`
+			SELECT f.id FROM frames f
+			JOIN yields y ON y.cell_id IN (
+				SELECT c.id FROM cells c WHERE c.program_id = ? AND c.name = ?
+			)
+			WHERE f.program_id = ? AND f.cell_name = ?
+			  AND y.field_name = ? AND y.is_frozen = 1
+			ORDER BY f.generation DESC LIMIT 1`,
+			progID, srcCell, progID, srcCell, srcField).Scan(&producerFrame)
+		if err != nil {
+			continue
+		}
+
+		// Record the binding
+		db.Exec(
+			"INSERT IGNORE INTO bindings (id, consumer_frame, producer_frame, field_name) VALUES (CONCAT('b-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?)",
+			consumerFrame, producerFrame, srcField)
+	}
+}
+
 // ensureFrames creates gen-0 frames for non-stem cells that don't have frames yet.
 func ensureFrames(db *sql.DB, progID string) {
 	rows, err := db.Query(
@@ -2727,6 +2773,10 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		mustExecDB(db,
 			"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'All yields frozen', NOW())",
 			cellID)
+
+		// Record bindings (v2 frame model): which frames this cell read from
+		recordBindings(db, progID, cellName, cellID)
+
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))
 
 		// Stem cell respawn: replace frozen stem with fresh declared copy

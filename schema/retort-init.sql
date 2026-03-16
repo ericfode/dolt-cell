@@ -131,17 +131,17 @@ CREATE TABLE IF NOT EXISTS pistons (
 -- ---------------------------------------------------------------------------
 
 -- ready_cells: cells whose ALL non-optional givens have frozen yields
+-- NOTE: Uses NOT IN instead of NOT EXISTS — Dolt v1.83 has a correlated
+-- subquery bug where NOT EXISTS with outer table refs returns wrong results.
 CREATE OR REPLACE VIEW ready_cells AS
 SELECT c.id, c.program_id, c.name, c.body_type, c.body, c.state, c.model_hint
 FROM cells c
 WHERE c.state = 'declared'
-  AND NOT EXISTS (
-    SELECT 1 FROM givens g
+  AND c.id NOT IN (
+    SELECT g.cell_id FROM givens g
     JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
     LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
-    WHERE g.cell_id = c.id
-      AND g.is_optional = FALSE
-      AND y.id IS NULL
+    WHERE g.is_optional = FALSE AND y.id IS NULL
   );
 
 -- cell_program_status: overview of all cells in a program

@@ -2557,8 +2557,14 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 }
 
 // replRespawnStem replaces a frozen stem cell with a fresh declared copy.
-// The UNIQUE(program_id, name) constraint requires deleting the old cell first.
+// Only respawns "perpetual" stem cells (like eval-one). Iteration-expanded
+// stem cells (name-1, name-2, etc.) are NOT respawned — they stay frozen.
 func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
+	// Don't respawn iteration cells (name ends in -N where N is numeric)
+	if isIterationCell(cellName) {
+		return
+	}
+
 	// Read the body and yield field names from the frozen cell
 	var body sql.NullString
 	if err := db.QueryRow("SELECT body FROM cells WHERE id = ?", frozenID).Scan(&body); err != nil {
@@ -2577,7 +2583,9 @@ func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
 		rows.Close()
 	}
 
-	// Delete frozen cell (yields first due to FK)
+	// Delete frozen cell (all FK children first: oracles, givens, yields)
+	mustExecDB(db, "DELETE FROM oracles WHERE cell_id = ?", frozenID)
+	mustExecDB(db, "DELETE FROM givens WHERE cell_id = ?", frozenID)
 	mustExecDB(db, "DELETE FROM yields WHERE cell_id = ?", frozenID)
 	mustExecDB(db, "DELETE FROM cells WHERE id = ?", frozenID)
 
@@ -2598,6 +2606,21 @@ func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
 	}
 
 	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: respawn stem %s", cellName))
+}
+
+// isIterationCell returns true if the cell name ends in -N (numeric suffix).
+func isIterationCell(name string) bool {
+	idx := strings.LastIndex(name, "-")
+	if idx < 0 || idx == len(name)-1 {
+		return false
+	}
+	suffix := name[idx+1:]
+	for _, ch := range suffix {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func min(a, b int) int {

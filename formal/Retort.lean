@@ -182,23 +182,60 @@ def Retort.latestFrozenFrame (r : Retort) (cell : CellName) : Option Frame :=
     READINESS (when can a frame be claimed?)
     ==================================================================== -/
 
--- A given is satisfied if the source cell has a frozen frame with that yield
-def Retort.givenSatisfied (r : Retort) (g : GivenSpec) (program : ProgramId) : Bool :=
-  g.optional || match r.latestFrozenFrame g.sourceCell with
-    | some f =>
-      -- Check that the source frame has the required yield frozen
-      r.yields.any (fun y => y.frameId == f.id && y.field == g.sourceField)
-    | none => false
+-- A given is satisfiable if SOME frozen frame exists for the source cell
+-- that has the required yield.  This is a readiness check only — it does NOT
+-- resolve which specific frame supplies the value.  Actual resolution goes
+-- through the bindings table (see resolveBindings below).
+def Retort.givenSatisfiable (r : Retort) (g : GivenSpec) : Bool :=
+  g.optional ||
+  r.frames.any (fun f =>
+    f.cellName == g.sourceCell &&
+    r.frameStatus f == .frozen &&
+    r.yields.any (fun y => y.frameId == f.id && y.field == g.sourceField))
 
--- A frame is ready if: declared AND all non-optional givens satisfied
+-- A frame is ready if: declared AND all non-optional givens CAN be satisfied
+-- (i.e. a frozen source exists for each given).  The actual binding is
+-- recorded at claim/freeze time and is immutable thereafter.
 def Retort.frameReady (r : Retort) (f : Frame) : Bool :=
   r.frameStatus f == .declared &&
   let cellGivens := r.givens.filter (fun g => g.cellName == f.cellName)
-  cellGivens.all (fun g => r.givenSatisfied g f.program)
+  cellGivens.all (fun g => r.givenSatisfiable g)
 
 -- All ready frames in the retort
 def Retort.readyFrames (r : Retort) : List Frame :=
   r.frames.filter (fun f => r.frameReady f)
+
+/-! ====================================================================
+    BINDING-BASED RESOLUTION (monotonic input lookup)
+    ==================================================================== -/
+
+-- Resolve a frame's inputs via the bindings table.
+-- Bindings are recorded at claim/freeze time and are immutable, so a
+-- frame's resolved inputs never change — unlike latestFrozenFrame which
+-- returns a moving target.
+def Retort.resolveBindings (r : Retort) (frameId : FrameId) : List (FieldName × String) :=
+  r.bindings.filter (fun b => b.consumerFrame == frameId) |>.filterMap (fun b =>
+    match r.yields.find? (fun y => y.frameId == b.producerFrame && y.field == b.givenField) with
+    | some y => some (b.givenField, y.value)
+    | none => none)
+
+-- Monotonicity property: once a frame is frozen, every binding that
+-- references it as a consumer has a corresponding producer yield that
+-- exists and will never change (because yields are append-only and
+-- unique per (frame, field)).
+def bindingsMonotone (r : Retort) : Prop :=
+  ∀ f ∈ r.frames, ∀ b ∈ r.bindings,
+    b.consumerFrame = f.id →
+    -- the producer frame's yield exists and won't change
+    ∃ y ∈ r.yields, y.frameId = b.producerFrame ∧ y.field = b.givenField
+
+-- Key consequence: resolveBindings returns the same values at any
+-- later time, because:
+--  1. bindings are append-only (never removed)
+--  2. yields are append-only (never removed)
+--  3. yieldUnique guarantees the value per (frame, field) is unique
+-- Together these ensure the List (FieldName × String) only grows
+-- (new bindings can appear) but never changes existing entries.
 
 /-! ====================================================================
     OPERATIONS (the valid transitions)
@@ -562,7 +599,7 @@ def Retort.programQuiescent (r : Retort) (prog : ProgramId) : Bool :=
 -- For pour-one: any pour-request frame exists
 
 -- Abstract: a stem cell has demand if its query predicate is true
-def Retort.stemHasDemand (r : Retort) (cell : CellName) (demandPred : Retort → Bool) : Bool :=
+def Retort.stemHasDemand (r : Retort) (_cell : CellName) (demandPred : Retort → Bool) : Bool :=
   demandPred r
 
 -- After an eval cycle on a stem cell:
@@ -605,19 +642,52 @@ def Retort.resolve (r : Retort) (addr : ContentAddr) : Option String :=
 
 -- Content addresses from different generations never collide
 -- (because the frame lookup filters by generation)
+-- Helper: BEq → Prop equality for CellName (derived BEq compares the inner String)
+private theorem CellName.eq_of_beq (a b : CellName) (h : (a == b) = true) : a = b := by
+  cases a with | mk va => cases b with | mk vb =>
+  exact congrArg CellName.mk (beq_iff_eq.mp (show (va == vb) = true from h))
+
 theorem content_addr_distinct_gens (r : Retort)
     (cell : CellName) (field : FieldName) (g1 g2 : Nat) (v1 v2 : String)
     (h1 : r.resolve ⟨cell, g1, field⟩ = some v1)
     (h2 : r.resolve ⟨cell, g2, field⟩ = some v2)
     (hDiff : g1 ≠ g2)
-    (hUnique : framesUnique r) :
+    (_hUnique : framesUnique r) :
     -- The values come from different frames
     ∃ f1 f2 : Frame, f1 ∈ r.frames ∧ f2 ∈ r.frames ∧
       f1.cellName = cell ∧ f2.cellName = cell ∧
       f1.generation = g1 ∧ f2.generation = g2 ∧ f1 ≠ f2 := by
   unfold Retort.resolve at h1 h2
-  -- Extract the frames from the find? calls
-  sorry -- structural: distinct generations → distinct frames by framesUnique
+  -- Split on the outer find? (frame lookup) in h1
+  split at h1
+  · exact absurd h1 (by simp)
+  · rename_i frame1 hfind1
+    -- Split on the inner find? (yield lookup) in h1
+    split at h1
+    · exact absurd h1 (by simp)
+    · -- Both finds succeeded for h1; now split h2 the same way
+      split at h2
+      · exact absurd h2 (by simp)
+      · rename_i frame2 hfind2
+        split at h2
+        · exact absurd h2 (by simp)
+        · -- Extract membership and predicate info from both find? results
+          have hmem1 := List.mem_of_find?_eq_some hfind1
+          have hpred1 := List.find?_some hfind1
+          have hmem2 := List.mem_of_find?_eq_some hfind2
+          have hpred2 := List.find?_some hfind2
+          -- The predicates are (cellName == cell && generation == gN) = true
+          simp only [Bool.and_eq_true] at hpred1 hpred2
+          obtain ⟨hcell1_beq, hgen1_beq⟩ := hpred1
+          obtain ⟨hcell2_beq, hgen2_beq⟩ := hpred2
+          -- Convert BEq equalities to Prop equalities
+          have hcell1 := CellName.eq_of_beq _ _ hcell1_beq
+          have hgen1 := beq_iff_eq.mp hgen1_beq
+          have hcell2 := CellName.eq_of_beq _ _ hcell2_beq
+          have hgen2 := beq_iff_eq.mp hgen2_beq
+          -- Build the existential witness
+          exact ⟨frame1, frame2, hmem1, hmem2, hcell1, hcell2, hgen1, hgen2,
+            fun heq => hDiff (hgen1 ▸ hgen2 ▸ heq ▸ rfl)⟩
 
 /-! ====================================================================
     VALID TRACES (temporal model)
@@ -681,12 +751,8 @@ theorem data_persists (vt : ValidTrace) (n m : Nat) (h : n ≤ m) :
 -- Frames only grow (never shrink)
 theorem frames_monotonic (vt : ValidTrace) (n : Nat) :
     (vt.trace n).frames.length ≤ (vt.trace (n + 1)).frames.length := by
-  have h := always_appendOnly vt n
-  unfold appendOnly framesPreserved at h
-  obtain ⟨_, hf, _, _, _, _⟩ := h
-  -- Every frame in trace n is in trace (n+1)
-  -- So length can only grow or stay the same
-  sorry -- frames only grow: every frame in trace n is in trace (n+1)
+  rw [vt.step n]
+  cases vt.ops n <;> simp [applyOp, List.length_append] <;> omega
 
 -- Non-stem cell: at most one frame across the entire trace
 def nonStemBounded (r : Retort) (cell : CellName) : Prop :=
@@ -723,18 +789,14 @@ theorem release_frames_stable (r : Retort) (rd : ReleaseData) :
 -- Yields grow monotonically (append-only)
 theorem yields_monotonic (vt : ValidTrace) (n : Nat) :
     (vt.trace n).yields.length ≤ (vt.trace (n + 1)).yields.length := by
-  have h := always_appendOnly vt n
-  unfold appendOnly yieldsPreserved at h
-  obtain ⟨_, _, hy, _, _, _⟩ := h
-  sorry -- yields only grow: every yield in trace n is in trace (n+1)
+  rw [vt.step n]
+  cases vt.ops n <;> simp [applyOp, List.length_append] <;> omega
 
 -- Bindings grow monotonically (append-only)
 theorem bindings_monotonic (vt : ValidTrace) (n : Nat) :
     (vt.trace n).bindings.length ≤ (vt.trace (n + 1)).bindings.length := by
-  have h := always_appendOnly vt n
-  unfold appendOnly bindingsPreserved at h
-  obtain ⟨_, _, _, hb, _, _⟩ := h
-  sorry -- bindings only grow: every binding in trace n is in trace (n+1)
+  rw [vt.step n]
+  cases vt.ops n <;> simp [applyOp, List.length_append] <;> omega
 
 -- The total graph size (frames + yields + bindings) grows monotonically
 def graphSize (r : Retort) : Nat :=

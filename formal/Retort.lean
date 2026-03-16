@@ -7,7 +7,7 @@
   - Yields (append-only outputs)
   - Givens (dependency specifications)
   - Bindings (resolved givens, the DAG edges)
-  - Claims (mutable lock + append-only log)
+  - Claims (mutable lock table)
   - Readiness (derived from givens + yields)
   - The eval loop (claim → evaluate → freeze)
   - Pour (loading programs)
@@ -31,7 +31,7 @@ structure CellDef where
 
 -- A dependency specification (abstract, defined at pour time)
 structure GivenSpec where
-  cellName    : CellName        -- which cell we depend on
+  owner       : CellName        -- the cell that HAS this given (not the source)
   sourceCell  : CellName        -- the cell whose yield we read
   sourceField : FieldName       -- which field we read
   optional    : Bool
@@ -78,17 +78,6 @@ structure Claim where
   pistonId : PistonId
   deriving Repr, DecidableEq, BEq
 
--- Claim log entry (append-only audit trail)
-inductive ClaimAction where
-  | claimed | released | completed | timedOut
-  deriving Repr, DecidableEq, BEq
-
-structure ClaimLogEntry where
-  frameId  : FrameId
-  pistonId : PistonId
-  action   : ClaimAction
-  deriving Repr, DecidableEq
-
 /-! ====================================================================
     THE RETORT DATABASE STATE
     ==================================================================== -/
@@ -100,12 +89,11 @@ structure Retort where
   yields   : List Yield            -- append-only
   bindings : List Binding          -- append-only
   claims   : List Claim            -- mutable (lock table)
-  claimLog : List ClaimLogEntry    -- append-only (audit trail)
   deriving Repr
 
 def Retort.empty : Retort :=
   { cells := [], givens := [], frames := [], yields := [],
-    bindings := [], claims := [], claimLog := [] }
+    bindings := [], claims := [] }
 
 /-! ====================================================================
     DERIVED STATE (never stored, always computed)
@@ -169,7 +157,7 @@ def Retort.givenSatisfiable (r : Retort) (g : GivenSpec) : Bool :=
 -- recorded at claim/freeze time and is immutable thereafter.
 def Retort.frameReady (r : Retort) (f : Frame) : Bool :=
   r.frameStatus f == .declared &&
-  let cellGivens := r.givens.filter (fun g => g.cellName == f.cellName)
+  let cellGivens := r.givens.filter (fun g => g.owner == f.cellName)
   cellGivens.all (fun g => r.givenSatisfiable g)
 
 -- All ready frames in the retort
@@ -241,7 +229,6 @@ structure CreateFrameData where
 structure ReleaseData where
   frameId  : FrameId
   pistonId : PistonId
-  reason   : ClaimAction         -- released | timedOut
   deriving Repr
 
 inductive RetortOp where
@@ -259,19 +246,16 @@ def applyOp (r : Retort) : RetortOp → Retort
              frames := r.frames ++ pd.frames }
 
   | .claim cd =>
-    { r with claims := r.claims ++ [⟨cd.frameId, cd.pistonId⟩],
-             claimLog := r.claimLog ++ [⟨cd.frameId, cd.pistonId, .claimed⟩] }
+    { r with claims := r.claims ++ [⟨cd.frameId, cd.pistonId⟩] }
 
   | .freeze fd =>
     { r with yields := r.yields ++ fd.yields,
              bindings := r.bindings ++ fd.bindings,
              -- Remove claim (the only mutable operation)
-             claims := r.claims.filter (fun c => c.frameId != fd.frameId),
-             claimLog := r.claimLog ++ [⟨fd.frameId, ⟨"system"⟩, .completed⟩] }
+             claims := r.claims.filter (fun c => c.frameId != fd.frameId) }
 
   | .release rd =>
-    { r with claims := r.claims.filter (fun c => c.frameId != rd.frameId),
-             claimLog := r.claimLog ++ [⟨rd.frameId, rd.pistonId, rd.reason⟩] }
+    { r with claims := r.claims.filter (fun c => c.frameId != rd.frameId) }
 
   | .createFrame cfd =>
     { r with frames := r.frames ++ [cfd.frame] }
@@ -314,25 +298,20 @@ def yieldUnique (r : Retort) : Prop :=
   ∀ y1 y2, y1 ∈ r.yields → y2 ∈ r.yields →
     y1.frameId = y2.frameId → y1.field = y2.field → y1.value = y2.value
 
--- I8: Stem cells have no gen-0 frame at pour time (demand-driven)
-def stemCellsDemandDriven (r : Retort) : Prop :=
-  ∀ f ∈ r.frames, ∀ cd ∈ r.cells,
-    f.cellName = cd.name → cd.bodyType = .stem → f.generation > 0
-    -- (stem cells only get frames when demand appears, starting at gen 1)
-    -- Actually, gen 0 is fine if demand exists at pour time. Let's relax:
-    -- The point is that stem frames are created on demand, not at pour time.
-    -- We model this as: pour doesn't create frames for stem cells.
-
 -- I8: Every frame has a cell definition (natural invariant: frames come from cells)
 -- (definition lifted above wellFormed; see framesCellDefsExist below)
 def framesCellDefsExist (r : Retort) : Prop :=
   ∀ f ∈ r.frames, (r.cellDef f.cellName).isSome
 
+-- I9: No self-loops in bindings (a frame never reads from itself)
+def noSelfLoops (r : Retort) : Prop :=
+  ∀ b ∈ r.bindings, b.consumerFrame ≠ b.producerFrame
+
 -- The complete well-formedness predicate
 def wellFormed (r : Retort) : Prop :=
   cellNamesUnique r ∧ framesUnique r ∧ yieldsWellFormed r ∧
   bindingsWellFormed r ∧ claimsWellFormed r ∧ claimMutex r ∧ yieldUnique r ∧
-  framesCellDefsExist r
+  framesCellDefsExist r ∧ noSelfLoops r
 
 /-! ====================================================================
     IMMUTABILITY / APPEND-ONLY PROPERTIES
@@ -358,15 +337,11 @@ def bindingsPreserved (before after : Retort) : Prop :=
 def givensPreserved (before after : Retort) : Prop :=
   ∀ g ∈ before.givens, g ∈ after.givens
 
--- Claim log only grows
-def claimLogPreserved (before after : Retort) : Prop :=
-  ∀ e ∈ before.claimLog, e ∈ after.claimLog
-
 -- The full append-only invariant (everything except claims)
 def appendOnly (before after : Retort) : Prop :=
   cellsPreserved before after ∧ framesPreserved before after ∧
   yieldsPreserved before after ∧ bindingsPreserved before after ∧
-  givensPreserved before after ∧ claimLogPreserved before after
+  givensPreserved before after
 
 /-! ====================================================================
     PROOFS: Operations preserve append-only invariant
@@ -375,54 +350,49 @@ def appendOnly (before after : Retort) : Prop :=
 theorem pour_appendOnly (r : Retort) (pd : PourData) :
     appendOnly r (applyOp r (.pour pd)) := by
   unfold appendOnly applyOp
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
   · exact List.mem_append_left _ hx  -- cells
   · exact List.mem_append_left _ hx  -- frames
   · exact hx                          -- yields unchanged
   · exact hx                          -- bindings unchanged
   · exact List.mem_append_left _ hx  -- givens
-  · exact hx                          -- claimLog unchanged
 
 theorem claim_appendOnly (r : Retort) (cd : ClaimData) :
     appendOnly r (applyOp r (.claim cd)) := by
   unfold appendOnly applyOp
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
   · exact hx
   · exact hx
   · exact hx
   · exact hx
   · exact hx
-  · exact List.mem_append_left _ hx
 
 theorem freeze_appendOnly (r : Retort) (fd : FreezeData) :
     appendOnly r (applyOp r (.freeze fd)) := by
   unfold appendOnly applyOp
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
   · exact hx
   · exact hx
   · exact List.mem_append_left _ hx   -- yields grow
   · exact List.mem_append_left _ hx   -- bindings grow
   · exact hx
-  · exact List.mem_append_left _ hx   -- claimLog grows
 
 theorem release_appendOnly (r : Retort) (rd : ReleaseData) :
     appendOnly r (applyOp r (.release rd)) := by
   unfold appendOnly applyOp
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
   · exact hx
   · exact hx
   · exact hx
   · exact hx
   · exact hx
-  · exact List.mem_append_left _ hx
 
 theorem createFrame_appendOnly (r : Retort) (cfd : CreateFrameData) :
     appendOnly r (applyOp r (.createFrame cfd)) := by
   unfold appendOnly applyOp
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
   · exact hx
   · exact List.mem_append_left _ hx  -- frames grow
-  · exact hx
   · exact hx
   · exact hx
   · exact hx
@@ -966,6 +936,49 @@ theorem createFrame_preserves_yieldUnique (r : Retort) (cfd : CreateFrameData)
     yieldUnique (applyOp r (.createFrame cfd)) := by
   unfold yieldUnique applyOp at *; simp only; exact hWF
 
+/-! I9: noSelfLoops preservation -/
+
+-- Precondition: freeze bindings have no self-loops
+def freezeNoSelfLoops (fd : FreezeData) : Prop :=
+  ∀ b ∈ fd.bindings, b.consumerFrame ≠ b.producerFrame
+
+-- Pour doesn't add bindings: noSelfLoops trivially preserved.
+theorem pour_preserves_noSelfLoops (r : Retort) (pd : PourData)
+    (hWF : noSelfLoops r) :
+    noSelfLoops (applyOp r (.pour pd)) := by
+  unfold noSelfLoops applyOp at *; simp only; exact hWF
+
+-- Claim doesn't add bindings.
+theorem claim_preserves_noSelfLoops (r : Retort) (cd : ClaimData)
+    (hWF : noSelfLoops r) :
+    noSelfLoops (applyOp r (.claim cd)) := by
+  unfold noSelfLoops applyOp at *; simp only; exact hWF
+
+-- Freeze adds bindings: needs the precondition.
+theorem freeze_preserves_noSelfLoops (r : Retort) (fd : FreezeData)
+    (hWF : noSelfLoops r)
+    (hFresh : freezeNoSelfLoops fd) :
+    noSelfLoops (applyOp r (.freeze fd)) := by
+  unfold noSelfLoops applyOp at *
+  simp only
+  intro b hb
+  rw [List.mem_append] at hb
+  cases hb with
+  | inl hbOld => exact hWF b hbOld
+  | inr hbNew => exact hFresh b hbNew
+
+-- Release doesn't add bindings.
+theorem release_preserves_noSelfLoops (r : Retort) (rd : ReleaseData)
+    (hWF : noSelfLoops r) :
+    noSelfLoops (applyOp r (.release rd)) := by
+  unfold noSelfLoops applyOp at *; simp only; exact hWF
+
+-- CreateFrame doesn't add bindings.
+theorem createFrame_preserves_noSelfLoops (r : Retort) (cfd : CreateFrameData)
+    (hWF : noSelfLoops r) :
+    noSelfLoops (applyOp r (.createFrame cfd)) := by
+  unfold noSelfLoops applyOp at *; simp only; exact hWF
+
 /-! I8: framesCellDefsExist preservation -/
 
 -- Pour: old frames still find their cellDef (cells grew); new frames need the precondition.
@@ -1201,7 +1214,7 @@ def validOp (r : Retort) : RetortOp → Prop
   | .freeze fd =>
     freezeValid r fd ∧ freezeBindingsWitnessed r fd ∧
     freezeFrameExists r fd ∧ freezeBindingsRefFrames r fd ∧
-    freezeYieldsUnique r fd
+    freezeYieldsUnique r fd ∧ freezeNoSelfLoops fd
   | .release _ => True
   | .createFrame cfd => createFrameUnique r cfd ∧ createFrameCellDefExists r cfd
 
@@ -1211,7 +1224,7 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
     (hValid : validOp r op) :
     wellFormed (applyOp r op) := by
   unfold wellFormed at *
-  obtain ⟨hI1, hI2, hI3, hI4, hI5, hI6, hI7, hI8⟩ := hWF
+  obtain ⟨hI1, hI2, hI3, hI4, hI5, hI6, hI7, hI8, hI9⟩ := hWF
   cases op with
   | pour pd =>
     unfold validOp at hValid
@@ -1224,7 +1237,8 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            -- pour doesn't add claims, claimMutex trivially preserved
            (by unfold claimMutex applyOp at *; simp only; exact hI6),
            pour_preserves_yieldUnique r pd hI7,
-           pour_preserves_framesCellDefsExist r pd hI8 hPourCellDefs⟩
+           pour_preserves_framesCellDefsExist r pd hI8 hPourCellDefs,
+           pour_preserves_noSelfLoops r pd hI9⟩
   | claim cd =>
     unfold validOp at hValid
     exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
@@ -1234,10 +1248,11 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            claim_preserves_claimsWellFormed r cd hI5 hValid,
            claim_preserves_claimMutex r cd hI6 hValid,
            claim_preserves_yieldUnique r cd hI7,
-           claim_preserves_framesCellDefsExist r cd hI8⟩
+           claim_preserves_framesCellDefsExist r cd hI8,
+           claim_preserves_noSelfLoops r cd hI9⟩
   | freeze fd =>
     unfold validOp at hValid
-    obtain ⟨hFreezeValid, hWitnessed, hFrameExists, hProducers, hYieldsUnique⟩ := hValid
+    obtain ⟨hFreezeValid, hWitnessed, hFrameExists, hProducers, hYieldsUnique, hNoSelfLoops⟩ := hValid
     exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
            freeze_preserves_framesUnique r fd hI2,
            freeze_preserves_yieldsWellFormed r fd hI3 hFreezeValid hFrameExists,
@@ -1245,7 +1260,8 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            freeze_preserves_claimsWellFormed r fd hI5,
            freeze_preserves_claimMutex r fd hI6,
            freeze_preserves_yieldUnique r fd hI7 hYieldsUnique,
-           freeze_preserves_framesCellDefsExist r fd hI8⟩
+           freeze_preserves_framesCellDefsExist r fd hI8,
+           freeze_preserves_noSelfLoops r fd hI9 hNoSelfLoops⟩
   | release rd =>
     unfold validOp at hValid
     exact ⟨by { unfold cellNamesUnique applyOp at *; simp only; exact hI1 },
@@ -1255,7 +1271,8 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            release_preserves_claimsWellFormed r rd hI5,
            release_preserves_claimMutex r rd hI6,
            release_preserves_yieldUnique r rd hI7,
-           release_preserves_framesCellDefsExist r rd hI8⟩
+           release_preserves_framesCellDefsExist r rd hI8,
+           release_preserves_noSelfLoops r rd hI9⟩
   | createFrame cfd =>
     unfold validOp at hValid
     obtain ⟨hCfUnique, hCfCellDef⟩ := hValid
@@ -1267,7 +1284,8 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            -- createFrame doesn't change claims
            (by unfold claimMutex applyOp at *; simp only; exact hI6),
            createFrame_preserves_yieldUnique r cfd hI7,
-           createFrame_preserves_framesCellDefsExist r cfd hI8 hCfCellDef⟩
+           createFrame_preserves_framesCellDefsExist r cfd hI8 hCfCellDef,
+           createFrame_preserves_noSelfLoops r cfd hI9⟩
 
 /-! ====================================================================
     PROOFS: Cells are stable after pour
@@ -1296,15 +1314,79 @@ theorem givens_stable_non_pour (r : Retort) (op : RetortOp)
   | createFrame _ => rfl
 
 /-! ====================================================================
+    INDEPENDENT CLAIM COMMUTATIVITY
+    ==================================================================== -/
+
+-- Two claims on different frames commute: they produce states that agree
+-- on all append-only fields and differ only in claims list order.
+
+-- Helper: claims list is a permutation
+theorem independent_claim_cells (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).cells =
+    (applyOp (applyOp r (.claim b)) (.claim a)).cells := by
+  simp [applyOp]
+
+theorem independent_claim_givens (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).givens =
+    (applyOp (applyOp r (.claim b)) (.claim a)).givens := by
+  simp [applyOp]
+
+theorem independent_claim_frames (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).frames =
+    (applyOp (applyOp r (.claim b)) (.claim a)).frames := by
+  simp [applyOp]
+
+theorem independent_claim_yields (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).yields =
+    (applyOp (applyOp r (.claim b)) (.claim a)).yields := by
+  simp [applyOp]
+
+theorem independent_claim_bindings (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).bindings =
+    (applyOp (applyOp r (.claim b)) (.claim a)).bindings := by
+  simp [applyOp]
+
+-- The claims lists are permutations of each other:
+-- r.claims ++ [a_claim, b_claim] vs r.claims ++ [b_claim, a_claim]
+-- Both contain exactly the same elements.
+theorem independent_claim_claims_perm (r : Retort) (a b : ClaimData)
+    (_hDiff : a.frameId ≠ b.frameId) :
+    ∀ c, c ∈ (applyOp (applyOp r (.claim a)) (.claim b)).claims ↔
+         c ∈ (applyOp (applyOp r (.claim b)) (.claim a)).claims := by
+  intro c
+  simp only [applyOp]
+  simp only [List.mem_append, List.mem_singleton]
+  constructor
+  · intro h
+    rcases h with (h | h) | h
+    · exact Or.inl (Or.inl h)
+    · exact Or.inr h
+    · exact Or.inl (Or.inr h)
+  · intro h
+    rcases h with (h | h) | h
+    · exact Or.inl (Or.inl h)
+    · exact Or.inr h
+    · exact Or.inl (Or.inr h)
+
+-- Corollary: for any membership-based property P, P holds on one state
+-- iff it holds on the other. This means all our Prop-based invariants
+-- (which quantify over ∈) are agnostic to claim order.
+theorem independent_claims_preserve_membership_props
+    (r : Retort) (a b : ClaimData) (hDiff : a.frameId ≠ b.frameId)
+    (P : Claim → Prop)
+    (hP : ∀ c ∈ (applyOp (applyOp r (.claim a)) (.claim b)).claims, P c) :
+    ∀ c ∈ (applyOp (applyOp r (.claim b)) (.claim a)).claims, P c := by
+  intro c hc
+  exact hP c ((independent_claim_claims_perm r a b hDiff c).mpr hc)
+
+/-! ====================================================================
     THE DAG: Acyclicity of Bindings
     ==================================================================== -/
 
 -- A binding edge goes from consumer to producer.
 -- The DAG property: no frame transitively depends on itself.
 
--- Simple acyclicity: no self-loops
-def noSelfLoops (r : Retort) : Prop :=
-  ∀ b ∈ r.bindings, b.consumerFrame ≠ b.producerFrame
+-- Simple acyclicity: no self-loops (see I9 in wellFormed above)
 
 -- Stronger: for same-cell bindings (stem cells reading own previous gen),
 -- the producer must have a strictly lower generation
@@ -1360,26 +1442,25 @@ theorem evalCycle_appendOnly (r : Retort) (ec : EvalCycle) :
   | none =>
     simp
     unfold appendOnly at *
-    obtain ⟨hc1, hf1, hy1, hb1, hg1, hl1⟩ := h1
-    obtain ⟨hc2, hf2, hy2, hb2, hg2, hl2⟩ := h2
+    obtain ⟨hc1, hf1, hy1, hb1, hg1⟩ := h1
+    obtain ⟨hc2, hf2, hy2, hb2, hg2⟩ := h2
     exact ⟨fun x hx => hc2 x (hc1 x hx), fun x hx => hf2 x (hf1 x hx),
            fun x hx => hy2 x (hy1 x hx), fun x hx => hb2 x (hb1 x hx),
-           fun x hx => hg2 x (hg1 x hx), fun x hx => hl2 x (hl1 x hx)⟩
+           fun x hx => hg2 x (hg1 x hx)⟩
   | some cfd =>
     simp
     have h3 := all_ops_appendOnly
       (applyOp (applyOp r (.claim ec.claimOp)) (.freeze ec.freezeOp))
       (.createFrame cfd)
     unfold appendOnly at *
-    obtain ⟨hc1, hf1, hy1, hb1, hg1, hl1⟩ := h1
-    obtain ⟨hc2, hf2, hy2, hb2, hg2, hl2⟩ := h2
-    obtain ⟨hc3, hf3, hy3, hb3, hg3, hl3⟩ := h3
+    obtain ⟨hc1, hf1, hy1, hb1, hg1⟩ := h1
+    obtain ⟨hc2, hf2, hy2, hb2, hg2⟩ := h2
+    obtain ⟨hc3, hf3, hy3, hb3, hg3⟩ := h3
     exact ⟨fun x hx => hc3 x (hc2 x (hc1 x hx)),
            fun x hx => hf3 x (hf2 x (hf1 x hx)),
            fun x hx => hy3 x (hy2 x (hy1 x hx)),
            fun x hx => hb3 x (hb2 x (hb1 x hx)),
-           fun x hx => hg3 x (hg2 x (hg1 x hx)),
-           fun x hx => hl3 x (hl2 x (hl1 x hx))⟩
+           fun x hx => hg3 x (hg2 x (hg1 x hx))⟩
 
 /-! ====================================================================
     PROGRAM SEMANTICS
@@ -1426,6 +1507,32 @@ def stemFrameUnique (r : Retort) (cell : CellName) : Prop :=
   ∀ f1 f2, f1 ∈ r.frames → f2 ∈ r.frames →
     f1.cellName = cell → f2.cellName = cell →
     f1.generation = f2.generation → f1 = f2
+
+/-! ## Monotone Demand Predicates
+
+  A demand predicate is monotone if: once true, it stays true as the
+  retort grows (append-only). This ensures a stem cell that has demand
+  will continue to have demand even as other operations occur.
+-/
+
+-- A demand predicate is monotone w.r.t. appendOnly
+def MonotoneDemand (demandPred : Retort → Bool) : Prop :=
+  ∀ r r', appendOnly r r' → demandPred r = true → demandPred r' = true
+
+-- With a monotone predicate, stemHasDemand is preserved by all operations.
+theorem stemHasDemand_preserved (r : Retort) (op : RetortOp)
+    (cell : CellName) (demandPred : Retort → Bool)
+    (hMono : MonotoneDemand demandPred)
+    (hDemand : r.stemHasDemand cell demandPred = true) :
+    (applyOp r op).stemHasDemand cell demandPred = true := by
+  unfold Retort.stemHasDemand at *
+  exact hMono r (applyOp r op) (all_ops_appendOnly r op) hDemand
+
+-- Demand based on "any ready frame exists for a given cell" is monotone:
+-- ready frames come from the frames list, which only grows. New frames
+-- can become ready, but existing ready frames don't become unready
+-- (their givens remain satisfied because yields only grow).
+-- This justifies constraining stemHasDemand to monotone predicates.
 
 /-! ====================================================================
     CONTENT ADDRESSING
@@ -1528,26 +1635,70 @@ theorem data_persists (vt : ValidTrace) (n m : Nat) (h : n ≤ m) :
     have : n = 0 := Nat.eq_zero_of_le_zero h
     subst this
     unfold appendOnly cellsPreserved framesPreserved yieldsPreserved
-           bindingsPreserved givensPreserved claimLogPreserved
+           bindingsPreserved givensPreserved
     exact ⟨fun _ h => h, fun _ h => h, fun _ h => h,
-           fun _ h => h, fun _ h => h, fun _ h => h⟩
+           fun _ h => h, fun _ h => h⟩
   | succ k ih =>
     by_cases hk : n ≤ k
     · have ihk := ih hk
       have step := always_appendOnly vt k
       unfold appendOnly at *
-      obtain ⟨c1, f1, y1, b1, g1, l1⟩ := ihk
-      obtain ⟨c2, f2, y2, b2, g2, l2⟩ := step
+      obtain ⟨c1, f1, y1, b1, g1⟩ := ihk
+      obtain ⟨c2, f2, y2, b2, g2⟩ := step
       exact ⟨fun x hx => c2 x (c1 x hx), fun x hx => f2 x (f1 x hx),
              fun x hx => y2 x (y1 x hx), fun x hx => b2 x (b1 x hx),
-             fun x hx => g2 x (g1 x hx), fun x hx => l2 x (l1 x hx)⟩
+             fun x hx => g2 x (g1 x hx)⟩
     · -- n = k + 1 = m, so we need appendOnly (trace n) (trace n), which is reflexive
       have hEq : n = k + 1 := by omega
       subst hEq
       unfold appendOnly cellsPreserved framesPreserved yieldsPreserved
-             bindingsPreserved givensPreserved claimLogPreserved
+             bindingsPreserved givensPreserved
       exact ⟨fun _ h => h, fun _ h => h, fun _ h => h,
-             fun _ h => h, fun _ h => h, fun _ h => h⟩
+             fun _ h => h, fun _ h => h⟩
+
+/-! ====================================================================
+    WELL-FORMED TRACES (wellFormed preserved across all time)
+    ==================================================================== -/
+
+-- A ValidWFTrace extends ValidTrace: every operation is valid,
+-- and the initial state is well-formed (vacuously for Retort.empty).
+structure ValidWFTrace extends ValidTrace where
+  validOps : ∀ n, validOp (toValidTrace.trace n) (toValidTrace.ops n)
+
+-- Retort.empty is well-formed (all lists are empty, so all invariants hold vacuously).
+theorem empty_wellFormed : wellFormed Retort.empty := by
+  unfold wellFormed
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · -- I1: cellNamesUnique
+    unfold cellNamesUnique; intro c1 _ h; simp [Retort.empty] at h
+  · -- I2: framesUnique
+    unfold framesUnique; intro f1 _ h; simp [Retort.empty] at h
+  · -- I3: yieldsWellFormed
+    unfold yieldsWellFormed; intro y h; simp [Retort.empty] at h
+  · -- I4: bindingsWellFormed
+    unfold bindingsWellFormed; intro b h; simp [Retort.empty] at h
+  · -- I5: claimsWellFormed
+    unfold claimsWellFormed; intro c h; simp [Retort.empty] at h
+  · -- I6: claimMutex
+    unfold claimMutex; intro c1 _ h; simp [Retort.empty] at h
+  · -- I7: yieldUnique
+    unfold yieldUnique; intro y1 _ h; simp [Retort.empty] at h
+  · -- I8: framesCellDefsExist
+    unfold framesCellDefsExist; intro f h; simp [Retort.empty] at h
+  · -- I9: noSelfLoops
+    unfold noSelfLoops; intro b h; simp [Retort.empty] at h
+
+-- The main induction: wellFormed is an invariant of well-formed traces.
+theorem always_wellFormed (vt : ValidWFTrace) :
+    ∀ n, wellFormed (vt.trace n) := by
+  intro n
+  induction n with
+  | zero =>
+    rw [vt.init]
+    exact empty_wellFormed
+  | succ k ih =>
+    rw [vt.step k]
+    exact wellFormed_preserved (vt.trace k) (vt.ops k) ih (vt.validOps k)
 
 /-! ====================================================================
     GRAPH GROWTH: Stem cells produce unbounded frames
@@ -1629,7 +1780,6 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   - Yield: immutable outputs (append-only)
   - Binding: immutable resolved givens (append-only, DAG edges)
   - Claim: mutable lock (the ONLY mutable component)
-  - ClaimLogEntry: append-only audit trail
 
   DERIVED STATE (never stored):
   - FrameStatus: declared | computing | frozen
@@ -1699,7 +1849,7 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
       preserves the invariant that every binding has a matching yield
 
   THE EVAL LOOP (EvalCycle):
-  1. claim → adds to claims + claimLog
+  1. claim → adds to claims
   2. freeze → adds yields + bindings, removes claim
   3. createFrame → adds next-gen frame (if stem + demand)
 

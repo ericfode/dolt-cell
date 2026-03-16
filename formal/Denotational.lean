@@ -19,6 +19,8 @@
   and work with abstract structures.
 -/
 
+import Core
+
 /-! ====================================================================
     VALUE DOMAIN
     ==================================================================== -/
@@ -32,7 +34,6 @@ inductive Val where
   deriving Repr, DecidableEq, BEq
 
 -- An environment maps field names to values
-abbrev FieldName := String
 abbrev Env := List (FieldName × Val)
 
 def Env.lookup (env : Env) (f : FieldName) : Val :=
@@ -66,16 +67,8 @@ inductive Continue where
 def CellBody (M : Type → Type) := Env → M (Env × Continue)
 
 /-! ====================================================================
-    EFFECT LATTICE
+    EFFECT LATTICE (EffectLevel imported from Core)
     ==================================================================== -/
-
--- Classifies cells by their computational effects.
--- Forms a total order: pure < semantic < divergent.
-inductive EffectLevel where
-  | pure      : EffectLevel  -- deterministic, total (hard cells)
-  | semantic  : EffectLevel  -- non-deterministic (LLM / soft cells)
-  | divergent : EffectLevel  -- may not terminate (stems)
-  deriving Repr, DecidableEq, BEq
 
 -- The lattice ordering: pure <= everything, semantic <= semantic|divergent, etc.
 def EffectLevel.le : EffectLevel → EffectLevel → Bool

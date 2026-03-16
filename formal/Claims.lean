@@ -8,12 +8,11 @@
   Approach C (hybrid: mutable lock + append-only log) is assumed.
 -/
 
+import Core
+
 /-! ====================================================================
     TRANSITION SYSTEM: States and Actions
     ==================================================================== -/
-
-abbrev PistonId := String
-abbrev FrameId := String
 
 -- A yield in the store
 structure StoredYield where

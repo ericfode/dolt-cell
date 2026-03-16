@@ -14,4 +14,5 @@ lean_lib Core
 lean_lib Retort where
   roots := #[`Retort]
 
-lean_lib Denotational
+lean_lib Denotational where
+  roots := #[`Denotational]

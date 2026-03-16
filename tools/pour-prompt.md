@@ -128,6 +128,8 @@ Rules:
 - All other givens (non-chaining) are copied verbatim to all iterations
 - Body type is preserved (soft, stem, or hard)
 - Oracles are copied to each iteration
+- Downstream cells can use the template name as source_cell (e.g., `given refine→text`)
+  and it auto-resolves to the last iteration (e.g., `given refine-3→text` when N=3)
 
 ## Oracle Type Classification
 

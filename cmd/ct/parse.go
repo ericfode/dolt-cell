@@ -236,6 +236,27 @@ func cellsToSQL(programID string, cells []parsedCell) string {
 		}
 	}
 
+	// Build iteration template map: name → N (for reference resolution)
+	iterTemplates := map[string]int{}
+	for _, c := range cells {
+		if c.iterate > 0 {
+			iterTemplates[c.name] = c.iterate
+		}
+	}
+
+	// Rewrite givens that reference iteration templates to the last step.
+	// "given refine→text" → "given refine-3→text" when ⊢∘ refine × 3 exists.
+	for i := range cells {
+		if cells[i].iterate > 0 {
+			continue // don't rewrite the template's own givens
+		}
+		for j := range cells[i].givens {
+			if n, ok := iterTemplates[cells[i].givens[j].sourceCell]; ok {
+				cells[i].givens[j].sourceCell = fmt.Sprintf("%s-%d", cells[i].givens[j].sourceCell, n)
+			}
+		}
+	}
+
 	for _, c := range cells {
 		if c.iterate > 0 {
 			// Expand ⊢∘ iteration (judge cells generated per-iteration)

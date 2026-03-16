@@ -449,3 +449,75 @@ func TestMixedOracles(t *testing.T) {
 
 	t.Logf("✓ mixed oracles SQL:\n%s", sql)
 }
+
+func TestIterationTemplateReference(t *testing.T) {
+	// "given refine→text" should auto-resolve to "given refine-3→text"
+	// when ⊢∘ refine × 3 exists
+	input := `⊢ prompt
+  yield topic ≡ Write about cats.
+
+⊢ draft
+  given prompt→topic
+  yield text
+  ∴ Write a first draft about «topic».
+
+⊢∘ refine × 3
+  given draft→text
+  yield text
+  ∴∴ Improve «text».
+
+⊢ final
+  given refine→text
+  yield summary
+  ∴ Summarize «text» in one sentence.
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	sql := cellsToSQL("iter-ref", cells)
+
+	// "final" cell should depend on refine-3→text, not refine→text
+	if strings.Contains(sql, "'refine', 'text'") {
+		t.Error("final cell should not reference template name 'refine' directly")
+	}
+	if !strings.Contains(sql, "'refine-3', 'text'") {
+		t.Error("final cell should reference 'refine-3' (last iteration)")
+	}
+
+	t.Logf("✓ iteration template reference resolved:\n%s", sql)
+}
+
+func TestIterationTemplateReferenceDoesNotAffectExplicit(t *testing.T) {
+	// Explicit references like "given refine-1→text" should not be rewritten
+	input := `⊢ seed
+  yield text ≡ Hello.
+
+⊢∘ refine × 3
+  given seed→text
+  yield text
+  ∴∴ Improve «text».
+
+⊢ compare
+  given refine-1→text
+  given refine→text
+  yield comparison
+  ∴ Compare first iteration «text» with final «text».
+`
+	cells := parseCellFile(input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+
+	sql := cellsToSQL("explicit-ref", cells)
+
+	// refine-1→text should stay as refine-1 (explicit, not a template name)
+	if !strings.Contains(sql, "'refine-1', 'text'") {
+		t.Error("explicit reference refine-1→text should be preserved")
+	}
+	// refine→text should be rewritten to refine-3→text
+	if !strings.Contains(sql, "'refine-3', 'text'") {
+		t.Error("template reference refine→text should resolve to refine-3")
+	}
+}

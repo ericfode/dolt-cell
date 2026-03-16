@@ -15,7 +15,7 @@
 
 ⊢ judge
   given draft→text
-  given refine-3→text
+  given refine→text
   yield verdict
   ∴∴ Compare the original draft «draft.text» with the refined version «refine-3.text». Which is better and why? One paragraph.
   ⊨ verdict is not empty

@@ -29,6 +29,7 @@ Usage:
   ct watch                                            Live dashboard: all programs, all cells (2s refresh)
   ct watch <program-id>                               Live dashboard for one program
   ct pour <name> <file.cell>                          Load a program
+  ct eval <name> <file.cell>                          Submit .cell to cell-zero-eval for parsing + evaluation
   ct run <program-id>                                 Eval loop: hard cells inline, soft cells print prompt
   ct submit <program-id> <cell> <field> <value>       Submit a soft cell result
   ct status <program-id>                              Show program state
@@ -93,6 +94,9 @@ func main() {
 	case "pour":
 		need(args, 2, "ct pour <name> <file.cell>")
 		cmdPour(db, args[0], args[1])
+	case "eval":
+		need(args, 2, "ct eval <name> <file.cell>")
+		cmdEval(db, args[0], args[1])
 	case "run":
 		need(args, 1, "ct run <program-id>")
 		cmdRun(db, args[0])
@@ -287,6 +291,56 @@ func cmdHistory(db *sql.DB, progID string) {
 		}
 		fmt.Printf("  %s  %-10s  %-10s  %s\n", ts, eventType.String, cellName.String, trunc(detail.String, 50))
 	}
+}
+
+// cmdEval submits a .cell file to cell-zero-eval as a pour-request.
+// cell-zero-eval's pour-one stem cell will parse and pour it,
+// then eval-one will evaluate the resulting program's cells.
+func cmdEval(db *sql.DB, name, cellFile string) {
+	data, err := os.ReadFile(cellFile)
+	if err != nil {
+		fatal("read %s: %v", cellFile, err)
+	}
+
+	// Check cell-zero-eval exists
+	var czCount int
+	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = 'cell-zero-eval'").Scan(&czCount)
+	if czCount == 0 {
+		fatal("cell-zero-eval not poured. Run: ct pour cell-zero-eval examples/cell-zero-eval.cell")
+	}
+
+	// Create a pour-request cell in cell-zero-eval
+	h := sha256.Sum256(data)
+	reqID := fmt.Sprintf("cz-req-%s", hex.EncodeToString(h[:4]))
+
+	// Check for duplicate
+	var existing int
+	db.QueryRow("SELECT COUNT(*) FROM cells WHERE id = ?", reqID).Scan(&existing)
+	if existing > 0 {
+		fmt.Printf("pour-request %s already exists (cache hit)\n", reqID)
+		return
+	}
+
+	// Insert the pour-request cell with .cell text as body
+	db.Exec(
+		"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, 'cell-zero-eval', 'pour-request', 'hard', ?, 'declared')",
+		reqID, string(data))
+
+	// Yield: name (pre-frozen with the program name)
+	db.Exec(
+		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'name', ?, TRUE, NOW())",
+		"y-"+reqID+"-name", reqID, name)
+
+	// Yield: text (pre-frozen with the .cell content)
+	db.Exec(
+		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'text', ?, TRUE, NOW())",
+		"y-"+reqID+"-text", reqID, string(data))
+
+	db.Exec("CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("eval: submit pour-request for %s", name))
+
+	fmt.Printf("✓ Submitted pour-request for %s (%d bytes)\n", name, len(data))
+	fmt.Printf("  Request ID: %s\n", reqID)
+	fmt.Println("  pour-one will parse it, eval-one will evaluate it.")
 }
 
 func cmdPour(db *sql.DB, name, cellFile string) {

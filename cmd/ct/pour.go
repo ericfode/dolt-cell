@@ -159,6 +159,11 @@ func pourExecSQL(db *sql.DB, name, sqlText string) {
 	sqlText = strings.ReplaceAll(sqlText, "```", "")
 	sqlText = strings.TrimSpace(sqlText)
 
+	// Sandbox: block dangerous SQL from piston-generated output
+	if err := sandboxSQL(sqlText); err != nil {
+		fatal("pour exec blocked: %v\nSQL was:\n%s", err, trunc(sqlText, 500))
+	}
+
 	if _, err := db.Exec(sqlText); err != nil {
 		if !strings.Contains(err.Error(), "nothing to commit") {
 			fatal("pour exec: %v\nSQL was:\n%s", err, trunc(sqlText, 500))

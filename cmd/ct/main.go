@@ -80,6 +80,13 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// Commands that don't need a DB connection
+	if cmd == "lint" {
+		need(args, 1, "ct lint <file.cell>")
+		cmdLint(args[0])
+		return
+	}
+
 	switch cmd {
 	case "piston":
 		progID := ""

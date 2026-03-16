@@ -658,6 +658,7 @@ func resolveInputs(db *sql.DB, progID, cellName string) map[string]string {
 		return m
 	}
 	defer rows.Close()
+	bareValues := make(map[string][]string) // collect all values per bare field name
 	for rows.Next() {
 		var sc, sf, v sql.NullString
 		rows.Scan(&sc, &sf, &v)
@@ -666,12 +667,15 @@ func resolveInputs(db *sql.DB, progID, cellName string) map[string]string {
 		// Also add «source.field» dot-notation alias
 		m[sc.String+"."+sf.String] = v.String
 		fieldCount[sf.String]++
-		m[sf.String] = v.String
+		bareValues[sf.String] = append(bareValues[sf.String], v.String)
 	}
-	// Remove bare field names that are ambiguous (multiple givens share the name)
-	for field, count := range fieldCount {
-		if count > 1 {
-			delete(m, field)
+	// For bare field names: if unique, use single value; if ambiguous (gather),
+	// concatenate all values so «field» expands to the full list.
+	for field, vals := range bareValues {
+		if len(vals) == 1 {
+			m[field] = vals[0]
+		} else {
+			m[field] = strings.Join(vals, "\n\n")
 		}
 	}
 	return m

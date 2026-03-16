@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -106,6 +107,13 @@ func cmdSubmit(db *sql.DB, progID, cellName, field, value string) {
 	switch result {
 	case "ok":
 		fmt.Printf("■ %s.%s frozen\n", cellName, field)
+		// Check if the program is now complete
+		var remaining int
+		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ? AND state NOT IN ('frozen', 'bottom')", progID).Scan(&remaining)
+		if remaining == 0 {
+			fmt.Println("COMPLETE")
+			emitCompletionBead(db, progID)
+		}
 	case "oracle_fail":
 		fmt.Printf("✗ %s.%s oracle failed: %s\n", cellName, field, msg)
 		fmt.Printf("  → revise and resubmit: ct submit %s %s %s '<revised>'\n", progID, cellName, field)
@@ -371,6 +379,7 @@ func cmdPiston(db *sql.DB, progID string) {
 		switch es.action {
 		case "complete":
 			fmt.Println("COMPLETE")
+			emitCompletionBead(db, progID)
 			return
 
 		case "quiescent":
@@ -487,6 +496,7 @@ func cmdNext(db *sql.DB, progID string, wait bool, modelHint string) {
 	switch es.action {
 	case "complete":
 		fmt.Println("COMPLETE")
+		emitCompletionBead(db, progID)
 		os.Exit(2)
 
 	case "quiescent":
@@ -1406,3 +1416,74 @@ func replDocState(db *sql.DB, progID string) {
 		fmt.Println()
 	}
 }
+
+// emitCompletionBead creates a Gas Town bead summarizing a completed program's yields.
+// This bridges the Cell runtime to the broader workspace: when a program finishes,
+// the result is visible in beads as a closed task.
+func emitCompletionBead(db *sql.DB, progID string) {
+	// Collect frozen yields
+	rows, err := db.Query(`
+		SELECT c.name, y.field_name, COALESCE(LEFT(y.value_text, 200), '')
+		FROM cells c
+		JOIN yields y ON y.cell_id = c.id
+		WHERE c.program_id = ? AND y.is_frozen = TRUE
+		ORDER BY c.name, y.field_name`, progID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var lines []string
+	for rows.Next() {
+		var cell, field, val string
+		rows.Scan(&cell, &field, &val)
+		if val != "" {
+			lines = append(lines, fmt.Sprintf("  %s.%s = %s", cell, field, val))
+		}
+	}
+
+	if len(lines) == 0 {
+		return
+	}
+
+	// Count cells
+	var total int
+	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", progID).Scan(&total)
+
+	title := fmt.Sprintf("cell program complete: %s (%d cells)", progID, total)
+	body := fmt.Sprintf("Program %s finished. All cells frozen.\n\nYields:\n%s",
+		progID, strings.Join(lines, "\n"))
+
+	// Try bd create — if bd isn't available, just log
+	// Look for bd in PATH and common locations
+	bdPath, err := exec.LookPath("bd")
+	if err != nil {
+		// Try common nix location
+		for _, p := range []string{"/run/current-system/sw/bin/bd", "/nix/var/nix/profiles/default/bin/bd"} {
+			if _, e := os.Stat(p); e == nil {
+				bdPath = p
+				break
+			}
+		}
+	}
+	if bdPath == "" {
+		fmt.Fprintf(os.Stderr, "  (completion bead: bd not found in PATH)\n")
+		return
+	}
+
+	// Create bead (capture ID for closing)
+	c := exec.Command(bdPath, "create", "-t", "task", title, "--description", body, "--silent")
+	out, err := c.Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  (completion bead: bd create failed: %v)\n", err)
+		return
+	}
+	beadID := strings.TrimSpace(string(out))
+	if beadID == "" {
+		return
+	}
+	// Close it immediately
+	exec.Command(bdPath, "close", beadID).Run()
+	fmt.Fprintf(os.Stderr, "  ✓ completion bead: %s\n", beadID)
+}
+

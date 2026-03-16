@@ -650,18 +650,6 @@ func fmtDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
-func progressBar(done, total, width int) string {
-	if total == 0 {
-		return ""
-	}
-	filled := width * done / total
-	if filled > width {
-		filled = width
-	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
-	return bar
-}
-
 // ===================================================================
 // Piston: autonomous eval loop (ct next → think → ct submit)
 // ===================================================================
@@ -1621,10 +1609,20 @@ func (m watchModel) renderContent() string {
 		case navProgram:
 			counts := m.programs[item.prog]
 			done, total := counts[1], counts[0]
+			// Count computing cells for this program
+			progComputing := 0
+			for _, c := range m.cells {
+				if c.prog == item.prog && c.state == "computing" {
+					progComputing++
+				}
+			}
 			filled := 8 * done / max(total, 1)
 			barStr := barDoneStyle.Render(strings.Repeat("█", filled)) +
 				barTodoStyle.Render(strings.Repeat("░", 8-filled))
 			status := fmt.Sprintf("%s %d/%d", barStr, done, total)
+			if progComputing > 0 {
+				status += pendValStyle.Render(fmt.Sprintf(" ⚡%d", progComputing))
+			}
 			if done == total && total > 0 {
 				status = barDoneStyle.Render("████████") + " " + doneStyle.Render("DONE")
 			}
@@ -1675,15 +1673,50 @@ func (m watchModel) renderContent() string {
 				arrow = " "
 			}
 
-			// State label with elapsed time for computing cells
+			// State label with elapsed time and piston for computing cells
 			stateLabel := c.state
-			if c.state == "computing" && c.computingSince != nil {
-				stateLabel += " " + fmtDuration(time.Since(*c.computingSince))
+			if c.state == "computing" {
+				// Check if all yields are actually frozen (anomaly)
+				allFrozen := len(c.yields) > 0
+				for _, y := range c.yields {
+					if !y.frozen {
+						allFrozen = false
+						break
+					}
+				}
+				if allFrozen {
+					stateLabel = pendValStyle.Render("computing→frozen")
+				} else if c.computingSince != nil {
+					stateLabel += " " + fmtDuration(time.Since(*c.computingSince))
+				}
+				if c.assignedPiston != "" {
+					stateLabel += detailDimStyle.Render(" (" + trunc(c.assignedPiston, 16) + ")")
+				}
 			}
 
 			line := fmt.Sprintf("%s  %s %s %-20s %s", prefix, arrow, icon, c.name, stateLabel)
-			if len(c.yields) > 0 && !isExpanded {
-				line += footerStyle.Render(fmt.Sprintf("  [%d yields]", len(c.yields)))
+
+			// Show yield info when collapsed
+			if !isExpanded {
+				if c.state == "frozen" && len(c.yields) == 1 && c.yields[0].value != "" {
+					// Single frozen yield — show inline preview
+					line += detailDimStyle.Render(" = ") + frozenValStyle.Render(trunc(c.yields[0].value, 40))
+				} else if len(c.yields) > 0 {
+					// Count frozen yields
+					frozenY := 0
+					for _, y := range c.yields {
+						if y.frozen {
+							frozenY++
+						}
+					}
+					if frozenY == len(c.yields) {
+						line += footerStyle.Render(fmt.Sprintf("  [%d yields ■]", len(c.yields)))
+					} else if frozenY > 0 {
+						line += footerStyle.Render(fmt.Sprintf("  [%d/%d yields]", frozenY, len(c.yields)))
+					} else {
+						line += footerStyle.Render(fmt.Sprintf("  [%d yields]", len(c.yields)))
+					}
+				}
 			}
 			buf.WriteString(line + "\n")
 
@@ -1704,7 +1737,9 @@ func (m watchModel) renderContent() string {
 	}
 
 	if len(m.cells) == 0 && m.err == nil {
-		buf.WriteString("  (no programs)\n")
+		buf.WriteString("\n")
+		buf.WriteString(detailDimStyle.Render("  No programs loaded. Use ct pour <name> <file.cell> to load one."))
+		buf.WriteString("\n")
 	}
 
 	return buf.String()
@@ -1719,13 +1754,28 @@ func (m watchModel) View() tea.View {
 
 	var buf strings.Builder
 
-	// Header
+	// Header with aggregate stats
 	now := time.Now().Format("15:04:05")
 	spin := ""
 	if m.fetching {
 		spin = " " + m.spinner.View()
 	}
-	header := headerStyle.Render(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs", now, len(m.programs)))
+	// Count aggregate cell states
+	var totalCells, frozenCells, computingCells int
+	for _, counts := range m.programs {
+		totalCells += counts[0]
+		frozenCells += counts[1]
+	}
+	for _, c := range m.cells {
+		if c.state == "computing" {
+			computingCells++
+		}
+	}
+	statsStr := fmt.Sprintf("%d/%d", frozenCells, totalCells)
+	if computingCells > 0 {
+		statsStr += fmt.Sprintf(" %s", pendValStyle.Render(fmt.Sprintf("⚡%d", computingCells)))
+	}
+	header := headerStyle.Render(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs  %s", now, len(m.programs), statsStr))
 	buf.WriteString(header)
 	buf.WriteString(spin)
 
@@ -1743,7 +1793,14 @@ func (m watchModel) View() tea.View {
 
 	// Detail pane (if enabled)
 	if m.showDetail {
-		sep := strings.Repeat("─", m.width)
+		label := " DETAIL "
+		padLen := m.width - len(label)
+		if padLen < 0 {
+			padLen = 0
+		}
+		left := padLen / 2
+		right := padLen - left
+		sep := strings.Repeat("─", left) + label + strings.Repeat("─", right)
 		buf.WriteString(detailDimStyle.Render(sep) + "\n")
 		buf.WriteString(m.detailVP.View())
 	}

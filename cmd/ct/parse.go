@@ -638,6 +638,14 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 			"INSERT INTO oracles (id, cell_id, oracle_type, assertion, condition_expr) VALUES ('%s', '%s', '%s', '%s', %s);\n",
 			escape(oID), escape(cellID), o.oracleType, escape(o.assertion), condExpr))
 	}
+
+	// Guard oracle (for iteration cells with recur until GUARD)
+	if c.guard != "" {
+		gID := fmt.Sprintf("o-%s-%s-guard", prefix, c.name)
+		sb.WriteString(fmt.Sprintf(
+			"INSERT INTO oracles (id, cell_id, oracle_type, assertion, condition_expr) VALUES ('%s', '%s', 'deterministic', 'guard: %s', 'guard:%s');\n",
+			escape(gID), escape(cellID), escape(c.guard), escape(c.guard)))
+	}
 }
 
 func expandIteration(sb *strings.Builder, programID, prefix string, c parsedCell) {
@@ -668,7 +676,8 @@ func expandIteration(sb *strings.Builder, programID, prefix string, c parsedCell
 			bodyType: c.bodyType,
 			body:     c.body,
 			yields:   c.yields,
-			oracles:  c.oracles,
+			oracles:  append([]parsedOracle{}, c.oracles...), // copy
+			guard:    c.guard,
 		}
 
 		// Copy givens, replacing the chaining source

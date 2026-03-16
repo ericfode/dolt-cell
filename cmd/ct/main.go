@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2749,6 +2750,11 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			for rows.Next() {
 				var cond string
 				rows.Scan(&cond)
+				// Guard oracles are flow control, not yield validators
+				if strings.HasPrefix(cond, "guard:") {
+					detPass++ // auto-pass guard oracles in the check loop
+					continue
+				}
 				switch {
 				case cond == "not_empty":
 					if value != "" {
@@ -2855,6 +2861,9 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))
 
+		// Guard skip: if iteration cell with satisfied guard, mark remaining as bottom
+		checkGuardSkip(db, progID, cellName, cellID)
+
 		// Stem cell respawn: replace frozen stem with fresh declared copy
 		var bodyType string
 		db.QueryRow("SELECT body_type FROM cells WHERE id = ?", cellID).Scan(&bodyType)
@@ -2864,6 +2873,91 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 	}
 
 	return "ok", fmt.Sprintf("Yield frozen: %s.%s", cellName, fieldName)
+}
+
+// checkGuardSkip checks if an iteration cell has a satisfied guard.
+// If so, marks all subsequent iteration cells as bottom.
+func checkGuardSkip(db *sql.DB, progID, cellName, cellID string) {
+	if !isIterationCell(cellName) {
+		return
+	}
+
+	// Check for guard oracle
+	var guardExpr string
+	err := db.QueryRow(
+		"SELECT condition_expr FROM oracles WHERE cell_id = ? AND condition_expr LIKE 'guard:%'",
+		cellID).Scan(&guardExpr)
+	if err != nil {
+		return // no guard
+	}
+
+	// Parse guard: "guard:FIELD=VALUE"
+	guardBody := strings.TrimPrefix(guardExpr, "guard:")
+	parts := strings.SplitN(guardBody, "=", 2)
+	if len(parts) != 2 {
+		return
+	}
+	guardField := strings.TrimSpace(parts[0])
+	guardValue := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+
+	// Check if the guard field's yield matches
+	var actualValue string
+	err = db.QueryRow(
+		"SELECT value_text FROM yields WHERE cell_id = ? AND field_name = ? AND is_frozen = 1",
+		cellID, guardField).Scan(&actualValue)
+	if err != nil || strings.TrimSpace(actualValue) != guardValue {
+		return // guard not satisfied
+	}
+
+	// Guard satisfied! Extract base name and current iteration number
+	idx := strings.LastIndex(cellName, "-")
+	if idx < 0 {
+		return
+	}
+	baseName := cellName[:idx]
+	currentN, _ := strconv.Atoi(cellName[idx+1:])
+
+	// Find the max iteration (from the iterate count stored in oracles of sibling cells)
+	// Simpler: just mark all declared cells with name > current as bottom
+	rows, _ := db.Query(
+		"SELECT id, name FROM cells WHERE program_id = ? AND state = 'declared' AND name LIKE ?",
+		progID, baseName+"-%")
+	if rows == nil {
+		return
+	}
+	defer rows.Close()
+
+	bottomed := 0
+	for rows.Next() {
+		var sibID, sibName string
+		rows.Scan(&sibID, &sibName)
+		// Parse sibling iteration number
+		sibIdx := strings.LastIndex(sibName, "-")
+		if sibIdx < 0 {
+			continue
+		}
+		sibN, err := strconv.Atoi(sibName[sibIdx+1:])
+		if err != nil {
+			continue // not a numbered iteration (might be a judge)
+		}
+		if sibN > currentN {
+			mustExecDB(db, "UPDATE cells SET state = 'bottom' WHERE id = ?", sibID)
+			mustExecDB(db, "UPDATE yields SET is_bottom = TRUE WHERE cell_id = ?", sibID)
+			bottomed++
+		}
+	}
+
+	if bottomed > 0 {
+		// Also bottom the judges of bottomed iterations
+		for n := currentN + 1; n <= currentN+bottomed; n++ {
+			pattern := fmt.Sprintf("%s-%d-judge-%%", baseName, n)
+			db.Exec("UPDATE cells SET state = 'bottom' WHERE program_id = ? AND name LIKE ? AND state = 'declared'",
+				progID, pattern)
+		}
+		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+			fmt.Sprintf("cell: guard satisfied at %s, bottomed %d remaining iterations", cellName, bottomed))
+		fmt.Printf("  ⊥ guard satisfied at %s — %d iterations skipped\n", cellName, bottomed)
+	}
 }
 
 // replRespawnStem replaces a frozen stem cell with a fresh declared copy.

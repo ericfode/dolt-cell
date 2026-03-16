@@ -2017,19 +2017,26 @@ func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 		var modelHint sql.NullString
 		var err error
 
+		// Inline ready_cells logic (Dolt view NOT EXISTS is unreliable)
+		readySQL := `
+			SELECT c.id, c.program_id, c.name, c.body, c.body_type, c.model_hint
+			FROM cells c
+			WHERE c.state = 'declared'
+			  AND c.id NOT IN (SELECT cell_id FROM cell_claims)
+			  AND (
+			    SELECT COUNT(*) FROM givens g
+			    JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
+			    LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
+			    WHERE g.cell_id = c.id
+			      AND g.is_optional = FALSE
+			      AND y.id IS NULL
+			  ) = 0`
 		if progID != "" {
-			err = db.QueryRow(`
-				SELECT rc.id, rc.program_id, rc.name, rc.body, rc.body_type, rc.model_hint
-				FROM ready_cells rc
-				WHERE rc.program_id = ?
-				  AND rc.id NOT IN (SELECT cell_id FROM cell_claims)
-				LIMIT 1`, progID).Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &modelHint)
+			err = db.QueryRow(readySQL+" AND c.program_id = ? LIMIT 1", progID).
+				Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &modelHint)
 		} else {
-			err = db.QueryRow(`
-				SELECT rc.id, rc.program_id, rc.name, rc.body, rc.body_type, rc.model_hint
-				FROM ready_cells rc
-				WHERE rc.id NOT IN (SELECT cell_id FROM cell_claims)
-				LIMIT 1`).Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &modelHint)
+			err = db.QueryRow(readySQL + " LIMIT 1").
+				Scan(&cellID, &cellProgID, &cellName, &body, &bodyType, &modelHint)
 		}
 		if err != nil {
 			break // no ready cells
@@ -2248,7 +2255,15 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 func replCellCounts(db *sql.DB, progID string) (total, frozen, ready int) {
 	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", progID).Scan(&total)
 	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ? AND state = 'frozen'", progID).Scan(&frozen)
-	if err := db.QueryRow("SELECT COUNT(*) FROM ready_cells WHERE program_id = ?", progID).Scan(&ready); err != nil {
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM cells c
+		WHERE c.program_id = ? AND c.state = 'declared'
+		AND NOT EXISTS (
+		    SELECT 1 FROM givens g
+		    JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
+		    LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
+		    WHERE g.cell_id = c.id AND g.is_optional = FALSE AND y.id IS NULL
+		)`, progID).Scan(&ready); err != nil {
 		ready = 0
 	}
 	return
@@ -2339,7 +2354,15 @@ func replDocState(db *sql.DB, progID string) {
 
 	// Query ready cell IDs for declared vs blocked distinction
 	readySet := make(map[string]bool)
-	if rRows, err := db.Query("SELECT id FROM ready_cells WHERE program_id = ?", progID); err == nil {
+	if rRows, err := db.Query(`
+		SELECT c.id FROM cells c
+		WHERE c.program_id = ? AND c.state = 'declared'
+		AND NOT EXISTS (
+		    SELECT 1 FROM givens g
+		    JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
+		    LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
+		    WHERE g.cell_id = c.id AND g.is_optional = FALSE AND y.id IS NULL
+		)`, progID); err == nil {
 		for rRows.Next() {
 			var id string
 			rRows.Scan(&id)

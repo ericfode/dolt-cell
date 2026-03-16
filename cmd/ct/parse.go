@@ -351,7 +351,7 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 
 	// Givens
 	for _, g := range c.givens {
-		gID := fmt.Sprintf("g-%s-%s-%s", c.name, g.sourceCell, g.sourceField)
+		gID := fmt.Sprintf("g-%s-%s-%s-%s", prefix, c.name, g.sourceCell, g.sourceField)
 		opt := "FALSE"
 		if g.optional {
 			opt = "TRUE"
@@ -363,7 +363,7 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 
 	// Yields
 	for _, y := range c.yields {
-		yID := fmt.Sprintf("y-%s-%s", c.name, y.fieldName)
+		yID := fmt.Sprintf("y-%s-%s-%s", prefix, c.name, y.fieldName)
 		if allPrebound && len(c.yields) > 1 {
 			// Pre-freeze each yield with its value
 			sb.WriteString(fmt.Sprintf(
@@ -378,7 +378,7 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 
 	// Oracles
 	for i, o := range c.oracles {
-		oID := fmt.Sprintf("o-%s-%d", c.name, i+1)
+		oID := fmt.Sprintf("o-%s-%s-%d", prefix, c.name, i+1)
 		condExpr := "NULL"
 		if o.condExpr != "" {
 			condExpr = fmt.Sprintf("'%s'", escape(o.condExpr))

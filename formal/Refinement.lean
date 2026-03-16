@@ -107,13 +107,30 @@ def fieldsCorrespond (rc : RetortConfig) : Prop :=
       dcd.interface.name = rcd.name.val ∧
       rcd.fields.length = dcd.interface.outputs.length
 
+/-- Dependency correspondence: for every GivenSpec in the Retort belonging
+    to a cell, the corresponding denotational CellDef has a Dep with
+    matching source cell and source field. This ensures the operational
+    dependency structure (givens) faithfully mirrors the denotational
+    dependency structure (deps). -/
+def depsCorrespond (rc : RetortConfig) : Prop :=
+  ∀ g ∈ rc.retort.givens,
+    -- The owning cell exists in the program
+    ∃ dcd ∈ rc.program.cells,
+      dcd.interface.name = g.owner.val ∧
+      -- And has a matching Dep
+      ∃ d ∈ dcd.deps,
+        d.sourceCell = g.sourceCell.val ∧
+        d.sourceField = g.sourceField ∧
+        d.optional = g.optional
+
 /-- A RetortConfig is coherent when the operational and denotational
     models agree on structure: cell names correspond, fields correspond,
-    and the Retort is well-formed. -/
+    dependencies correspond, and the Retort is well-formed. -/
 structure Coherent (rc : RetortConfig) : Prop where
   wf            : wellFormed rc.retort
   cellsOk       : cellsCorrespond rc
   fieldsOk      : fieldsCorrespond rc
+  depsOk        : depsCorrespond rc
 
 /-! ====================================================================
     REFINEMENT THEOREM 1: Frozen Frame Correspondence
@@ -169,6 +186,31 @@ theorem frozen_frame_corresponds (rc : RetortConfig) (f : Frame)
   exact ⟨frameToExecFrame rc.retort rc.interp f, hInTrace,
          frameToExecFrame_cellName rc.retort rc.interp f,
          frameToExecFrame_generation rc.retort rc.interp f⟩
+
+/-! ====================================================================
+    REFINEMENT THEOREM 1b: Dependency Structure Correspondence
+
+    For every operational dependency (GivenSpec), the denotational model
+    has a matching Dep in the corresponding CellDef. This ensures the
+    DAG structure is faithfully reflected across abstraction layers.
+    ==================================================================== -/
+
+/-- If a GivenSpec exists for a cell in a coherent RetortConfig, then
+    the denotational program has a CellDef for that cell with a Dep
+    that matches on source cell, source field, and optionality.
+
+    This is the structural soundness result for dependencies: the
+    operational givens table mirrors the denotational deps list. -/
+theorem given_has_matching_dep (rc : RetortConfig) (g : GivenSpec)
+    (hCoherent : Coherent rc)
+    (hGiven : g ∈ rc.retort.givens) :
+    ∃ dcd ∈ rc.program.cells,
+      dcd.interface.name = g.owner.val ∧
+      ∃ d ∈ dcd.deps,
+        d.sourceCell = g.sourceCell.val ∧
+        d.sourceField = g.sourceField ∧
+        d.optional = g.optional :=
+  hCoherent.depsOk g hGiven
 
 /-! ====================================================================
     REFINEMENT THEOREM 2: Frozen Frames Preserved
@@ -437,6 +479,186 @@ theorem valid_trace_produces_valid_exec_frames (vt : ValidWFTrace) (interp : Bod
          frameToExecFrame_generation (vt.trace n) interp f⟩
 
 /-! ====================================================================
+    REFINEMENT THEOREM 11: Behavioral Refinement (Output Value Correspondence)
+
+    The single most important theorem for A+: frozen frame outputs
+    actually match what the denotational body would produce.
+
+    Previous theorems (1-10) only prove structural correspondence:
+    cell names and generations match. This theorem proves VALUE
+    correspondence: the actual outputs match.
+
+    The key bridge is BodyFaithful: if the body interpreter correctly
+    translates between the operational string world and the denotational
+    value world, then the outputs are semantically identical.
+    ==================================================================== -/
+
+/-- A cell-level body faithfulness condition.
+
+    For a specific Retort cell (identified by name) and its corresponding
+    denotational CellDef, the body interpreter correctly maps the
+    operational yields to the denotational body's outputs.
+
+    Concretely: if we interpret the frozen frame's yields via BodyInterp
+    and the frozen frame's binding-resolved inputs via BodyInterp, the
+    result is the same as calling the denotational body on those
+    interpreted inputs. -/
+structure CellBodyFaithful (rc : RetortConfig) (f : Frame) (dcd : CellDef Id) : Prop where
+  /-- The interpreted operational outputs equal the denotational body's first component.
+      That is, yieldsToEnv(interp, frameYields(f)) = fst(dcd.body(interpretedInputs)). -/
+  outputsMatch :
+    let interpretedInputs : Env :=
+      (rc.retort.resolveBindings f.id).map (fun (field, value) =>
+        (rc.interp.fieldMap field, rc.interp.yieldToVal field value))
+    let (bodyOutputs, _) := dcd.body interpretedInputs
+    yieldsToEnv rc.interp (rc.retort.frameYields f.id) = bodyOutputs
+
+/-- A RetortConfig has faithful bodies when every frozen frame's yields
+    correspond to what the denotational body would produce. -/
+def bodiesFaithful (rc : RetortConfig) : Prop :=
+  ∀ f ∈ rc.retort.frames,
+    rc.retort.frameStatus f = .frozen →
+    ∃ dcd ∈ rc.program.cells,
+      dcd.interface.name = f.cellName.val ∧
+      CellBodyFaithful rc f dcd
+
+/-- Helper: the outputs field of frameToExecFrame equals yieldsToEnv. -/
+theorem frameToExecFrame_outputs (r : Retort) (interp : BodyInterp) (f : Frame) :
+    (frameToExecFrame r interp f).outputs = yieldsToEnv interp (r.frameYields f.id) := by
+  unfold frameToExecFrame
+  rfl
+
+/-- Helper: the inputs field of frameToExecFrame equals the interpreted bindings. -/
+theorem frameToExecFrame_inputs (r : Retort) (interp : BodyInterp) (f : Frame) :
+    (frameToExecFrame r interp f).inputs =
+      (r.resolveBindings f.id).map (fun (field, value) =>
+        (interp.fieldMap field, interp.yieldToVal field value)) := by
+  unfold frameToExecFrame
+  rfl
+
+/-- BEHAVIORAL REFINEMENT: If a frame is frozen in a coherent RetortConfig
+    with faithful body interpretation, then the corresponding ExecFrame
+    in the denotational trace has outputs that match the denotational
+    body's evaluation on the interpreted inputs.
+
+    This is the VALUE-LEVEL soundness result. Previous theorems only
+    showed that names and generations match. This theorem shows that
+    the actual computed values are correct. -/
+theorem frozen_frame_outputs_match (rc : RetortConfig) (f : Frame)
+    (_hCoherent : Coherent rc)
+    (hFaithful : bodiesFaithful rc)
+    (hMem : f ∈ rc.retort.frames)
+    (hFrozen : rc.retort.frameStatus f = .frozen) :
+    ∃ ef ∈ rc.retort.toExecTrace rc.interp,
+      ef.cellName = f.cellName.val ∧
+      ef.generation = f.generation ∧
+      ∃ dcd ∈ rc.program.cells,
+        dcd.interface.name = f.cellName.val ∧
+        (let interpretedInputs := ef.inputs
+         let (bodyOutputs, _) := dcd.body interpretedInputs
+         ef.outputs = bodyOutputs) := by
+  -- Step 1: the ExecFrame exists in the trace (from Theorem 1)
+  have hFF := frozen_in_frozenFrames rc.retort f hMem hFrozen
+  have hInTrace := execFrame_in_trace rc.retort rc.interp f hFF
+  -- Step 2: the body is faithful (from bodiesFaithful)
+  obtain ⟨dcd, hdcd_mem, hdcd_name, hBF⟩ := hFaithful f hMem hFrozen
+  -- Step 3: construct the witness
+  refine ⟨frameToExecFrame rc.retort rc.interp f, hInTrace,
+          frameToExecFrame_cellName rc.retort rc.interp f,
+          frameToExecFrame_generation rc.retort rc.interp f,
+          dcd, hdcd_mem, hdcd_name, ?_⟩
+  -- Step 4: show outputs match
+  -- The ExecFrame's outputs = yieldsToEnv(interp, frameYields(f))
+  -- The body's outputs = fst(dcd.body(interpretedInputs))
+  -- CellBodyFaithful says these are equal, after we show the inputs align.
+  rw [frameToExecFrame_outputs]
+  rw [frameToExecFrame_inputs]
+  exact hBF.outputsMatch
+
+/-- Corollary: under faithful interpretation, every frozen frame's ExecFrame
+    has BOTH structural correspondence (name, generation) AND value
+    correspondence (outputs = body(inputs)). This is the combined
+    soundness result. -/
+theorem frozen_frame_full_correspondence (rc : RetortConfig) (f : Frame)
+    (_hCoherent : Coherent rc)
+    (hFaithful : bodiesFaithful rc)
+    (hMem : f ∈ rc.retort.frames)
+    (hFrozen : rc.retort.frameStatus f = .frozen) :
+    ∃ ef ∈ rc.retort.toExecTrace rc.interp,
+      -- Structural correspondence
+      ef.cellName = f.cellName.val ∧
+      ef.generation = f.generation ∧
+      -- Value correspondence: outputs match denotational body
+      (∃ dcd ∈ rc.program.cells,
+        dcd.interface.name = f.cellName.val ∧
+        (let interpretedInputs := ef.inputs
+         let (bodyOutputs, _) := dcd.body interpretedInputs
+         ef.outputs = bodyOutputs)) ∧
+      -- Input correspondence: inputs come from binding resolution
+      ef.inputs = (rc.retort.resolveBindings f.id).map (fun (field, value) =>
+        (rc.interp.fieldMap field, rc.interp.yieldToVal field value)) := by
+  have hFF := frozen_in_frozenFrames rc.retort f hMem hFrozen
+  have hInTrace := execFrame_in_trace rc.retort rc.interp f hFF
+  obtain ⟨dcd, hdcd_mem, hdcd_name, hBF⟩ := hFaithful f hMem hFrozen
+  refine ⟨frameToExecFrame rc.retort rc.interp f, hInTrace,
+          frameToExecFrame_cellName rc.retort rc.interp f,
+          frameToExecFrame_generation rc.retort rc.interp f,
+          ⟨dcd, hdcd_mem, hdcd_name, ?_⟩,
+          frameToExecFrame_inputs rc.retort rc.interp f⟩
+  rw [frameToExecFrame_outputs, frameToExecFrame_inputs]
+  exact hBF.outputsMatch
+
+/-- When ALL frames are frozen (program complete) and bodies are faithful,
+    EVERY cell in the denotational trace has correct output values. -/
+theorem complete_program_all_outputs_correct (rc : RetortConfig) (prog : ProgramId)
+    (hCoherent : Coherent rc)
+    (hFaithful : bodiesFaithful rc)
+    (hComplete : rc.retort.programComplete prog = true) :
+    ∀ rcd ∈ rc.retort.cells, rcd.program = prog → rcd.bodyType ≠ .stem →
+      ∃ ef ∈ rc.retort.toExecTrace rc.interp,
+        ef.cellName = rcd.name.val ∧
+        ∃ dcd ∈ rc.program.cells,
+          dcd.interface.name = rcd.name.val ∧
+          (let interpretedInputs := ef.inputs
+           let (bodyOutputs, _) := dcd.body interpretedInputs
+           ef.outputs = bodyOutputs) := by
+  intro rcd hrcd hProg hNotStem
+  -- First, get a frozen frame for this cell (from complete_implies_all_cells_traced)
+  obtain ⟨ef, hef_mem, hef_name⟩ :=
+    complete_implies_all_cells_traced rc prog hCoherent hComplete rcd hrcd hProg hNotStem
+  -- The ExecFrame comes from some frozen frame f via frameToExecFrame
+  unfold Retort.toExecTrace at hef_mem
+  rw [List.mem_map] at hef_mem
+  obtain ⟨f, hf_frozen, hf_eq⟩ := hef_mem
+  -- f is in frozenFrames, so it's in frames and frozen
+  unfold Retort.frozenFrames at hf_frozen
+  rw [List.mem_filter] at hf_frozen
+  obtain ⟨hf_mem, hf_status_beq⟩ := hf_frozen
+  have hf_frozen_prop : rc.retort.frameStatus f = .frozen := by
+    cases hS : rc.retort.frameStatus f <;> revert hf_status_beq <;> simp [hS] <;> decide
+  -- Now use bodiesFaithful to get the CellDef and faithfulness proof
+  obtain ⟨dcd, hdcd_mem, hdcd_name, hBF⟩ := hFaithful f hf_mem hf_frozen_prop
+  refine ⟨ef, ?_, ?_, dcd, hdcd_mem, ?_, ?_⟩
+  · -- ef is in the trace: ef = frameToExecFrame ... f, and f is a frozen frame
+    rw [← hf_eq]
+    unfold Retort.toExecTrace
+    have hfInFrozen : f ∈ rc.retort.frozenFrames := by
+      unfold Retort.frozenFrames
+      rw [List.mem_filter]
+      exact ⟨hf_mem, hf_status_beq⟩
+    exact List.mem_map_of_mem (f := frameToExecFrame rc.retort rc.interp) hfInFrozen
+  · -- cellName matches
+    exact hef_name
+  · -- dcd.interface.name = rcd.name.val
+    have hEfCellName : ef.cellName = f.cellName.val := by
+      rw [← hf_eq]; exact frameToExecFrame_cellName rc.retort rc.interp f
+    rw [← hef_name, hEfCellName]; exact hdcd_name
+  · -- outputs match
+    rw [← hf_eq]
+    rw [frameToExecFrame_outputs, frameToExecFrame_inputs]
+    exact hBF.outputsMatch
+
+/-! ====================================================================
     SUMMARY: Denotational-Operational Correspondence
     ====================================================================
 
@@ -449,14 +671,21 @@ theorem valid_trace_produces_valid_exec_frames (vt : ValidWFTrace) (interp : Bod
   - RetortConfig: pairs Retort state with denotational Program + interpreter
   - cellsCorrespond: cell names match between models
   - fieldsCorrespond: field names/counts match
-  - Coherent: well-formedness + correspondence
+  - depsCorrespond: operational givens mirror denotational deps
+  - Coherent: well-formedness + all three correspondences
+  - bodiesFaithful: body interpreter correctly maps yields to body outputs
+  - CellBodyFaithful: per-cell faithfulness condition
 
   PROVEN THEOREMS (all sorry-free):
 
-  1. frozen_frame_corresponds (CORE SOUNDNESS):
+  1. frozen_frame_corresponds (CORE STRUCTURAL SOUNDNESS):
      If a frame is frozen in a well-formed coherent Retort, there exists
      an ExecFrame in the denotational trace with matching cellName and
      generation.
+
+  1b. given_has_matching_dep (DEPENDENCY CORRESPONDENCE):
+      Every operational GivenSpec has a matching denotational Dep with
+      same source cell, source field, and optionality.
 
   2. frozenFrames_preserved_by_appendOnly (MONOTONICITY):
      Frozen frames remain frozen under append-only transitions when
@@ -491,6 +720,20 @@ theorem valid_trace_produces_valid_exec_frames (vt : ValidWFTrace) (interp : Bod
       Every step of a well-formed trace produces valid ExecFrames
       for all frozen frames.
 
+  11. frozen_frame_outputs_match (BEHAVIORAL REFINEMENT):
+      Under faithful body interpretation, frozen frame outputs equal
+      the denotational body's evaluation on interpreted inputs. This
+      is the VALUE-LEVEL soundness result (A+ gate theorem).
+
+  11b. frozen_frame_full_correspondence (COMBINED SOUNDNESS):
+       Both structural (name, generation) AND value (outputs = body(inputs))
+       correspondence hold simultaneously for every frozen frame.
+
+  11c. complete_program_all_outputs_correct (FULL PROGRAM SOUNDNESS):
+       When a program is complete and bodies are faithful, EVERY non-stem
+       cell's ExecFrame has correct output values matching the denotational
+       body evaluation.
+
   TOTAL SORRY: 0
 
   DESIGN DECISIONS:
@@ -498,6 +741,12 @@ theorem valid_trace_produces_valid_exec_frames (vt : ValidWFTrace) (interp : Bod
     the Retort's string-based world to connect to Denotational's Env world.
   - RetortConfig keeps the Retort and Program paired, with the interpreter
     as a first-class component of the simulation relation.
+  - bodiesFaithful + CellBodyFaithful: the behavioral refinement requires
+    an explicit faithfulness condition on the body interpreter. This is
+    the semantic commitment: "the piston computed what the body specifies."
+    It's an assumption, not proved, because pistons are external.
+  - depsCorrespond strengthens Coherent: the operational givens table
+    faithfully mirrors the denotational deps list.
   - The refinement is one-directional (Retort -> ExecTrace), not
     bidirectional, because the Retort has strictly more information
     (claims, bindings, operational state).

@@ -588,8 +588,65 @@ theorem freeze_preserves_bindingsMonotone (r : Retort) (fd : FreezeData)
     obtain ⟨y, hy, hfid, hfield⟩ := hWitnessed b hbNew
     exact ⟨y, hy, hfid, hfield⟩
 
--- Release and createFrame trivially preserve claimMutex and bindingsMonotone,
--- since they don't add claims or bindings (release only removes claims).
+-- Pour preserves bindingsMonotone: bindings and yields unchanged; new frames
+-- might match old bindings, but bindingsWellFormed guarantees an old frame
+-- with matching id already existed, so hWF applies.
+theorem pour_preserves_bindingsMonotone (r : Retort) (pd : PourData)
+    (hWF : bindingsMonotone r)
+    (hBWF : bindingsWellFormed r) :
+    bindingsMonotone (applyOp r (.pour pd)) := by
+  unfold bindingsMonotone applyOp at *
+  simp only
+  intro f hf b hb hConsumer
+  rw [List.mem_append] at hf
+  cases hf with
+  | inl hfOld => exact hWF f hfOld b hb hConsumer
+  | inr hfNew =>
+    -- f is a new frame from pd. Since b ∈ r.bindings and bindingsWellFormed,
+    -- there exists an old frame with b.consumerFrame as id.
+    obtain ⟨⟨f', hf', hfid'⟩, _⟩ := hBWF b hb
+    exact hWF f' hf' b hb hfid'.symm
+
+-- Claim trivially preserves bindingsMonotone (bindings and yields unchanged,
+-- frames unchanged).
+theorem claim_preserves_bindingsMonotone (r : Retort) (cd : ClaimData)
+    (hWF : bindingsMonotone r) :
+    bindingsMonotone (applyOp r (.claim cd)) := by
+  unfold bindingsMonotone applyOp at *
+  simp only
+  intro f hf b hb hConsumer
+  exact hWF f hf b hb hConsumer
+
+-- Release trivially preserves bindingsMonotone (bindings and yields unchanged,
+-- frames unchanged).
+theorem release_preserves_bindingsMonotone (r : Retort) (rd : ReleaseData)
+    (hWF : bindingsMonotone r) :
+    bindingsMonotone (applyOp r (.release rd)) := by
+  unfold bindingsMonotone applyOp at *
+  simp only
+  intro f hf b hb hConsumer
+  exact hWF f hf b hb hConsumer
+
+-- CreateFrame preserves bindingsMonotone: bindings and yields unchanged;
+-- the one new frame might match an old binding, but bindingsWellFormed
+-- guarantees an old frame with matching id already existed.
+theorem createFrame_preserves_bindingsMonotone (r : Retort) (cfd : CreateFrameData)
+    (hWF : bindingsMonotone r)
+    (hBWF : bindingsWellFormed r) :
+    bindingsMonotone (applyOp r (.createFrame cfd)) := by
+  unfold bindingsMonotone applyOp at *
+  simp only
+  intro f hf b hb hConsumer
+  rw [List.mem_append] at hf
+  cases hf with
+  | inl hfOld => exact hWF f hfOld b hb hConsumer
+  | inr hfNew =>
+    simp at hfNew
+    obtain ⟨⟨f', hf', hfid'⟩, _⟩ := hBWF b hb
+    exact hWF f' hf' b hb hfid'.symm
+
+-- Release and createFrame trivially preserve claimMutex,
+-- since they don't add claims (release only removes claims).
 
 -- Release preserves claimMutex (it only removes claims via filter).
 theorem release_preserves_claimMutex (r : Retort) (rd : ReleaseData)
@@ -1433,36 +1490,41 @@ def applyEvalCycle (r : Retort) (ec : EvalCycle) : Retort :=
   | none => r2
   | some cfd => applyOp r2 (.createFrame cfd)
 
+-- appendOnly is reflexive.
+theorem appendOnly_refl (r : Retort) : appendOnly r r := by
+  unfold appendOnly cellsPreserved framesPreserved yieldsPreserved
+         bindingsPreserved givensPreserved
+  exact ⟨fun _ h => h, fun _ h => h, fun _ h => h,
+         fun _ h => h, fun _ h => h⟩
+
+-- appendOnly is transitive: if data grew from r1 to r2 and from r2 to r3,
+-- then data grew from r1 to r3.
+theorem appendOnly_trans (r1 r2 r3 : Retort)
+    (h12 : appendOnly r1 r2) (h23 : appendOnly r2 r3) :
+    appendOnly r1 r3 := by
+  unfold appendOnly at *
+  obtain ⟨c1, f1, y1, b1, g1⟩ := h12
+  obtain ⟨c2, f2, y2, b2, g2⟩ := h23
+  exact ⟨fun x hx => c2 x (c1 x hx), fun x hx => f2 x (f1 x hx),
+         fun x hx => y2 x (y1 x hx), fun x hx => b2 x (b1 x hx),
+         fun x hx => g2 x (g1 x hx)⟩
+
 -- An eval cycle preserves append-only
 theorem evalCycle_appendOnly (r : Retort) (ec : EvalCycle) :
     appendOnly r (applyEvalCycle r ec) := by
   unfold applyEvalCycle
   have h1 := all_ops_appendOnly r (.claim ec.claimOp)
   have h2 := all_ops_appendOnly (applyOp r (.claim ec.claimOp)) (.freeze ec.freezeOp)
-  -- Transitivity of appendOnly
   cases ec.nextFrame with
   | none =>
     simp
-    unfold appendOnly at *
-    obtain ⟨hc1, hf1, hy1, hb1, hg1⟩ := h1
-    obtain ⟨hc2, hf2, hy2, hb2, hg2⟩ := h2
-    exact ⟨fun x hx => hc2 x (hc1 x hx), fun x hx => hf2 x (hf1 x hx),
-           fun x hx => hy2 x (hy1 x hx), fun x hx => hb2 x (hb1 x hx),
-           fun x hx => hg2 x (hg1 x hx)⟩
+    exact appendOnly_trans _ _ _ h1 h2
   | some cfd =>
     simp
     have h3 := all_ops_appendOnly
       (applyOp (applyOp r (.claim ec.claimOp)) (.freeze ec.freezeOp))
       (.createFrame cfd)
-    unfold appendOnly at *
-    obtain ⟨hc1, hf1, hy1, hb1, hg1⟩ := h1
-    obtain ⟨hc2, hf2, hy2, hb2, hg2⟩ := h2
-    obtain ⟨hc3, hf3, hy3, hb3, hg3⟩ := h3
-    exact ⟨fun x hx => hc3 x (hc2 x (hc1 x hx)),
-           fun x hx => hf3 x (hf2 x (hf1 x hx)),
-           fun x hx => hy3 x (hy2 x (hy1 x hx)),
-           fun x hx => hb3 x (hb2 x (hb1 x hx)),
-           fun x hx => hg3 x (hg2 x (hg1 x hx))⟩
+    exact appendOnly_trans _ _ _ h1 (appendOnly_trans _ _ _ h2 h3)
 
 /-! ====================================================================
     PROGRAM SEMANTICS
@@ -1636,27 +1698,13 @@ theorem data_persists (vt : ValidTrace) (n m : Nat) (h : n ≤ m) :
   | zero =>
     have : n = 0 := Nat.eq_zero_of_le_zero h
     subst this
-    unfold appendOnly cellsPreserved framesPreserved yieldsPreserved
-           bindingsPreserved givensPreserved
-    exact ⟨fun _ h => h, fun _ h => h, fun _ h => h,
-           fun _ h => h, fun _ h => h⟩
+    exact appendOnly_refl _
   | succ k ih =>
     by_cases hk : n ≤ k
-    · have ihk := ih hk
-      have step := always_appendOnly vt k
-      unfold appendOnly at *
-      obtain ⟨c1, f1, y1, b1, g1⟩ := ihk
-      obtain ⟨c2, f2, y2, b2, g2⟩ := step
-      exact ⟨fun x hx => c2 x (c1 x hx), fun x hx => f2 x (f1 x hx),
-             fun x hx => y2 x (y1 x hx), fun x hx => b2 x (b1 x hx),
-             fun x hx => g2 x (g1 x hx)⟩
-    · -- n = k + 1 = m, so we need appendOnly (trace n) (trace n), which is reflexive
-      have hEq : n = k + 1 := by omega
+    · exact appendOnly_trans _ _ _ (ih hk) (always_appendOnly vt k)
+    · have hEq : n = k + 1 := by omega
       subst hEq
-      unfold appendOnly cellsPreserved framesPreserved yieldsPreserved
-             bindingsPreserved givensPreserved
-      exact ⟨fun _ h => h, fun _ h => h, fun _ h => h,
-             fun _ h => h, fun _ h => h⟩
+      exact appendOnly_refl _
 
 /-! ====================================================================
     WELL-FORMED TRACES (wellFormed preserved across all time)
@@ -1795,6 +1843,8 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   - I3-I5: referential integrity (yields, bindings, claims → frames)
   - I6: claimMutex — at most one claim per frame
   - I7: yieldUnique — each (frame, field) has at most one value
+  - I8: framesCellDefsExist — every frame has a cell definition
+  - I9: noSelfLoops — no binding has consumerFrame = producerFrame
 
   OPERATION PRECONDITIONS:
   - pourValid: new cell (program, name) pairs don't conflict with existing
@@ -1812,13 +1862,15 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   PROVEN PROPERTIES:
   Append-only:
   - all_ops_appendOnly: every operation preserves append-only
+  - appendOnly_refl: reflexivity of append-only
+  - appendOnly_trans: transitivity of append-only (factored lemma)
   - cells_stable_non_pour: cell defs never change after pour
   - givens_stable_non_pour: givens never change after pour
-  - evalCycle_appendOnly: full eval cycles preserve append-only
+  - evalCycle_appendOnly: full eval cycles preserve append-only (via appendOnly_trans)
   - always_appendOnly: □appendOnly on valid traces
-  - data_persists: data from time T exists at all T' > T (transitive)
+  - data_persists: data from time T exists at all T' > T (via appendOnly_trans)
 
-  Invariant preservation (all 7 invariants, all 5 operations):
+  Invariant preservation (all 9 invariants, all 5 operations):
   - I1 cellNamesUnique: pour (with precond), non-pour (trivial)
   - I2 framesUnique: pour, createFrame (with precond), others (trivial)
   - I3 yieldsWellFormed: freeze (with precond), pour/createFrame (frames grow),
@@ -1830,6 +1882,9 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   - I6 claimMutex: claim (with precond), freeze/release (filter),
       pour/createFrame (trivial)
   - I7 yieldUnique: freeze (with precond), others (trivial)
+  - I8 framesCellDefsExist: pour (with precond), createFrame (with precond),
+      claim/freeze/release (trivial)
+  - I9 noSelfLoops: freeze (with precond), others (trivial)
 
   Postconditions:
   - claim_adds_claim: claims.length grows by 1
@@ -1847,8 +1902,12 @@ theorem graph_monotonic (vt : ValidTrace) (n : Nat) :
   - wellFormed_preserved: validOp + wellFormed => wellFormed after applyOp
 
   Monotonicity:
-  - freeze_preserves_bindingsMonotone: freeze with witnessed bindings
-      preserves the invariant that every binding has a matching yield
+  - bindingsMonotone preservation (all 5 operations):
+      pour (with bindingsWellFormed), claim (trivial), freeze (with
+      freezeBindingsWitnessed), release (trivial), createFrame (with
+      bindingsWellFormed)
+  - appendOnly_refl: appendOnly is reflexive
+  - appendOnly_trans: appendOnly is transitive
 
   THE EVAL LOOP (EvalCycle):
   1. claim → adds to claims

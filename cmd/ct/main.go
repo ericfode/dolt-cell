@@ -24,8 +24,8 @@ const usage = `ct — Cell Tool (plumbing for Cell runtime pistons)
 Usage:
   ct piston                                            Autonomous piston loop (ct next → think → ct submit)
   ct piston <program-id>                              Piston for one program
-  ct next                                              Claim next ready cell, print prompt, exit
-  ct next <program-id>                                Claim from specific program
+  ct next [--wait] [<program-id>]                      Claim next ready cell, print prompt, exit
+  ct next --wait                                      Block until a cell is ready (polls every 2s)
   ct watch                                            Live dashboard: all programs, all cells (2s refresh)
   ct watch <program-id>                               Live dashboard for one program
   ct pour <name> <file.cell>                          Load a program
@@ -75,10 +75,15 @@ func main() {
 		cmdPiston(db, progID)
 	case "next":
 		progID := ""
-		if len(args) > 0 {
-			progID = args[0]
+		wait := false
+		for _, a := range args {
+			if a == "--wait" {
+				wait = true
+			} else {
+				progID = a
+			}
 		}
-		cmdNext(db, progID)
+		cmdNext(db, progID, wait)
 	case "watch":
 		progID := ""
 		if len(args) > 0 {
@@ -114,9 +119,10 @@ func main() {
 // cmdRun drives the eval loop. Hard cells freeze inline. Soft cells print
 // the resolved prompt and stop — the piston (you) evaluates and calls ct submit.
 func cmdRun(db *sql.DB, progID string) {
+	pistonID := fmt.Sprintf("ct-run-%d", time.Now().UnixNano()%100000000)
 	for {
 		mustExec(db, "SET @@dolt_transaction_commit = 0")
-		rows, err := db.Query("CALL cell_eval_step(?)", progID)
+		rows, err := db.Query("CALL cell_eval_step(?, ?)", progID, pistonID)
 		if err != nil {
 			fatal("cell_eval_step: %v", err)
 		}
@@ -128,8 +134,8 @@ func cmdRun(db *sql.DB, progID string) {
 			return
 		}
 
-		var action, cellID, cellName, body, bodyType, modelHint, resolved, yieldF sql.NullString
-		if err := rows.Scan(&action, &cellID, &cellName, &body, &bodyType, &modelHint, &resolved, &yieldF); err != nil {
+		var action, cellID, cellName, body, bodyType, modelHint, resolved sql.NullString
+		if err := rows.Scan(&action, &cellID, &cellName, &body, &bodyType, &modelHint, &resolved); err != nil {
 			rows.Close()
 			fatal("scan: %v", err)
 		}
@@ -723,7 +729,7 @@ func cmdPiston(db *sql.DB, progID string) {
 //   1 = error
 //   2 = no ready cells (quiescent)
 
-func cmdNext(db *sql.DB, progID string) {
+func cmdNext(db *sql.DB, progID string, wait bool) {
 	pistonID := fmt.Sprintf("piston-%d", time.Now().UnixNano()%100000000)
 
 	// Register piston (lightweight — just so claims have a valid piston_id)
@@ -732,7 +738,30 @@ func cmdNext(db *sql.DB, progID string) {
 		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
 		pistonID, progID)
 
-	es := replEvalStep(db, progID, pistonID)
+	// Clean exit on Ctrl-C during wait
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+
+	var es evalStepResult
+	for {
+		es = replEvalStep(db, progID, pistonID)
+
+		if es.action != "quiescent" && es.action != "complete" {
+			break
+		}
+		if !wait {
+			break
+		}
+		// --wait: poll every 2s until a cell becomes ready
+		db.Exec("UPDATE pistons SET last_heartbeat = NOW() WHERE id = ?", pistonID)
+		select {
+		case <-sigCh:
+			db.Exec("UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
+			fmt.Println("INTERRUPTED")
+			os.Exit(2)
+		case <-time.After(2 * time.Second):
+		}
+	}
 
 	switch es.action {
 	case "complete":

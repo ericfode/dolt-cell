@@ -6,11 +6,11 @@
 
 ## The One Insight
 
-**Evaluation is gravity toward value.**
+**Evaluation reduces M.**
 
-Everything in Cell is on a spectrum of refinement. A literal value is maximally refined — it's on the ground. A SQL query is almost there. A soft cell (LLM prompt) is falling. A stem cell is in orbit — it keeps producing values but never lands. A whole program is a galaxy of falling objects.
+M measures how far a cell is from being a value. Evaluation shrinks it. That's the whole language.
 
-M measures **how far a cell is from being a value.** Evaluation reduces that distance.
+(In the user-facing language, we say "crystallization" — a soft cell crystallizing into a hard cell. In the architecture, we say: evaluation reduces M.)
 
 ---
 
@@ -148,4 +148,4 @@ The only mutable thing: the claims table (a lock). Everything else is append-onl
 
 **Iverson**: "If you need to tell me what kind of cell something is before I can read the expression, your notation has a leak."
 
-**You**: "Evaluation is gravity toward value."
+**You**: "Evaluation reduces M."

@@ -1,40 +1,35 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
+	"os/exec"
 	"strings"
-	"time"
 )
 
-// cmdAuto runs an autonomous piston that uses Claude API for soft cells.
-func cmdAuto(db *sql.DB, progID string, maxCalls int, model string) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		fatal("ANTHROPIC_API_KEY not set")
-	}
-
+// cmdAuto runs an autonomous piston loop using the piston pattern.
+// Soft cells are evaluated by invoking an LLM piston subprocess
+// (default: claude CLI with the piston system-prompt as context).
+//
+// The piston pattern: claim → dispatch to piston → piston evaluates → ct submit.
+// This keeps evaluation going through the piston architecture rather than
+// bypassing it with direct API calls.
+func cmdAuto(db *sql.DB, progID string, maxSteps int, pistonCmd string) {
 	pistonID := "auto-" + genPistonID()
 	mustExecDB(db, "DELETE FROM pistons WHERE id = ?", pistonID)
 	mustExecDB(db,
-		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, ?, NOW(), NOW(), 'active', 0)",
-		pistonID, progID, model)
+		"INSERT INTO pistons (id, program_id, model_hint, started_at, last_heartbeat, status, cells_completed) VALUES (?, ?, NULL, NOW(), NOW(), 'active', 0)",
+		pistonID, progID)
 	defer func() {
 		mustExecDB(db, "UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
 	}()
 
-	calls := 0
 	step := 0
-
 	for {
 		step++
-		if calls >= maxCalls {
-			fmt.Printf("\n━━ budget exhausted (%d/%d calls) ━━\n", calls, maxCalls)
+		if step > maxSteps {
+			fmt.Printf("\n━━ step limit reached (%d) ━━\n", maxSteps)
 			break
 		}
 
@@ -57,6 +52,7 @@ func cmdAuto(db *sql.DB, progID string, maxCalls int, model string) {
 			continue
 
 		case "dispatch":
+			// Soft cell — dispatch to piston subprocess
 			inputs := resolveInputs(db, es.progID, es.cellName)
 			prompt := interpolateBody(es.body, inputs)
 			yields := getYieldFields(db, es.progID, es.cellName)
@@ -68,26 +64,17 @@ func cmdAuto(db *sql.DB, progID string, maxCalls int, model string) {
 				}
 			}
 			fmt.Printf("  ∴ %s\n", trunc(prompt, 100))
+			fmt.Printf("  yields: %s\n", strings.Join(yields, ", "))
 
-			// Build yield instructions
-			yieldInstr := ""
-			if len(yields) == 1 {
-				yieldInstr = fmt.Sprintf("\n\nRespond with ONLY the value for the yield field '%s'. No explanation, no labels, just the value.", yields[0])
-			} else {
-				yieldInstr = "\n\nRespond with the following fields, each on its own line in the format FIELD_NAME: value\n"
-				for _, y := range yields {
-					yieldInstr += fmt.Sprintf("- %s\n", y)
-				}
-			}
+			// Build the piston evaluation prompt
+			evalPrompt := buildPistonPrompt(prompt, yields)
 
-			// Call Claude API
-			calls++
-			fmt.Printf("  → calling %s (%d/%d)...\n", model, calls, maxCalls)
-
-			response, err := callClaude(apiKey, model, prompt+yieldInstr)
+			// Invoke piston subprocess
+			fmt.Printf("  → piston: %s\n", pistonCmd)
+			response, err := invokePiston(pistonCmd, evalPrompt)
 			if err != nil {
-				fmt.Printf("  ✗ API error: %v\n", err)
-				// Release claim and continue
+				fmt.Printf("  ✗ piston error: %v\n", err)
+				// Release claim so cell can be retried
 				mustExecDB(db, "DELETE FROM cell_claims WHERE cell_id = ?", es.cellID)
 				mustExecDB(db, "UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE id = ?", es.cellID)
 				continue
@@ -95,14 +82,12 @@ func cmdAuto(db *sql.DB, progID string, maxCalls int, model string) {
 
 			fmt.Printf("  ← %d chars\n", len(response))
 
-			// Parse response into yield values
+			// Parse response into yield values and submit
 			values := parseYieldResponse(response, yields)
-
-			// Submit each yield
 			for _, y := range yields {
 				val := values[y]
 				if val == "" {
-					val = response // fallback: entire response for single-yield
+					val = strings.TrimSpace(response)
 				}
 
 				for attempt := 1; attempt <= 3; attempt++ {
@@ -112,12 +97,10 @@ func cmdAuto(db *sql.DB, progID string, maxCalls int, model string) {
 						break
 					} else if result == "oracle_fail" && attempt < 3 {
 						fmt.Printf("  ✗ oracle_fail: %s (retry %d/3)\n", msg, attempt)
-						// Retry with feedback
-						calls++
-						retryPrompt := fmt.Sprintf("%s\n\nYour previous answer failed validation: %s\nPlease revise your answer for field '%s'.", prompt, msg, y)
-						response, err = callClaude(apiKey, model, retryPrompt)
+						retryPrompt := fmt.Sprintf("%s\n\nYour previous answer failed validation: %s\nRevise your answer for field '%s'.", evalPrompt, msg, y)
+						response, err = invokePiston(pistonCmd, retryPrompt)
 						if err != nil {
-							fmt.Printf("  ✗ retry API error: %v\n", err)
+							fmt.Printf("  ✗ retry piston error: %v\n", err)
 							break
 						}
 						val = strings.TrimSpace(response)
@@ -131,7 +114,48 @@ func cmdAuto(db *sql.DB, progID string, maxCalls int, model string) {
 	}
 }
 
-// parseYieldResponse extracts yield values from LLM response.
+// buildPistonPrompt creates the evaluation prompt for the piston subprocess.
+func buildPistonPrompt(body string, yields []string) string {
+	var sb strings.Builder
+	sb.WriteString(body)
+	sb.WriteString("\n\n")
+	if len(yields) == 1 {
+		sb.WriteString(fmt.Sprintf("Respond with ONLY the value for '%s'. No labels, no explanation.", yields[0]))
+	} else {
+		sb.WriteString("Respond with each field on its own line in the format FIELD: value\n")
+		for _, y := range yields {
+			sb.WriteString(fmt.Sprintf("- %s\n", y))
+		}
+	}
+	return sb.String()
+}
+
+// invokePiston calls the piston command with the prompt on stdin.
+// The piston command should read stdin and write the response to stdout.
+//
+// Default piston commands:
+//   claude --print "PROMPT"       — Claude Code CLI
+//   echo "PROMPT" | claude -p     — piped mode
+//   cat                           — manual (for testing)
+func invokePiston(pistonCmd, prompt string) (string, error) {
+	parts := strings.Fields(pistonCmd)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("empty piston command")
+	}
+
+	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Stderr = os.Stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", pistonCmd, err)
+	}
+
+	return strings.TrimSpace(string(out)), nil
+}
+
+// parseYieldResponse extracts yield values from piston response.
 func parseYieldResponse(response string, yields []string) map[string]string {
 	values := make(map[string]string)
 
@@ -140,76 +164,19 @@ func parseYieldResponse(response string, yields []string) map[string]string {
 		return values
 	}
 
-	// Try FIELD_NAME: value format
+	// Try FIELD: value or FIELD = value format
 	lines := strings.Split(response, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		for _, y := range yields {
-			prefix := y + ":"
-			if strings.HasPrefix(line, prefix) {
-				values[y] = strings.TrimSpace(strings.TrimPrefix(line, prefix))
-			}
-			// Also try FIELD_NAME = value
-			prefix2 := y + " ="
-			if strings.HasPrefix(line, prefix2) {
-				values[y] = strings.TrimSpace(strings.TrimPrefix(line, prefix2))
+			for _, sep := range []string{": ", " = ", "="} {
+				prefix := y + sep
+				if strings.HasPrefix(line, prefix) {
+					values[y] = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+				}
 			}
 		}
 	}
 
 	return values
-}
-
-// callClaude calls the Anthropic Messages API.
-func callClaude(apiKey, model, prompt string) (string, error) {
-	body := map[string]interface{}{
-		"model":      model,
-		"max_tokens": 4096,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	jsonBody, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("marshal: %v", err)
-	}
-
-	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(jsonBody))
-	if err != nil {
-		return "", fmt.Errorf("request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("http: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read: %v", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("API %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("unmarshal: %v", err)
-	}
-	if len(result.Content) == 0 {
-		return "", fmt.Errorf("empty response")
-	}
-
-	return result.Content[0].Text, nil
 }

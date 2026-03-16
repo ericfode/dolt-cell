@@ -19,8 +19,13 @@ import (
 
 func main() {
 	dsn := "root@tcp(127.0.0.1:3308)/"
-	if len(os.Args) > 1 {
-		dsn = os.Args[1]
+	fresh := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--fresh" {
+			fresh = true
+		} else {
+			dsn = arg
+		}
 	}
 
 	db, err := sql.Open("mysql", dsn)
@@ -42,6 +47,12 @@ func main() {
 			root = try
 			break
 		}
+	}
+
+	// Step 0: Drop existing retort database for clean start
+	if fresh {
+		db.Exec("DROP DATABASE IF EXISTS retort")
+		fmt.Println("✓ dropped existing retort")
 	}
 
 	// Step 1: Create database and tables from retort-init.sql

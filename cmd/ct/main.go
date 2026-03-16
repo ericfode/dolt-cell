@@ -2436,6 +2436,9 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 // replSubmit writes a yield value, checks deterministic oracles, and
 // freezes the cell if all yields are frozen.
 func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, string) {
+	// Ensure auto-commit is off (stored procedures manage their own commits)
+	mustExecDB(db, "SET @@dolt_transaction_commit = 0")
+
 	var cellID string
 	err := db.QueryRow(
 		"SELECT id FROM cells WHERE program_id = ? AND name = ? AND state = 'computing'",
@@ -2536,6 +2539,11 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 	db.QueryRow(
 		"SELECT COUNT(*) FROM yields WHERE cell_id = ? AND is_frozen = FALSE",
 		cellID).Scan(&unfrozen)
+
+	if unfrozen > 0 {
+		// Partial freeze: commit the yield so it persists across sessions
+		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: yield %s.%s", cellName, fieldName))
+	}
 
 	if unfrozen == 0 {
 		mustExecDB(db,

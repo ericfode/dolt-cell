@@ -644,18 +644,22 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 			escape(gID), escape(cellID), escape(g.sourceCell), escape(g.sourceField), opt))
 	}
 
-	// Yields
+	// Yields — include frame_id for non-stem cells (gen-0 frame created above)
+	frameIDVal := "NULL"
+	if c.bodyType != "stem" {
+		frameIDVal = fmt.Sprintf("'%s'", escape("f-"+cellID+"-0"))
+	}
 	for _, y := range c.yields {
 		yID := safeID(fmt.Sprintf("y-%s-%s-%s", prefix, c.name, y.fieldName))
 		if allPrebound && len(c.yields) > 1 {
 			// Pre-freeze each yield with its value
 			sb.WriteString(fmt.Sprintf(
-				"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES ('%s', '%s', '%s', '%s', TRUE, NOW());\n",
-				escape(yID), escape(cellID), escape(y.fieldName), escape(y.prebound)))
+				"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES ('%s', '%s', %s, '%s', '%s', TRUE, NOW());\n",
+				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.prebound)))
 		} else {
 			sb.WriteString(fmt.Sprintf(
-				"INSERT INTO yields (id, cell_id, field_name) VALUES ('%s', '%s', '%s');\n",
-				escape(yID), escape(cellID), escape(y.fieldName)))
+				"INSERT INTO yields (id, cell_id, frame_id, field_name) VALUES ('%s', '%s', %s, '%s');\n",
+				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName)))
 		}
 	}
 

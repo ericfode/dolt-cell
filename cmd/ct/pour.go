@@ -106,13 +106,17 @@ func pourViaPiston(db *sql.DB, name, cellFile string, data []byte) {
 		mustExecDB(db,
 			"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, 'source', 'hard', 'literal:_', 'declared')",
 			sourceID, pourProg)
+		// Create gen-0 frame for source (hard cell)
+		sourceFrameID := "f-" + sourceID + "-0"
+		db.Exec("INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES (?, 'source', ?, 0)",
+			sourceFrameID, pourProg)
 		// Source yields: text (the .cell contents) and name (the program name)
 		mustExecDB(db,
-			"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'text', ?, TRUE, NOW())",
-			"y-"+pourProg+"-source-text", sourceID, sourceText)
+			"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, ?, 'text', ?, TRUE, NOW())",
+			"y-"+pourProg+"-source-text", sourceID, sourceFrameID, sourceText)
 		mustExecDB(db,
-			"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'name', ?, TRUE, NOW())",
-			"y-"+pourProg+"-source-name", sourceID, name)
+			"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, ?, 'name', ?, TRUE, NOW())",
+			"y-"+pourProg+"-source-name", sourceID, sourceFrameID, name)
 		// Freeze source immediately (it's a literal)
 		mustExecDB(db, "UPDATE cells SET state = 'frozen' WHERE id = ?", sourceID)
 
@@ -126,6 +130,7 @@ func pourViaPiston(db *sql.DB, name, cellFile string, data []byte) {
 		mustExecDB(db,
 			"INSERT INTO givens (id, cell_id, source_cell, source_field) VALUES (?, ?, 'source', 'name')",
 			"g-"+pourProg+"-parse-name", parseID)
+		// Parse cell is stem — no frame at pour time, gets frame_id at claim time
 		mustExecDB(db,
 			"INSERT INTO yields (id, cell_id, field_name) VALUES (?, ?, 'sql')",
 			"y-"+pourProg+"-parse-sql", parseID)
@@ -211,15 +216,20 @@ func cmdEval(db *sql.DB, name, cellFile string) {
 		"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, 'cell-zero-eval', 'pour-request', 'hard', ?, 'declared')",
 		reqID, string(data))
 
+	// Create gen-0 frame for the pour-request (hard cell)
+	reqFrameID := "f-" + reqID + "-0"
+	db.Exec("INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES (?, 'pour-request', 'cell-zero-eval', 0)",
+		reqFrameID)
+
 	// Yield: name (pre-frozen with the program name)
 	mustExecDB(db,
-		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'name', ?, TRUE, NOW())",
-		"y-"+reqID+"-name", reqID, name)
+		"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, ?, 'name', ?, TRUE, NOW())",
+		"y-"+reqID+"-name", reqID, reqFrameID, name)
 
 	// Yield: text (pre-frozen with the .cell content)
 	mustExecDB(db,
-		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, 'text', ?, TRUE, NOW())",
-		"y-"+reqID+"-text", reqID, string(data))
+		"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES (?, ?, ?, 'text', ?, TRUE, NOW())",
+		"y-"+reqID+"-text", reqID, reqFrameID, string(data))
 
 	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("eval: submit pour-request for %s", name))
 

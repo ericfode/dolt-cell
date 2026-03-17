@@ -62,22 +62,24 @@ func cmdFrames(db *sql.DB, progID string) {
 		var createdAt sql.NullTime
 		rows.Scan(&frameID, &cellName, &generation, &createdAt)
 
-		// Derive status from yields: check if all yields for the cell are frozen
+		// Derive status from yields scoped to this frame (using frame_id)
 		status := "pending"
 		detail := ""
 
-		// Check if there are frozen yields tied to this cell at this generation
 		var frozenCount, totalCount int
 		db.QueryRow(`
 			SELECT COUNT(*) FROM yields y
 			JOIN cells c ON c.id = y.cell_id
-			WHERE c.program_id = ? AND c.name = ? AND y.is_frozen = 1`,
-			progID, cellName.String).Scan(&frozenCount)
+			WHERE c.program_id = ? AND c.name = ?
+			  AND COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0')) = ?
+			  AND y.is_frozen = 1`,
+			progID, cellName.String, frameID.String).Scan(&frozenCount)
 		db.QueryRow(`
 			SELECT COUNT(*) FROM yields y
 			JOIN cells c ON c.id = y.cell_id
-			WHERE c.program_id = ? AND c.name = ?`,
-			progID, cellName.String).Scan(&totalCount)
+			WHERE c.program_id = ? AND c.name = ?
+			  AND COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0')) = ?`,
+			progID, cellName.String, frameID.String).Scan(&totalCount)
 
 		if totalCount > 0 && frozenCount == totalCount {
 			status = "frozen"
@@ -103,13 +105,15 @@ func cmdFrames(db *sql.DB, progID string) {
 			}
 		}
 
-		// Check for bottom yields
+		// Check for bottom yields scoped to this frame
 		var bottomCount int
 		db.QueryRow(`
 			SELECT COUNT(*) FROM yields y
 			JOIN cells c ON c.id = y.cell_id
-			WHERE c.program_id = ? AND c.name = ? AND y.is_bottom = 1`,
-			progID, cellName.String).Scan(&bottomCount)
+			WHERE c.program_id = ? AND c.name = ?
+			  AND COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0')) = ?
+			  AND y.is_bottom = 1`,
+			progID, cellName.String, frameID.String).Scan(&bottomCount)
 		if bottomCount > 0 {
 			status = "bottom"
 		}
@@ -125,19 +129,30 @@ func cmdFrames(db *sql.DB, progID string) {
 }
 
 func cmdYields(db *sql.DB, progID string) {
+	// Show frozen yields from the latest frame generation per cell.
+	// Join through frames so stem cells with multiple generations show only the latest.
 	rows, err := db.Query(`
-		SELECT c.name, y.field_name, y.value_text, y.is_bottom
-		FROM cells c JOIN yields y ON y.cell_id = c.id
+		SELECT c.name, y.field_name, y.value_text, y.is_bottom, COALESCE(f.generation, 0) AS gen
+		FROM cells c
+		JOIN yields y ON y.cell_id = c.id
+		LEFT JOIN frames f ON f.id = COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0'))
 		WHERE c.program_id = ? AND y.is_frozen = 1
-		ORDER BY c.name`, progID)
+		ORDER BY c.name, y.field_name, gen DESC`, progID)
 	if err != nil {
 		fatal("yields: %v", err)
 	}
 	defer rows.Close()
+	seen := make(map[string]bool)
 	for rows.Next() {
 		var name, field, value sql.NullString
 		var bottom sql.NullBool
-		rows.Scan(&name, &field, &value, &bottom)
+		var gen int
+		rows.Scan(&name, &field, &value, &bottom, &gen)
+		key := name.String + "." + field.String
+		if seen[key] {
+			continue // already showed latest generation
+		}
+		seen[key] = true
 		icon := "■"
 		if bottom.Valid && bottom.Bool {
 			icon = "⊥"

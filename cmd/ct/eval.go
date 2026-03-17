@@ -189,22 +189,32 @@ func findReadyCell(db *sql.DB, progID string, excludeProgram string, modelHint s
 func resolveInputs(db *sql.DB, progID, cellName string) map[string]string {
 	m := make(map[string]string)
 	fieldCount := make(map[string]int) // track how many givens share each field name
+	// Join through frames to get the frozen yield from the latest generation.
+	// COALESCE handles old yields without frame_id (backward compat).
+	// For stem cells with multiple frozen generations, we want the latest.
 	rows, err := db.Query(`
 		SELECT g.source_cell, g.source_field, y.value_text
 		FROM givens g
 		JOIN cells c ON c.id = g.cell_id
 		JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
 		JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
-		WHERE c.program_id = ? AND c.name = ?`, progID, cellName)
+		LEFT JOIN frames f ON f.id = COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0'))
+		WHERE c.program_id = ? AND c.name = ?
+		ORDER BY COALESCE(f.generation, 0) DESC`, progID, cellName)
 	if err != nil {
 		return m
 	}
 	defer rows.Close()
+	seen := make(map[string]bool)          // track seen source_cell+field pairs (latest gen wins)
 	bareValues := make(map[string][]string) // collect all values per bare field name
 	for rows.Next() {
 		var sc, sf, v sql.NullString
 		rows.Scan(&sc, &sf, &v)
 		qualified := sc.String + "→" + sf.String
+		if seen[qualified] {
+			continue // already have the latest generation's value
+		}
+		seen[qualified] = true
 		m[qualified] = v.String
 		// Also add «source.field» dot-notation alias
 		m[sc.String+"."+sf.String] = v.String
@@ -233,7 +243,7 @@ func interpolateBody(body string, inputs map[string]string) string {
 
 func getYieldFields(db *sql.DB, progID, cellName string) []string {
 	rows, err := db.Query(`
-		SELECT y.field_name FROM yields y JOIN cells c ON c.id = y.cell_id
+		SELECT DISTINCT y.field_name FROM yields y JOIN cells c ON c.id = y.cell_id
 		WHERE c.program_id = ? AND c.name = ?`, progID, cellName)
 	if err != nil {
 		return nil
@@ -310,29 +320,33 @@ func recordBindings(db *sql.DB, progID, cellName, cellID string) {
 		var srcCell, srcField string
 		rows.Scan(&srcCell, &srcField)
 
-		// I11 (bindingsPointToFrozen): verify ALL yields for the source cell are frozen.
-		// The formal model requires frameStatus(producerFrame) = frozen, which maps to
-		// all yields on the producer cell being frozen in the implementation.
-		var unfrozenCount int
+		// Find the producer frame — use the frame_id from the frozen yield we consumed.
+		// This correctly resolves which generation we actually read from.
+		var producerFrame string
+		var producerGen int
 		err := db.QueryRow(`
-			SELECT COUNT(*) FROM yields
-			WHERE cell_id IN (SELECT id FROM cells WHERE program_id = ? AND name = ?)
-			  AND is_frozen = FALSE`,
-			progID, srcCell).Scan(&unfrozenCount)
-		if err != nil || unfrozenCount > 0 {
-			log.Printf("I11 bindingsPointToFrozen: skipping binding from %s.%s — %d unfrozen yield(s)", srcCell, srcField, unfrozenCount)
+			SELECT COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0')), COALESCE(f.generation, 0)
+			FROM yields y
+			JOIN cells src ON src.id = y.cell_id
+			LEFT JOIN frames f ON f.id = COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0'))
+			WHERE src.program_id = ? AND src.name = ? AND y.field_name = ? AND y.is_frozen = 1
+			ORDER BY COALESCE(f.generation, 0) DESC LIMIT 1`,
+			progID, srcCell, srcField).Scan(&producerFrame, &producerGen)
+		if err != nil {
 			continue
 		}
 
-		// Find the producer frame and its generation
-		var producerFrame string
-		var producerGen int
-		err = db.QueryRow(`
-			SELECT id, generation FROM frames
-			WHERE program_id = ? AND cell_name = ?
-			ORDER BY generation DESC LIMIT 1`,
-			progID, srcCell).Scan(&producerFrame, &producerGen)
-		if err != nil {
+		// I11 (bindingsPointToFrozen): verify ALL yields for the producer frame are frozen.
+		// Scope to the specific frame, not all yields for the source cell.
+		var unfrozenCount int
+		db.QueryRow(`
+			SELECT COUNT(*) FROM yields
+			WHERE cell_id IN (SELECT id FROM cells WHERE program_id = ? AND name = ?)
+			  AND COALESCE(frame_id, CONCAT('f-', cell_id, '-0')) = ?
+			  AND is_frozen = FALSE`,
+			progID, srcCell, producerFrame).Scan(&unfrozenCount)
+		if unfrozenCount > 0 {
+			log.Printf("I11 bindingsPointToFrozen: skipping binding from %s.%s frame %s — %d unfrozen yield(s)", srcCell, srcField, producerFrame, unfrozenCount)
 			continue
 		}
 
@@ -851,9 +865,10 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 			if strings.HasPrefix(rc.body, "literal:") {
 				literalVal := strings.TrimPrefix(rc.body, "literal:")
 				// Only freeze yields that aren't already frozen (pre-frozen by pour SQL for multi-yield hard cells)
+				// Also set frame_id (COALESCE preserves if already set by pour)
 				mustExecDB(db,
-					"UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ? AND is_frozen = FALSE",
-					literalVal, rc.cellID)
+					"UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW(), frame_id = COALESCE(frame_id, ?) WHERE cell_id = ? AND is_frozen = FALSE",
+					literalVal, frameID, rc.cellID)
 				mustExecDB(db,
 					"UPDATE cells SET state = 'frozen', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
 					rc.cellID)
@@ -920,26 +935,35 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		return "error", fmt.Sprintf("Cell %q not found or not computing", cellName)
 	}
 
-	// Append-only: reject if this yield is already frozen
+	// Look up frame_id for this cell (latest generation)
+	frameID := latestFrameID(db, progID, cellName)
+
+	// Append-only: reject if this yield is already frozen for the current frame.
+	// Use frame_id when available; fall back to cell_id-only check for old data.
 	var alreadyFrozen int
-	db.QueryRow("SELECT COUNT(*) FROM yields WHERE cell_id = ? AND field_name = ? AND is_frozen = 1",
-		cellID, fieldName).Scan(&alreadyFrozen)
+	if frameID != "" {
+		db.QueryRow("SELECT COUNT(*) FROM yields WHERE cell_id = ? AND field_name = ? AND is_frozen = 1 AND COALESCE(frame_id, CONCAT('f-', cell_id, '-0')) = ?",
+			cellID, fieldName, frameID).Scan(&alreadyFrozen)
+	} else {
+		db.QueryRow("SELECT COUNT(*) FROM yields WHERE cell_id = ? AND field_name = ? AND is_frozen = 1",
+			cellID, fieldName).Scan(&alreadyFrozen)
+	}
 	if alreadyFrozen > 0 {
 		return "error", "yield already frozen"
 	}
 
 	// Write value into existing unfrozen yield slot (created at pour or respawn time)
 	res, uerr := db.Exec(
-		"UPDATE yields SET value_text = ? WHERE cell_id = ? AND field_name = ? AND is_frozen = FALSE",
-		value, cellID, fieldName)
+		"UPDATE yields SET value_text = ?, frame_id = COALESCE(frame_id, ?) WHERE cell_id = ? AND field_name = ? AND is_frozen = FALSE",
+		value, frameID, cellID, fieldName)
 	if uerr != nil {
 		return "error", fmt.Sprintf("update yield: %v", uerr)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		// No unfrozen slot exists — create one (backward compat with old programs)
 		mustExecDB(db,
-			"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, FALSE, NULL)",
-			cellID, fieldName, value)
+			"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, ?, FALSE, NULL)",
+			cellID, frameID, fieldName, value)
 	}
 
 	// Check deterministic oracles
@@ -1026,14 +1050,28 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		}
 	}
 
-	mustExecDB(db,
-		"UPDATE yields SET is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ? AND field_name = ?",
-		cellID, fieldName)
+	// Freeze the yield — scope to current frame to avoid freezing old-frame yield slots
+	if frameID != "" {
+		mustExecDB(db,
+			"UPDATE yields SET is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ? AND field_name = ? AND COALESCE(frame_id, CONCAT('f-', cell_id, '-0')) = ?",
+			cellID, fieldName, frameID)
+	} else {
+		mustExecDB(db,
+			"UPDATE yields SET is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ? AND field_name = ? AND is_frozen = FALSE",
+			cellID, fieldName)
+	}
 
+	// Count unfrozen yields for the current frame only
 	var unfrozen int
-	db.QueryRow(
-		"SELECT COUNT(*) FROM yields WHERE cell_id = ? AND is_frozen = FALSE",
-		cellID).Scan(&unfrozen)
+	if frameID != "" {
+		db.QueryRow(
+			"SELECT COUNT(*) FROM yields WHERE cell_id = ? AND is_frozen = FALSE AND COALESCE(frame_id, CONCAT('f-', cell_id, '-0')) = ?",
+			cellID, frameID).Scan(&unfrozen)
+	} else {
+		db.QueryRow(
+			"SELECT COUNT(*) FROM yields WHERE cell_id = ? AND is_frozen = FALSE",
+			cellID).Scan(&unfrozen)
+	}
 
 	if unfrozen > 0 {
 		// Partial freeze: commit the yield so it persists across sessions
@@ -1292,8 +1330,8 @@ func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
 		var yID string
 		db.QueryRow("SELECT CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8))").Scan(&yID)
 		mustExecDB(db,
-			"INSERT INTO yields (id, cell_id, field_name) VALUES (?, ?, ?)",
-			yID, frozenID, f)
+			"INSERT INTO yields (id, cell_id, frame_id, field_name) VALUES (?, ?, ?, ?)",
+			yID, frozenID, frameID, f)
 	}
 
 	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: respawn stem %s (gen %d)", cellName, nextGen))
@@ -1453,19 +1491,29 @@ func replDocState(db *sql.DB, progID string) {
 		}
 		replAnnot(fmt.Sprintf("⊢ %s", c.name), icon)
 
-		// Givens
+		// Givens — show latest frame's yield value for each given
 		if gRows, err := db.Query(`
 			SELECT g.source_cell, g.source_field, g.is_optional,
-			       y.value_text, COALESCE(y.is_frozen, FALSE)
+			       y.value_text, COALESCE(y.is_frozen, FALSE), COALESCE(f.generation, 0) AS gen
 			FROM givens g
 			JOIN cells src ON src.name = g.source_cell AND src.program_id = ?
 			LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field
-			WHERE g.cell_id = ?`, progID, c.id); err == nil {
+			LEFT JOIN frames f ON f.id = COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0'))
+			WHERE g.cell_id = ?
+			ORDER BY g.source_cell, g.source_field, gen DESC`, progID, c.id); err == nil {
+			seenGiven := make(map[string]bool)
 			for gRows.Next() {
 				var sc, sf sql.NullString
 				var opt, frozen sql.NullBool
 				var val sql.NullString
-				gRows.Scan(&sc, &sf, &opt, &val, &frozen)
+				var gen int
+				gRows.Scan(&sc, &sf, &opt, &val, &frozen, &gen)
+
+				gKey := sc.String + "." + sf.String
+				if seenGiven[gKey] {
+					continue // already showed latest generation
+				}
+				seenGiven[gKey] = true
 
 				prefix := "  given "
 				if opt.Valid && opt.Bool {
@@ -1482,10 +1530,16 @@ func replDocState(db *sql.DB, progID string) {
 			gRows.Close()
 		}
 
-		// Yields
-		if yRows, err := db.Query(
-			"SELECT field_name, value_text, is_frozen, is_bottom FROM yields WHERE cell_id = ?",
-			c.id); err == nil {
+		// Yields — show only the latest frame's yields (avoid duplicates from stem respawn)
+		latestFrame := latestFrameID(db, progID, c.name)
+		yieldQuery := "SELECT field_name, value_text, is_frozen, is_bottom FROM yields WHERE cell_id = ?"
+		var yieldArgs []interface{}
+		yieldArgs = append(yieldArgs, c.id)
+		if latestFrame != "" {
+			yieldQuery += " AND COALESCE(frame_id, CONCAT('f-', cell_id, '-0')) = ?"
+			yieldArgs = append(yieldArgs, latestFrame)
+		}
+		if yRows, err := db.Query(yieldQuery, yieldArgs...); err == nil {
 			for yRows.Next() {
 				var fn, val sql.NullString
 				var frozen, bottom sql.NullBool
@@ -1529,22 +1583,30 @@ func replDocState(db *sql.DB, progID string) {
 // This bridges the Cell runtime to the broader workspace: when a program finishes,
 // the result is visible in beads as a closed task.
 func emitCompletionBead(db *sql.DB, progID string) {
-	// Collect frozen yields
+	// Collect frozen yields — latest frame generation per cell+field only
 	rows, err := db.Query(`
-		SELECT c.name, y.field_name, COALESCE(LEFT(y.value_text, 200), '')
+		SELECT c.name, y.field_name, COALESCE(LEFT(y.value_text, 200), ''), COALESCE(f.generation, 0) AS gen
 		FROM cells c
 		JOIN yields y ON y.cell_id = c.id
+		LEFT JOIN frames f ON f.id = COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0'))
 		WHERE c.program_id = ? AND y.is_frozen = TRUE
-		ORDER BY c.name, y.field_name`, progID)
+		ORDER BY c.name, y.field_name, gen DESC`, progID)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
+	seen := make(map[string]bool)
 	var lines []string
 	for rows.Next() {
 		var cell, field, val string
-		rows.Scan(&cell, &field, &val)
+		var gen int
+		rows.Scan(&cell, &field, &val, &gen)
+		key := cell + "." + field
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		if val != "" {
 			lines = append(lines, fmt.Sprintf("  %s.%s = %s", cell, field, val))
 		}

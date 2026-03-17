@@ -119,7 +119,9 @@ func parseCellFileV2(text string) []parsedCell {
 			continue
 		}
 
-		// Inside body fence — check BEFORE comment/cell-decl to avoid mismatches
+		// Inside body fence — check BEFORE comment/cell-decl to avoid mismatches.
+		// Body content can appear at column 0 (e.g. prose inside --- fences),
+		// so cell/iterate declarations CANNOT be moved before this check.
 		if inBody && cur != nil {
 			if isIndented && trimmed == "---" {
 				// Closing fence

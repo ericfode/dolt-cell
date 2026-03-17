@@ -200,6 +200,75 @@ cell refine (stem)
 	t.Logf("✓ e2e guard skip: refine-1 settled → %d cells bottomed", bottomCount)
 }
 
+// TestE2E_NoSelfLoopBindings verifies invariant I9 (noSelfLoops):
+// a binding must never have consumer_frame == producer_frame.
+func TestE2E_NoSelfLoopBindings(t *testing.T) {
+	dsn := os.Getenv("RETORT_DSN")
+	if dsn == "" {
+		t.Skip("RETORT_DSN not set — skipping e2e test (needs live Dolt)")
+	}
+
+	db, err := sql.Open("mysql", dsn+"?multiStatements=true&parseTime=true&tls=false")
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer db.Close()
+
+	progID := "e2e-selfloop-test"
+	resetProgram(db, progID)
+
+	// Create a minimal program with one cell that reads itself
+	cellText := `cell echo
+  yield value = "hello"
+`
+	cells := mustParse(t, cellText)
+	sqlText := cellsToSQL(progID, cells)
+	if _, err := db.Exec(sqlText); err != nil {
+		if !contains(err.Error(), "nothing to commit") {
+			t.Fatalf("pour SQL: %v", err)
+		}
+	}
+	ensureFrames(db, progID)
+
+	// Get the frame ID for echo
+	var frameID string
+	err = db.QueryRow("SELECT id FROM frames WHERE program_id = ? AND cell_name = 'echo'", progID).Scan(&frameID)
+	if err != nil {
+		t.Fatalf("no frame for echo: %v", err)
+	}
+
+	// Attempt to insert a self-loop binding directly — should be rejected by CHECK constraint
+	_, err = db.Exec(
+		"INSERT INTO bindings (id, consumer_frame, producer_frame, field_name) VALUES ('b-selfloop-test', ?, ?, 'value')",
+		frameID, frameID)
+	if err == nil {
+		// Clean up the bad row if CHECK not enforced, then fail
+		db.Exec("DELETE FROM bindings WHERE id = 'b-selfloop-test'")
+		t.Errorf("CHECK constraint did not reject self-loop binding (consumer_frame == producer_frame == %s)", frameID)
+	} else {
+		t.Logf("CHECK constraint correctly rejected self-loop: %v", err)
+	}
+
+	// Verify recordBindings itself guards against self-loops:
+	// manually insert a given that points back to the same cell
+	var cellID string
+	db.QueryRow("SELECT id FROM cells WHERE program_id = ? AND name = 'echo'", progID).Scan(&cellID)
+	db.Exec("INSERT IGNORE INTO givens (cell_id, field_name, source_cell, source_field) VALUES (?, 'self_ref', 'echo', 'value')", cellID)
+
+	// Run recordBindings — it should NOT create a self-loop binding
+	recordBindings(db, progID, "echo", cellID)
+
+	// Check no self-loop bindings exist
+	var selfLoopCount int
+	db.QueryRow("SELECT COUNT(*) FROM bindings WHERE consumer_frame = producer_frame").Scan(&selfLoopCount)
+	if selfLoopCount > 0 {
+		t.Errorf("recordBindings created %d self-loop binding(s) — invariant I9 violated", selfLoopCount)
+	}
+
+	resetProgram(db, progID)
+	t.Logf("✓ e2e self-loop test: CHECK constraint + recordBindings guard enforce I9 (noSelfLoops)")
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }

@@ -321,6 +321,12 @@ func recordBindings(db *sql.DB, progID, cellName, cellID string) {
 			continue
 		}
 
+		// I9 (noSelfLoops): a frame must never read from itself
+		if consumerFrame == producerFrame {
+			log.Printf("WARN: skipping self-loop binding: frame %s reads its own yield %s", consumerFrame, srcField)
+			continue
+		}
+
 		// Record the binding
 		db.Exec(
 			"INSERT IGNORE INTO bindings (id, consumer_frame, producer_frame, field_name) VALUES (CONCAT('b-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?)",

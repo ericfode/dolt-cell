@@ -152,7 +152,8 @@ CREATE TABLE IF NOT EXISTS bindings (
     field_name      VARCHAR(64) NOT NULL,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_bindings_consumer (consumer_frame),
-    INDEX idx_bindings_producer (producer_frame)
+    INDEX idx_bindings_producer (producer_frame),
+    CHECK (consumer_frame != producer_frame)
 );
 
 -- Claim log: append-only audit trail for claims.

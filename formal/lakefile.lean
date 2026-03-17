@@ -13,6 +13,7 @@ lean_lib Core
 
 lean_lib Retort where
   roots := #[`Retort]
+  extraDepTargets := #[`Claims]
 
 lean_lib Denotational where
   roots := #[`Denotational]

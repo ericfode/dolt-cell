@@ -1385,6 +1385,52 @@ func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
 		return
 	}
 
+	// Lazy demand check: only spawn gen N+1 when at least one given's
+	// source has a yield frozen AFTER the stem's last freeze time.
+	// No new data → no spawn → no computation. (Call-by-need / lazy evaluation)
+	//
+	// Formal model: Retort.demandFromGivens (Retort.lean)
+	// The formal model uses a structural check (frozen yield exists for source);
+	// the Go code refines this with the frozen_at timestamp for temporal precision.
+	// Both are monotone: once demand becomes true it stays true (yields are
+	// append-only, so new frozen yields never disappear).
+	//
+	// Edge cases handled:
+	//   - Self-reference (stem depends on itself): the stem's own yields
+	//     have frozen_at == lastFreezeTime, so the strict ">" prevents
+	//     self-triggering. Only EXTERNAL new data triggers a respawn.
+	//   - Optional givens: included in the demand check (any new data,
+	//     optional or not, justifies re-evaluation). Optionality only
+	//     gates readiness, not demand.
+	//   - First freeze (no prior frozen yields): falls through to spawn
+	//     unconditionally — the stem must process its initial inputs.
+	var lastFreezeTime sql.NullTime
+	db.QueryRow(
+		"SELECT MAX(frozen_at) FROM yields WHERE cell_id = ? AND is_frozen = 1",
+		frozenID).Scan(&lastFreezeTime)
+
+	if lastFreezeTime.Valid {
+		// Check: any given has a source yield frozen AFTER our last freeze.
+		// Includes optional givens — new optional data is still demand.
+		var newWork int
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM givens g
+			JOIN cells src ON src.program_id = ? AND src.name = g.source_cell
+			JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field
+			  AND y.is_frozen = 1 AND y.frozen_at > ?
+			WHERE g.cell_id = ?`,
+			progID, lastFreezeTime.Time, frozenID).Scan(&newWork)
+		if err != nil {
+			log.Printf("WARN: respawn %s: demand check: %v", cellName, err)
+			// On error, fall through to spawn (safe: eager is correct, just wasteful)
+		} else if newWork == 0 {
+			log.Printf("INFO: stem cell %s/%s has no new inputs — lazy skip", progID, cellName)
+			return
+		}
+	}
+	// If lastFreezeTime is not valid (no frozen yields yet), this is the
+	// first freeze — always respawn (the stem needs to process its initial inputs).
+
 	// Find current max generation for this cell name
 	var maxGen int
 	err := db.QueryRow(

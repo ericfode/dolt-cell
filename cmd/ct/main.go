@@ -168,6 +168,35 @@ func trunc(s string, n int) string {
 	return s[:n] + "..."
 }
 
+// wordWrap wraps text to the given width, breaking at word boundaries.
+// Preserves existing newlines.
+func wordWrap(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	var result strings.Builder
+	for i, paragraph := range strings.Split(s, "\n") {
+		if i > 0 {
+			result.WriteByte('\n')
+		}
+		col := 0
+		words := strings.Fields(paragraph)
+		for j, w := range words {
+			wLen := len(w)
+			if col+wLen > width && col > 0 {
+				result.WriteByte('\n')
+				col = 0
+			} else if j > 0 && col > 0 {
+				result.WriteByte(' ')
+				col++
+			}
+			result.WriteString(w)
+			col += wLen
+		}
+	}
+	return result.String()
+}
+
 func genPistonID() string {
 	b := make([]byte, 8)
 	rand.Read(b)

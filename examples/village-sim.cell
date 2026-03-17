@@ -1,0 +1,200 @@
+-- World Simulation: parameterized, functional, recursive
+--
+-- Two parameters define everything:
+--   population: how many people
+--   premise: "a world in which..."
+--
+-- Construction phase: pure functions build the world
+--   premise → world-constructor → person-constructor → assemble
+--
+-- Simulation phase: fold over time
+--   day(state) → day(state') → day(state'') → ...
+--
+-- Each person carries their own step function (day_fn).
+-- The day cell maps day_fn over the population, collects actions,
+-- reduces them into consequences, then returns the evolved state.
+-- Entities rewrite their own step functions. The world is a
+-- fixed-point iteration: state → f(state) → f(f(state)) → ...
+
+-- ═══════════════════════════════════════
+-- PARAMETERS (change these, get a different world)
+-- ═══════════════════════════════════════
+
+cell params
+  yield population = 5
+  yield premise = "a world in which everyone was tiny fluffy cows"
+
+-- ═══════════════════════════════════════
+-- CONSTRUCTION: pure functions, no side effects
+-- ═══════════════════════════════════════
+
+cell world-constructor
+  given params.premise
+  yield setting
+  yield rules
+  yield seeds_of_conflict
+  ---
+  You are a world-builder. Given this premise:
+  "A world in which «premise»"
+
+  Construct the world by returning three things as JSON:
+
+  SETTING: {"name": "...", "era": "...", "geography": "...", "atmosphere": "...", "key_locations": ["...", "..."]}
+
+  RULES: {"premise_mechanic": "how the premise works mechanically", "constraints": ["...", "..."], "escalation_pattern": "how tension increases over time"}
+
+  SEEDS_OF_CONFLICT: ["a specific tension that will grow", "another one", "a hidden truth waiting to surface"]
+
+  The setting should make the premise's consequences INEVITABLE and INTERESTING.
+  The rules should be consistent — the world follows its own logic.
+  The seeds should guarantee the simulation produces drama, not stasis.
+  ---
+  check setting is not empty
+  check rules is not empty
+
+cell person-constructor
+  given params.population
+  given params.premise
+  given world-constructor.setting
+  given world-constructor.rules
+  given world-constructor.seeds_of_conflict
+  yield people
+  ---
+  You are a character designer. Create exactly «population» people for this world.
+
+  WORLD: «setting»
+  RULES: «rules»
+  SEEDS OF CONFLICT: «seeds_of_conflict»
+  PREMISE: "A world in which «premise»"
+
+  Return a JSON array of «population» people. Each person is:
+  {
+    "name": "...",
+    "role": "their function in this world",
+    "identity": "2-sentence backstory — who they are, what they want",
+    "state": "their current emotional/physical state",
+    "secret": "something they're hiding that relates to the premise",
+    "relationships": {"OtherName": "one-word feeling"},
+    "day_fn": "INSTRUCTIONS FOR THIS PERSON'S STEP FUNCTION: You are [name]. [How you behave]. [What you prioritize]. [How the premise mechanic affects you specifically]. [Your approach to your secret]."
+  }
+
+  Design rules:
+  - Each person must have a DIFFERENT relationship to the premise
+  - At least one person benefits from the premise, one suffers from it
+  - Relationships should create triangles (A likes B, B likes C, C likes A)
+  - Each day_fn must be specific enough that a different LLM could play this person
+  - Secrets should interconnect — no isolated storylines
+  ---
+  check people is not empty
+  check~ people contains exactly the requested number of characters with interconnected secrets
+
+cell assemble
+  given world-constructor.setting
+  given world-constructor.rules
+  given world-constructor.seeds_of_conflict
+  given person-constructor.people
+  yield initial_state
+  ---
+  Assemble the initial world state from its components.
+
+  Return a single JSON object:
+  {
+    "day": 0,
+    "setting": «setting»,
+    "rules": «rules»,
+    "active_conflicts": «seeds_of_conflict»,
+    "people": «people»,
+    "history": [],
+    "world_mood": "initial atmosphere description"
+  }
+
+  Do NOT modify any values — just assemble them into one object.
+  Validate that all people have day_fn fields and relationships reference real names.
+  ---
+  check initial_state is not empty
+
+-- ═══════════════════════════════════════
+-- SIMULATION: fold over time
+-- day(state) = map(step, people) |> reduce(consequences) |> evolve(state)
+-- ═══════════════════════════════════════
+
+iterate day 5
+  given assemble.initial_state
+  yield world_state
+  yield narrative
+  ---
+  You are the simulation kernel. You receive the complete world state as JSON.
+
+  WORLD STATE:
+  «world_state»
+
+  Execute ONE tick of the simulation. This is a functional fold:
+
+  STEP 1 — MAP: For each person in people[], execute their day_fn:
+    - Read their day_fn (their personal step function)
+    - Given their state, relationships, and the world's active_conflicts,
+      determine their ACTION for today
+    - The premise mechanic applies: evaluate how it affects this action
+
+  STEP 2 — REDUCE: Collect all actions. Determine CONSEQUENCES:
+    - How do actions interact? (conflicts, cooperation, accidents)
+    - What does the premise mechanic cause to happen?
+    - What new conflicts emerge? Which old ones resolve?
+    - One UNEXPECTED consequence that nobody planned
+
+  STEP 3 — EVOLVE: For each person, update:
+    - state: how they feel after today's events
+    - relationships: changed by interactions
+    - day_fn: REWRITE their step function. This is the key recursive step.
+      If they learned something, got hurt, changed allegiance, discovered a secret —
+      their day_fn must reflect it. They are self-modifying automata.
+    - secret: update if partially revealed or changed
+
+  STEP 4 — ADVANCE: Update world:
+    - Increment day
+    - Update active_conflicts (add new, remove resolved)
+    - Update world_mood
+    - Append one-sentence summary to history[]
+    - If a person dies or leaves, remove them. If someone arrives, add them
+      with a fresh day_fn.
+
+  Return two things separated by a blank line:
+
+  WORLD_STATE: The complete evolved JSON (same schema, evolved values).
+  Every person's day_fn MUST be different from the previous day's — stasis is failure.
+
+  NARRATIVE: 5-8 sentences telling what happened today as a STORY.
+  Include at least one line of dialogue. Escalate toward day 4-5 climax.
+  ---
+  check world_state is not empty
+  check narrative is not empty
+
+-- ═══════════════════════════════════════
+-- EPILOGUE: reduce the history into story
+-- ═══════════════════════════════════════
+
+cell epilogue
+  given day.world_state
+  given day.narrative
+  given params.premise
+  yield story
+  ---
+  The simulation of "a world in which «premise»" has run for 5 days.
+
+  FINAL WORLD STATE:
+  «world_state»
+
+  LAST DAY:
+  «narrative»
+
+  Write the epilogue (3-4 paragraphs):
+  1. The arc: how did the premise reshape these people over 5 days?
+  2. The secrets: what was revealed, what stayed hidden?
+  3. The evolution: compare each person's final day_fn to their original — how did they change?
+  4. End with one sentence about what this world becomes.
+
+  Look at the history[] array in the world state — it's the compressed record
+  of every day. Use it.
+  ---
+  check story is not empty
+  check~ story demonstrates how the premise mechanic drove character evolution

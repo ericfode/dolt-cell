@@ -1,0 +1,165 @@
+-- Game of Life in the most obscure language possible
+-- Research cell dynamically defines a dev-loop methodology that
+-- the implement cell follows. The research shapes the build process.
+
+cell find-language
+  yield language
+  yield justification
+  yield hello_world
+  yield dev_loop
+  ---
+  Find the most obscure, esoteric, or unusual programming language that:
+  1. Is Turing-complete
+  2. Has at least a working interpreter available somewhere
+  3. Is genuinely difficult to write in (not just unusual syntax)
+
+  Avoid well-known esolangs like Brainfuck, Malbolge, or Whitespace — those are
+  famous. Find something truly forgotten or bizarre. Bonus points for languages
+  with fewer than 100 known users.
+
+  Then, define a development methodology appropriate for THIS specific language.
+  Consider: does it have a REPL? A type system? How do you debug? What's the
+  iteration cycle? What primitives does it offer that might help with 2D grids?
+
+  Return four things, each separated by a blank line:
+
+  LANGUAGE: the language name
+
+  JUSTIFICATION: one-sentence justification for why it's the most obscure
+
+  HELLO_WORLD: a hello world program in that language
+
+  DEV_LOOP: a step-by-step development methodology for building in this language,
+  written as instructions that another LLM could follow. Include:
+  - How to structure a program (modules? files? single blob?)
+  - How to represent data (arrays? strings? church encoding?)
+  - How to iterate/loop (recursion? goto? combinators?)
+  - How to do I/O (print? stdout? side effects?)
+  - Common pitfalls specific to this language
+  - The recommended build order for a Game of Life (what to write first, second, etc.)
+  ---
+  check language is not empty
+  check dev_loop is not empty
+
+cell design
+  given find-language.language
+  given find-language.hello_world
+  given find-language.dev_loop
+  yield architecture
+  yield data_structures
+  yield build_order
+  ---
+  Design Conway's Game of Life in «language».
+
+  Follow this development methodology for «language»:
+  «dev_loop»
+
+  Reference hello world:
+  «hello_world»
+
+  The Game of Life needs:
+  - A 2D grid (at least 10x10)
+  - Birth: dead cell with exactly 3 live neighbors becomes alive
+  - Survive: live cell with 2 or 3 neighbors survives
+  - Death: all other live cells die
+  - Run for at least 5 generations
+  - Start with a glider pattern
+
+  Return three things separated by blank lines:
+
+  ARCHITECTURE: how you'll represent the grid and state
+
+  DATA_STRUCTURES: key data structures and their encoding in this language
+
+  BUILD_ORDER: ordered list of components to implement (following the dev_loop methodology)
+  ---
+  check architecture is not empty
+
+cell implement
+  given find-language.language
+  given find-language.hello_world
+  given find-language.dev_loop
+  given design.architecture
+  given design.data_structures
+  given design.build_order
+  yield source_code
+  ---
+  Implement Conway's Game of Life in «language».
+
+  FOLLOW THIS DEV METHODOLOGY:
+  «dev_loop»
+
+  Architecture: «architecture»
+  Data structures: «data_structures»
+  Build order: «build_order»
+  Reference hello world: «hello_world»
+
+  Requirements:
+  - 10x10 grid minimum
+  - Glider starting pattern at position (1,1)
+  - Run 5 generations
+  - Print the grid after each generation (use . for dead, # for alive)
+
+  Build the code following the build_order step by step.
+  Return ONLY the complete source code, no explanation.
+  ---
+  check source_code is not empty
+  check~ source_code follows the dev_loop methodology for the chosen language
+
+cell test-plan
+  given find-language.language
+  given find-language.dev_loop
+  given implement.source_code
+  yield test_cases
+  yield expected_gen1
+  ---
+  Write a test plan for this «language» Game of Life.
+
+  Dev methodology: «dev_loop»
+
+  Source code:
+  «source_code»
+
+  Return two things separated by a blank line:
+
+  TEST_CASES: 3-5 test cases that verify correctness. For each:
+  what to check, expected result, how to verify given the language's constraints.
+
+  EXPECTED_GEN1: the exact 10x10 grid after generation 1 (glider started at 1,1).
+  Use . for dead and # for alive.
+  ---
+  check test_cases is not empty
+
+cell review
+  given find-language.language
+  given find-language.justification
+  given find-language.dev_loop
+  given implement.source_code
+  given test-plan.test_cases
+  given test-plan.expected_gen1
+  yield verdict
+  yield critique
+  yield obscurity_score
+  ---
+  Review this Game of Life in «language» («justification»).
+
+  Dev methodology used: «dev_loop»
+
+  Source code:
+  «source_code»
+
+  Test cases: «test_cases»
+  Expected generation 1: «expected_gen1»
+
+  Evaluate:
+  1. Does the code follow the dev_loop methodology?
+  2. Is it correct for «language»? Would it actually run?
+  3. Does it implement GoL rules correctly?
+  4. How obscure is «language» really? Rate 1-10.
+
+  Return three lines:
+  Line 1: verdict (PASS, FAIL, or UNCERTAIN)
+  Line 2: critique (2-3 sentences on code quality and methodology adherence)
+  Line 3: obscurity score (1-10, where 10 = virtually nobody has heard of this)
+  ---
+  check verdict is not empty

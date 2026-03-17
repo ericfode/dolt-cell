@@ -10,6 +10,8 @@
 
 import Core
 
+namespace Claims
+
 /-! ====================================================================
     TRANSITION SYSTEM: States and Actions
     ==================================================================== -/
@@ -336,3 +338,5 @@ theorem always_yields_preserved_on_valid_trace (vt : ValidTrace) :
   primitive (like a semaphore), not execution history. Its temporal
   behavior is fully characterized by the mutex and liveness properties.
 -/
+
+end Claims

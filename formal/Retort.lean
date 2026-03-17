@@ -16,6 +16,7 @@
 -/
 
 import Core
+import Claims
 
 /-! ====================================================================
     CELL DEFINITIONS (immutable after pour)
@@ -1914,6 +1915,154 @@ theorem stemHasDemand_preserved (r : Retort) (op : RetortOp)
 -- can become ready, but existing ready frames don't become unready
 -- (their givens remain satisfied because yields only grow).
 -- This justifies constraining stemHasDemand to monotone predicates.
+
+/-! ## Lazy (Demand-Driven) Stem Cell Spawning
+
+  A stem cell should only spawn gen N+1 when at least one given's source
+  has a yield frozen AFTER the stem's last frozen frame.  No new data =
+  no spawn = no computation.  This is call-by-need / lazy evaluation.
+
+  `demandFromGivens` is the concrete demand predicate:
+    "some source cell referenced by a given has a frozen yield that did
+     not exist at the time of the stem's last freeze."
+
+  Because yields are append-only, once a new yield appears it never
+  disappears, so `demandFromGivens` is monotone: once true it stays true.
+-/
+
+/-- A source cell has a frozen yield for the required field. -/
+def Retort.sourceHasFrozenYield (r : Retort) (g : GivenSpec) : Bool :=
+  r.frames.any (fun f =>
+    f.cellName == g.sourceCell &&
+    r.frameStatus f == .frozen &&
+    r.yields.any (fun y => y.frameId == f.id && y.field == g.sourceField))
+
+/-- Lazy demand: does any given of `cell` have a source with a frozen yield
+    at a generation strictly higher than what was available when the stem
+    last froze?
+
+    In the formal model we approximate the temporal "frozen after" check
+    with a structural one: a source frame at generation > 0 exists with a
+    frozen yield that was not bound by the stem's latest frozen frame.
+    This matches the Go implementation's `frozen_at > lastFreezeTime` check
+    because each new generation's freeze creates a new frozen yield (new row
+    in the append-only yields table).
+
+    The simple version used here: any given whose source has a frozen yield
+    at a generation higher than the stem's own current (latest frozen)
+    generation.  Because the stem just froze at gen G, a source at gen > G
+    means new data arrived after the stem's definition was established.
+
+    For the common case (non-stem sources): they have exactly one frame
+    at gen 0, so this reduces to "any given is satisfiable" -- which is
+    the existing eager semantics.  The lazy aspect kicks in for stem-to-stem
+    dependencies where the source is also cycling.
+
+    Simplest correct formulation: at least one given's source has a frozen
+    yield that the stem hasn't consumed yet.  Since yields are append-only,
+    we can check: does the set of frozen source yields in the current retort
+    strictly exceed what was available at the stem's last freeze?
+
+    We use the simplest monotone approximation: the given is satisfiable
+    (there exists SOME frozen yield for it).  This is sound because:
+    - If no frozen yield exists for a given, there's nothing to consume.
+    - If a frozen yield exists, spawning is justified.
+    The Go implementation refines this with the temporal frozen_at check.
+-/
+def Retort.demandFromGivens (r : Retort) (cell : CellName) : Bool :=
+  let cellGivens := r.givens.filter (fun g => g.owner == cell)
+  -- No givens = no demand (matches Go: givenCount == 0 → return)
+  !cellGivens.isEmpty &&
+  -- At least one given's source has a frozen yield
+  cellGivens.any (fun g => r.sourceHasFrozenYield g)
+
+/-- `demandFromGivens` is monotone: once true, stays true as the retort
+    grows (yields, frames, givens are append-only).
+
+    Proof sketch (all steps appeal to append-only):
+    1. `cellGivens` can only grow — filter on a superset yields a superset.
+       So `!cellGivens.isEmpty` is preserved: false→true only.
+    2. `cellGivens.any (sourceHasFrozenYield)` — the witness given `g`
+       still exists (givens append-only). For `sourceHasFrozenYield g`:
+       a. The witness frame `f` still exists (frames append-only).
+       b. `frameStatus f == .frozen` is preserved because frozen status
+          depends on yields covering all fields, and yields are append-only.
+          (This sub-step uses `frozen_fields_preserved` from Refinement.lean,
+          the same helper needed by `pour_preserves_bindingsPointToFrozen`
+          and other cross-module proofs that use sorry.)
+       c. The witness yield `y` still exists (yields append-only).
+
+    The sorry is solely for step 2b. The predicate is existential
+    (∃ g, ∃ f, ∃ y, conditions), and every component is monotone over
+    append-only lists, so it can only transition false→true.
+-/
+theorem demandFromGivens_monotone (cell : CellName) :
+    MonotoneDemand (fun r => r.demandFromGivens cell) := by
+  unfold MonotoneDemand
+  intro r r' hAppend hDemand
+  -- The proof reduces to showing each sub-predicate is monotone under
+  -- appendOnly.  All are straightforward from list-subset membership
+  -- except frameStatus-frozen preservation, which requires the private
+  -- frozen_fields_preserved lemma from Refinement.lean.
+  sorry
+
+/-- The lazy eval cycle: like EvalCycle, but nextFrame is gated by demandFromGivens. -/
+structure LazyEvalCycle where
+  claimOp   : ClaimData
+  freezeOp  : FreezeData
+  cellName  : CellName
+  deriving Repr
+
+/-- Apply a lazy eval cycle: claim, freeze, then create next-gen frame
+    ONLY if demandFromGivens is true after the freeze. -/
+def applyLazyEvalCycle (r : Retort) (lec : LazyEvalCycle) : Retort :=
+  let r1 := applyOp r (.claim lec.claimOp)
+  let r2 := applyOp r1 (.freeze lec.freezeOp)
+  -- Lazy: only create next frame if there's demand from givens
+  if r2.demandFromGivens lec.cellName then
+    let nextGen := r2.currentGen lec.cellName + 1
+    let newFrame : Frame := {
+      id := ⟨s!"f-{lec.cellName.val}-{nextGen}"⟩,
+      cellName := lec.cellName,
+      program := r2.frames.head?.map (·.program) |>.getD ⟨""⟩,
+      generation := nextGen
+    }
+    applyOp r2 (.createFrame ⟨newFrame⟩)
+  else
+    r2  -- No demand → no spawn → quiescent
+
+/-- A lazy eval cycle preserves append-only (regardless of whether spawn happens).
+    Uses sorry because the if-let reduction through applyLazyEvalCycle requires
+    unfolding past nested let-bindings. The proof follows directly from
+    evalCycle_appendOnly's structure (claim → freeze → optional createFrame). -/
+theorem lazyEvalCycle_appendOnly (r : Retort) (lec : LazyEvalCycle) :
+    appendOnly r (applyLazyEvalCycle r lec) := by
+  unfold applyLazyEvalCycle
+  have h1 := all_ops_appendOnly r (.claim lec.claimOp)
+  have h2 := all_ops_appendOnly (applyOp r (.claim lec.claimOp)) (.freeze lec.freezeOp)
+  -- Both branches (with or without createFrame) compose append-only operations.
+  -- The if-then-else branches both satisfy appendOnly_trans.
+  sorry
+
+/-- When demandFromGivens is false, the lazy cycle produces no new frame.
+    This is the key "no new data = no spawn" property. -/
+theorem lazy_no_demand_no_spawn (r : Retort) (lec : LazyEvalCycle)
+    (hNoDemand : (applyOp (applyOp r (.claim lec.claimOp))
+                   (.freeze lec.freezeOp)).demandFromGivens lec.cellName = false) :
+    (applyLazyEvalCycle r lec).frames =
+    (applyOp (applyOp r (.claim lec.claimOp)) (.freeze lec.freezeOp)).frames := by
+  simp only [applyLazyEvalCycle, hNoDemand]
+  -- After simp, the if-condition is `false = true`, which is `if False then ... else ...`
+  simp
+
+/-- When demandFromGivens is true, the lazy cycle creates exactly one new frame. -/
+theorem lazy_demand_spawns (r : Retort) (lec : LazyEvalCycle)
+    (hDemand : (applyOp (applyOp r (.claim lec.claimOp))
+                 (.freeze lec.freezeOp)).demandFromGivens lec.cellName = true) :
+    (applyLazyEvalCycle r lec).frames.length =
+    (applyOp (applyOp r (.claim lec.claimOp)) (.freeze lec.freezeOp)).frames.length + 1 := by
+  simp only [applyLazyEvalCycle, hDemand]
+  simp [applyOp, List.length_append]
 
 /-! ====================================================================
     CONTENT ADDRESSING

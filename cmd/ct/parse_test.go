@@ -1110,6 +1110,130 @@ func TestGatherWildcardWithTemplateRef(t *testing.T) {
 	}
 }
 
+// Regression test for do-eht: iterate cell yields/givens must NOT bleed into preceding cell.
+func TestV2IterateDoesNotBleedIntoPrecedingCell(t *testing.T) {
+	input := `cell assemble
+  given person-constructor.people
+  yield initial_state
+  ---
+  Assemble the world.
+  ---
+
+iterate day 5
+  given assemble.initial_state
+  yield world_state
+  yield narrative
+  ---
+  Simulate one day.
+  ---
+  check world_state is not empty
+  check narrative is not empty
+`
+	cells := mustParse(t, input)
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil")
+	}
+	if len(cells) != 2 {
+		t.Fatalf("expected 2 cells, got %d", len(cells))
+	}
+
+	// assemble should have exactly 1 yield (initial_state), not 3
+	assemble := cells[0]
+	if assemble.name != "assemble" {
+		t.Errorf("cell[0].name=%q, want assemble", assemble.name)
+	}
+	if len(assemble.yields) != 1 {
+		t.Errorf("assemble: %d yields (want 1) — iteration yields bled into preceding cell", len(assemble.yields))
+		for _, y := range assemble.yields {
+			t.Logf("  yield: %s", y.fieldName)
+		}
+	}
+	if assemble.yields[0].fieldName != "initial_state" {
+		t.Errorf("assemble yield[0]=%q, want initial_state", assemble.yields[0].fieldName)
+	}
+	if len(assemble.givens) != 1 {
+		t.Errorf("assemble: %d givens (want 1) — iteration givens bled into preceding cell", len(assemble.givens))
+	}
+
+	// day should have iterate=5, 1 given, 2 yields
+	day := cells[1]
+	if day.name != "day" {
+		t.Errorf("cell[1].name=%q, want day", day.name)
+	}
+	if day.iterate != 5 {
+		t.Errorf("day.iterate=%d, want 5", day.iterate)
+	}
+	if len(day.givens) != 1 {
+		t.Errorf("day: %d givens, want 1", len(day.givens))
+	}
+	if len(day.yields) != 2 {
+		t.Errorf("day: %d yields, want 2", len(day.yields))
+	}
+	if len(day.oracles) != 2 {
+		t.Errorf("day: %d oracles, want 2", len(day.oracles))
+	}
+
+	// SQL generation should not produce duplicate yield IDs
+	sql := cellsToSQL("bleed-test", cells)
+	if strings.Count(sql, "y-bleed-test-assemble-world_state") > 0 {
+		t.Error("assemble should NOT have a world_state yield — iteration bleed detected")
+	}
+	if strings.Count(sql, "y-bleed-test-assemble-narrative") > 0 {
+		t.Error("assemble should NOT have a narrative yield — iteration bleed detected")
+	}
+}
+
+func TestV2IterateVillageSim(t *testing.T) {
+	data, err := os.ReadFile("../../examples/village-sim.cell")
+	if err != nil {
+		t.Fatalf("read village-sim.cell: %v", err)
+	}
+
+	cells := mustParse(t, string(data))
+	if cells == nil {
+		t.Fatal("parseCellFile returned nil — cannot parse village-sim.cell")
+	}
+
+	// village-sim: params, world-constructor, person-constructor, assemble, day(iterate), epilogue
+	if len(cells) != 6 {
+		t.Fatalf("expected 6 cells, got %d", len(cells))
+	}
+
+	// assemble should have exactly 1 yield (initial_state)
+	var assemble *parsedCell
+	for i := range cells {
+		if cells[i].name == "assemble" {
+			assemble = &cells[i]
+		}
+	}
+	if assemble == nil {
+		t.Fatal("assemble cell not found")
+	}
+	if len(assemble.yields) != 1 {
+		t.Errorf("assemble: %d yields (want 1)", len(assemble.yields))
+	}
+	if assemble.yields[0].fieldName != "initial_state" {
+		t.Errorf("assemble yield=%q, want initial_state", assemble.yields[0].fieldName)
+	}
+
+	// day should be an iteration cell
+	var day *parsedCell
+	for i := range cells {
+		if cells[i].name == "day" {
+			day = &cells[i]
+		}
+	}
+	if day == nil {
+		t.Fatal("day cell not found")
+	}
+	if day.iterate != 5 {
+		t.Errorf("day.iterate=%d, want 5", day.iterate)
+	}
+	if len(day.yields) != 2 {
+		t.Errorf("day: %d yields, want 2", len(day.yields))
+	}
+}
+
 func TestParseRejectsInvalidNames(t *testing.T) {
 	tests := []struct {
 		name  string

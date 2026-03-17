@@ -1,0 +1,93 @@
+-- Bug-to-Perfect Pipeline
+-- The full cycle: diagnose → implement → model → test → review → iterate until A.
+-- This is the Cell equivalent of the mol-bug-to-perfect formula.
+-- Pour with: ct pour fix-<bug-id> examples/bug-to-perfect.cell
+
+cell bug
+  yield id = "REPLACE_WITH_BUG_ID"
+  yield description = "REPLACE_WITH_BUG_DESCRIPTION"
+
+cell diagnose (stem)
+  given bug.id
+  given bug.description
+  yield root_cause
+  yield go_fix
+  yield lean_fix
+  yield test_plan
+  ---
+  You are the Seven Sages consul. Diagnose this bug:
+
+  Bug ID: «id»
+  Description: «description»
+
+  Read the relevant source code. Determine:
+  1. Root cause — which file, which function, what's wrong
+  2. Go fix — exact code change needed
+  3. Lean model change — if the fix affects formal semantics
+  4. Test plan — what test proves it's fixed
+
+  Be concrete: function names, line numbers, exact changes.
+  ---
+  check root_cause is not empty
+  check~ go_fix provides specific file and function names
+
+cell implement (stem)
+  given diagnose.go_fix
+  given diagnose.lean_fix
+  given diagnose.test_plan
+  yield code_change
+  yield test_result
+  yield build_status
+  ---
+  Implement the fix described in «go_fix».
+
+  1. Apply the Go code change
+  2. Build: cd cmd/ct && go build -o ../../ct .
+  3. If «lean_fix» is non-empty, update formal/Retort.lean
+  4. Run tests: cd cmd/ct && go test -count=1
+  5. Add a test per «test_plan»
+
+  Report: what you changed, build output, test output.
+  ---
+  check build_status is not empty
+  check~ code_change describes specific file modifications
+
+cell review (stem)
+  given bug.description
+  given implement.code_change
+  given implement.test_result
+  yield grade
+  yield feedback
+  recur until grade = "A" (max 5)
+  ---
+  You are the Seven Sages consul reviewing a bug fix.
+
+  Bug: «description»
+  Changes: «code_change»
+  Tests: «test_result»
+
+  Grade A-F on five axes:
+  - Feynman: Is the fix minimal and explanatory?
+  - Dijkstra: Does Go match Lean? Invariants preserved?
+  - Hoare: Test coverage? Edge cases?
+  - Wadler: Code quality? No unnecessary complexity?
+  - Sussman: Composability? Ripple effects?
+
+  If ALL axes are A: yield grade = "A"
+  Otherwise: yield grade = "REVISE" and list specific fixes in feedback.
+  ---
+
+cell ship
+  given review.grade
+  given review.feedback
+  given implement.code_change
+  yield status
+  ---
+  The review grade is «grade».
+
+  If grade is "A": commit the changes, push, and close the bug bead.
+  Report what was committed.
+
+  If grade is not "A": report the feedback «feedback» and what still needs fixing.
+  ---
+  check status is not empty

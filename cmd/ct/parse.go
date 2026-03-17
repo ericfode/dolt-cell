@@ -85,15 +85,15 @@ func validateCellNames(cells []parsedCell) error {
 	return nil
 }
 
-// parseCellFileV2 parses v2 ASCII syntax: cell NAME, ---, given X.Y, check, recur.
+// parseCellFileV2 parses v2 ASCII syntax: cell NAME, ---, given X.Y, check, recur, iterate.
 func parseCellFileV2(text string) []parsedCell {
 	lines := strings.Split(text, "\n")
 
-	// Quick detect: v2 files have "cell " at column 0, not "⊢ "
+	// Quick detect: v2 files have "cell " or "iterate " at column 0, not "⊢ "
 	hasV2 := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "cell ") && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+		if (strings.HasPrefix(trimmed, "cell ") || strings.HasPrefix(trimmed, "iterate ")) && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
 			hasV2 = true
 			break
 		}
@@ -160,6 +160,27 @@ func parseCellFileV2(text string) []parsedCell {
 			} else {
 				cur.name = strings.TrimSpace(rest)
 			}
+			continue
+		}
+
+		// Iteration declaration at column 0: iterate NAME N
+		if strings.HasPrefix(trimmed, "iterate ") && !isIndented {
+			if cur != nil {
+				cur.body = strings.TrimRight(cur.body, " \t\n\r")
+				cells = append(cells, *cur)
+			}
+			cur = &parsedCell{bodyType: "soft"}
+			rest := strings.TrimPrefix(trimmed, "iterate ")
+			parts := strings.Fields(rest)
+			if len(parts) != 2 {
+				return nil
+			}
+			cur.name = parts[0]
+			n, err := strconv.Atoi(parts[1])
+			if err != nil {
+				return nil
+			}
+			cur.iterate = n
 			continue
 		}
 

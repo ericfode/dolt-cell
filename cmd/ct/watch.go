@@ -60,18 +60,20 @@ type watchModel struct {
 	spinner   spinner.Model
 	fetching  bool
 	lastFetch time.Time
-	collapsed  map[string]bool // program-level collapse
-	expanded   map[string]bool // cell-level yield expand (key: "prog/cell")
-	cursor     int             // index into navItems()
-	ready      bool
+	collapsed map[string]bool // program-level collapse
+	expanded  map[string]bool // cell-level yield expand (key: cell id)
+	cursor    int             // index into navItems()
+	ready     bool
 	// Detail pane
 	showDetail bool
 	detailVP   viewport.Model
 	detail     *cellDetail
-	detailCell string // "prog/cell" currently shown in detail
+	detailCell string // cell id currently shown in detail
 	// Search
 	filtering  bool
 	filterText string
+	// Active-only filter
+	activeOnly bool
 	// Help overlay
 	showHelp bool
 	// Auto-retry state
@@ -290,7 +292,7 @@ func (m watchModel) renderDetail() string {
 		}
 	}
 
-	// Yields
+	// Yields — full content with word wrapping (scrollable via detail viewport)
 	if len(d.yields) > 0 {
 		buf.WriteString(detailLabelStyle.Render("  YIELDS") + "\n")
 		for _, y := range d.yields {
@@ -300,13 +302,21 @@ func (m watchModel) renderDetail() string {
 				icon = frozenValStyle.Render("■")
 				valStyle = frozenValStyle
 			}
-			val := y.valueText
-			if val == "" {
-				val = detailDimStyle.Render("—")
+			if y.valueText == "" {
+				buf.WriteString(fmt.Sprintf("    %s %s = %s\n", icon, y.fieldName, detailDimStyle.Render("—")))
 			} else {
-				val = valStyle.Render(trunc(val, maxW-30))
+				// Show full value with word wrapping for long content
+				wrapW := maxW - 8 // indent for continuation lines
+				if wrapW < 30 {
+					wrapW = 30
+				}
+				wrapped := wordWrap(y.valueText, wrapW)
+				lines := strings.Split(wrapped, "\n")
+				buf.WriteString(fmt.Sprintf("    %s %s = %s\n", icon, y.fieldName, valStyle.Render(lines[0])))
+				for _, wl := range lines[1:] {
+					buf.WriteString(fmt.Sprintf("        %s\n", valStyle.Render(wl)))
+				}
 			}
-			buf.WriteString(fmt.Sprintf("    %s %s = %s\n", icon, y.fieldName, val))
 		}
 	}
 
@@ -340,19 +350,30 @@ func (m watchModel) navItems() []navItem {
 	var items []navItem
 	filter := strings.ToLower(m.filterText)
 	for _, prog := range m.progOrder {
-		items = append(items, navItem{kind: navProgram, prog: prog, cellIdx: -1})
+		// Collect cells for this program first to decide if program header is shown
+		var progCells []navItem
 		if !m.collapsed[prog] {
 			for i, c := range m.cells {
 				if c.prog != prog {
+					continue
+				}
+				// Active-only filter: hide frozen and bottom cells
+				if m.activeOnly && (c.state == "frozen" || c.state == "bottom") {
 					continue
 				}
 				if filter != "" && !strings.Contains(strings.ToLower(c.name), filter) &&
 					!strings.Contains(strings.ToLower(c.prog), filter) {
 					continue
 				}
-				items = append(items, navItem{kind: navCell, prog: prog, cellIdx: i})
+				progCells = append(progCells, navItem{kind: navCell, prog: prog, cellIdx: i})
 			}
 		}
+		// In active-only mode with expanded programs, skip programs with no visible cells
+		if m.activeOnly && !m.collapsed[prog] && len(progCells) == 0 {
+			continue
+		}
+		items = append(items, navItem{kind: navProgram, prog: prog, cellIdx: -1})
+		items = append(items, progCells...)
 	}
 	return items
 }
@@ -388,7 +409,7 @@ func (m watchModel) cursorLine() int {
 		// If it's an expanded cell, count yield lines too
 		if item.kind == navCell {
 			c := m.cells[item.cellIdx]
-			if m.expanded[c.prog+"/"+c.name] {
+			if m.expanded[c.id] {
 				line += len(c.yields)
 			}
 		}
@@ -695,7 +716,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stats.expandAll++
 			m.collapsed = make(map[string]bool)
 			for _, c := range m.cells {
-				m.expanded[c.prog+"/"+c.name] = true
+				m.expanded[c.id] = true
 			}
 			m.viewport.SetContent(m.renderContent())
 			return m, nil
@@ -704,6 +725,13 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stats.collapseAll++
 			m.expanded = make(map[string]bool)
 			m.viewport.SetContent(m.renderContent())
+			return m, nil
+
+		case "a":
+			m.activeOnly = !m.activeOnly
+			m.clampCursor()
+			m.viewport.SetContent(m.renderContent())
+			m.ensureCursorVisible()
 			return m, nil
 
 		case "d":
@@ -800,6 +828,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *watchModel) ensureCursorVisible() {
 	cl := m.cursorLine()
 	vpH := m.viewport.Height()
+	if vpH <= 0 {
+		return
+	}
 	off := m.viewport.YOffset()
 	if cl < off {
 		m.viewport.SetYOffset(cl)
@@ -1020,6 +1051,7 @@ func (m watchModel) View() tea.View {
 		help += "  g              Jump to top\n"
 		help += "  G              Jump to bottom\n"
 		help += "  d              Toggle detail pane\n"
+		help += "  a              Toggle active-only (hide frozen/bottom)\n"
 		help += "  /              Search / filter cells\n"
 		help += "  esc            Close detail, clear filter\n"
 		help += "  ?              Toggle this help\n"
@@ -1065,6 +1097,9 @@ func (m watchModel) View() tea.View {
 	header := headerStyle.Render(fmt.Sprintf("  ct watch  ·  %s  ·  %d programs  %s", now, len(m.programs), statsStr))
 	buf.WriteString(header)
 	buf.WriteString(spin)
+	if m.activeOnly {
+		buf.WriteString("  " + pendValStyle.Render("[active only]"))
+	}
 
 	// Filter bar
 	if m.filtering {
@@ -1097,7 +1132,11 @@ func (m watchModel) View() tea.View {
 	if m.showDetail {
 		detailKey = "d hide"
 	}
-	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · tab/S-tab prog · g/G top/bot · enter toggle · e expand · c collapse · %s · / search · esc back · ? help · q quit", detailKey)))
+	activeKey := "a active"
+	if m.activeOnly {
+		activeKey = "a all"
+	}
+	buf.WriteString(footerStyle.Render(fmt.Sprintf("  j/k nav · tab/S-tab prog · g/G top/bot · enter toggle · e expand · c collapse · %s · %s · / search · esc back · ? help · q quit", activeKey, detailKey)))
 
 	v := tea.NewView(buf.String())
 	v.AltScreen = true

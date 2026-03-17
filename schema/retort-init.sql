@@ -174,7 +174,10 @@ CREATE TABLE IF NOT EXISTS claim_log (
 -- 5. Views
 -- ---------------------------------------------------------------------------
 
--- ready_cells: cells whose ALL non-optional givens have frozen yields
+-- ready_cells: cells whose ALL non-optional givens have resolved yields.
+-- A yield is "resolved" when frozen (is_frozen=1) OR bottomed (is_bottom=1).
+-- Bottom is a terminal state — it resolves the dependency with an error value,
+-- enabling bottom propagation through the DAG.
 -- NOTE: Uses NOT IN instead of NOT EXISTS — Dolt v1.83 has a correlated
 -- subquery bug where NOT EXISTS with outer table refs returns wrong results.
 CREATE OR REPLACE VIEW ready_cells AS
@@ -184,7 +187,8 @@ WHERE c.state = 'declared'
   AND c.id NOT IN (
     SELECT g.cell_id FROM givens g
     JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
-    LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
+    LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field
+      AND (y.is_frozen = 1 OR y.is_bottom = 1)
     WHERE g.is_optional = FALSE AND y.id IS NULL
   );
 

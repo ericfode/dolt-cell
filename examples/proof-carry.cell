@@ -20,8 +20,8 @@ cell verify-product
   yield result
   ---
   sql: SELECT CASE
-       WHEN CAST(JSON_EXTRACT(f.value_text, '$[0]') AS SIGNED)
-          * CAST(JSON_EXTRACT(f.value_text, '$[1]') AS SIGNED)
+       WHEN CAST(JSON_EXTRACT(CAST(f.value_text AS JSON), '$[0]') AS SIGNED)
+          * CAST(JSON_EXTRACT(CAST(f.value_text AS JSON), '$[1]') AS SIGNED)
           = CAST(n.value_text AS SIGNED)
        THEN 'VERIFIED'
        ELSE 'FAILED'

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS givens (
 CREATE TABLE IF NOT EXISTS yields (
     id          VARCHAR(64) PRIMARY KEY,
     cell_id     VARCHAR(64) NOT NULL,
+    frame_id    VARCHAR(64),
     field_name  VARCHAR(64) NOT NULL,
     value_text  VARCHAR(4096),
     value_json  JSON,
@@ -62,7 +63,8 @@ CREATE TABLE IF NOT EXISTS yields (
     is_bottom   BOOLEAN NOT NULL DEFAULT FALSE,
     frozen_at   DATETIME,
     FOREIGN KEY (cell_id) REFERENCES cells(id),
-    UNIQUE INDEX idx_cell_field (cell_id, field_name)
+    UNIQUE INDEX idx_cell_field (cell_id, field_name),
+    INDEX idx_yields_frame (frame_id, field_name)
 );
 
 CREATE TABLE IF NOT EXISTS oracles (

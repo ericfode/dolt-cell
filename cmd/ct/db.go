@@ -142,9 +142,9 @@ func parseProcSQL(src string) []string {
 	return stmts
 }
 
-// ensureFrameForCell creates a frame for a single cell if one doesn't exist.
-// For non-stem cells this creates gen-0. For stem cells this creates the next
-// generation frame. This is called on-demand when a cell is claimed or frozen.
+// ensureFrameForCell creates a gen-0 frame for a cell if none exists.
+// All cells get gen-0 frames at pour time, so this is an idempotent safety net.
+// Called on-demand when a cell is claimed or frozen.
 func ensureFrameForCell(db *sql.DB, progID, cellName, cellID string) {
 	// Check if any frame already exists for this cell
 	var existing int

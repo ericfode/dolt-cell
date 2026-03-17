@@ -206,7 +206,7 @@ def bindingsMonotone (r : Retort) : Prop :=
 structure PourData where
   cells  : List RCellDef
   givens : List GivenSpec
-  frames : List Frame            -- gen-0 frames for non-stem cells
+  frames : List Frame            -- gen-0 frames for all poured cells
   deriving Repr
 
 -- Claim: piston takes a ready frame

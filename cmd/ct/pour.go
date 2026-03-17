@@ -130,10 +130,13 @@ func pourViaPiston(db *sql.DB, name, cellFile string, data []byte) {
 		mustExecDB(db,
 			"INSERT INTO givens (id, cell_id, source_cell, source_field) VALUES (?, ?, 'source', 'name')",
 			"g-"+pourProg+"-parse-name", parseID)
-		// Parse cell is stem — no frame at pour time, gets frame_id at claim time
+		// Create gen-0 frame for parse cell (stem cells get frames at pour time too)
+		parseFrameID := "f-" + parseID + "-0"
+		db.Exec("INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES (?, 'parse', ?, 0)",
+			parseFrameID, pourProg)
 		mustExecDB(db,
-			"INSERT INTO yields (id, cell_id, field_name) VALUES (?, ?, 'sql')",
-			"y-"+pourProg+"-parse-sql", parseID)
+			"INSERT INTO yields (id, cell_id, frame_id, field_name) VALUES (?, ?, ?, 'sql')",
+			"y-"+pourProg+"-parse-sql", parseID, parseFrameID)
 		mustExecDB(db,
 			"INSERT INTO oracles (id, cell_id, oracle_type, assertion, condition_expr) VALUES (?, ?, 'deterministic', 'sql is not empty', 'not_empty')",
 			"o-"+pourProg+"-parse-1", parseID)
@@ -271,10 +274,10 @@ func resetProgram(db *sql.DB, progID string) {
 	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "reset: "+progID)
 }
 
-// ensureFrames creates gen-0 frames for non-stem cells that don't have frames yet.
+// ensureFrames creates gen-0 frames for all cells that don't have frames yet.
 func ensureFrames(db *sql.DB, progID string) {
 	rows, err := db.Query(
-		"SELECT id, name, body_type FROM cells WHERE program_id = ? AND body_type != 'stem'", progID)
+		"SELECT id, name, body_type FROM cells WHERE program_id = ?", progID)
 	if err != nil {
 		return
 	}

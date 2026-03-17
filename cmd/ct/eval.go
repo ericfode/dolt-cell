@@ -847,7 +847,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 			continue
 		}
 
-		// Ensure frame exists for this cell (stem cells don't get gen-0 at pour time)
+		// Ensure frame exists for this cell (idempotent — gen-0 created at pour time)
 		ensureFrameForCell(db, rc.progID, rc.cellName, rc.cellID)
 
 		// Log claim (v2 frame model audit trail)
@@ -1113,7 +1113,7 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			cellID)
 
 		// Record bindings + claim completion (v2 frame model)
-		// Ensure frame exists before recording bindings (stem cells may not have one yet)
+		// Ensure frame exists before recording bindings (idempotent safety net)
 		ensureFrameForCell(db, progID, cellName, cellID)
 		recordBindings(db, progID, cellName, cellID)
 		if claimPiston != "" {

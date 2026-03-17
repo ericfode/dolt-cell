@@ -624,13 +624,11 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 		"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES ('%s', '%s', '%s', '%s', '%s', '%s');\n",
 		escape(cellID), escape(programID), escape(c.name), c.bodyType, escape(body), state))
 
-	// Frame (v2): non-stem cells get gen-0 frame at pour time
-	if c.bodyType != "stem" {
-		frameID := "f-" + cellID + "-0"
-		sb.WriteString(fmt.Sprintf(
-			"INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES ('%s', '%s', '%s', 0);\n",
-			escape(frameID), escape(c.name), escape(programID)))
-	}
+	// Frame (v2): all cells get gen-0 frame at pour time
+	frameID := "f-" + cellID + "-0"
+	sb.WriteString(fmt.Sprintf(
+		"INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES ('%s', '%s', '%s', 0);\n",
+		escape(frameID), escape(c.name), escape(programID)))
 
 	// Givens
 	for _, g := range c.givens {
@@ -644,11 +642,8 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 			escape(gID), escape(cellID), escape(g.sourceCell), escape(g.sourceField), opt))
 	}
 
-	// Yields — include frame_id for non-stem cells (gen-0 frame created above)
-	frameIDVal := "NULL"
-	if c.bodyType != "stem" {
-		frameIDVal = fmt.Sprintf("'%s'", escape("f-"+cellID+"-0"))
-	}
+	// Yields — all cells get frame_id referencing gen-0 frame created above
+	frameIDVal := fmt.Sprintf("'%s'", escape("f-"+cellID+"-0"))
 	for _, y := range c.yields {
 		yID := safeID(fmt.Sprintf("y-%s-%s-%s", prefix, c.name, y.fieldName))
 		if allPrebound && len(c.yields) > 1 {

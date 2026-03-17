@@ -28,8 +28,10 @@ cell verify-product
      END
      FROM yields f JOIN cells cf ON f.cell_id = cf.id,
           yields n JOIN cells cn ON n.cell_id = cn.id
-     WHERE cf.name = 'factor' AND f.field_name = 'factors' AND f.is_frozen = 1
+     WHERE cf.program_id = cn.program_id
+       AND cf.name = 'factor' AND f.field_name = 'factors' AND f.is_frozen = 1
        AND cn.name = 'target' AND n.field_name = 'number' AND n.is_frozen = 1
+     LIMIT 1
   ---
 
 cell certificate

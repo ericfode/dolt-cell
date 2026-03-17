@@ -920,10 +920,27 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		return "error", fmt.Sprintf("Cell %q not found or not computing", cellName)
 	}
 
-	mustExecDB(db, "DELETE FROM yields WHERE cell_id = ? AND field_name = ?", cellID, fieldName)
-	mustExecDB(db,
-		"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, FALSE, NULL)",
-		cellID, fieldName, value)
+	// Append-only: reject if this yield is already frozen
+	var alreadyFrozen int
+	db.QueryRow("SELECT COUNT(*) FROM yields WHERE cell_id = ? AND field_name = ? AND is_frozen = 1",
+		cellID, fieldName).Scan(&alreadyFrozen)
+	if alreadyFrozen > 0 {
+		return "error", "yield already frozen"
+	}
+
+	// Write value into existing unfrozen yield slot (created at pour or respawn time)
+	res, uerr := db.Exec(
+		"UPDATE yields SET value_text = ? WHERE cell_id = ? AND field_name = ? AND is_frozen = FALSE",
+		value, cellID, fieldName)
+	if uerr != nil {
+		return "error", fmt.Sprintf("update yield: %v", uerr)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// No unfrozen slot exists — create one (backward compat with old programs)
+		mustExecDB(db,
+			"INSERT INTO yields (id, cell_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, FALSE, NULL)",
+			cellID, fieldName, value)
+	}
 
 	// Check deterministic oracles
 	var detCount int
@@ -1217,22 +1234,52 @@ func replReleaseAll(db *sql.DB, pistonID, reason string) {
 // replRespawnStem replaces a frozen stem cell with a fresh declared copy.
 // Only respawns "perpetual" stem cells (like eval-one). Iteration-expanded
 // stem cells (name-1, name-2, etc.) are NOT respawned — they stay frozen.
+// replRespawnStem creates a new frame for a frozen stem cell so it can
+// be re-evaluated. The cell row, its oracles, givens, and frozen yields
+// all stay untouched (append-only). Only a new frame + fresh yield slots
+// are inserted. The readiness check sees the new frame's unfrozen yields
+// and treats the cell as ready.
+//
+// Iteration-expanded stem cells (name-1, name-2, etc.) are NOT respawned.
 func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
 	// Don't respawn iteration cells (name ends in -N where N is numeric)
 	if isIterationCell(cellName) {
 		return
 	}
 
-	// Read the body and yield field names from the frozen cell
-	var body sql.NullString
-	if err := db.QueryRow("SELECT body FROM cells WHERE id = ?", frozenID).Scan(&body); err != nil {
-		log.Printf("WARN: respawn %s: read body: %v", cellName, err)
+	// Find current max generation for this cell name
+	var maxGen int
+	err := db.QueryRow(
+		"SELECT COALESCE(MAX(generation), -1) FROM frames WHERE program_id = ? AND cell_name = ?",
+		progID, cellName).Scan(&maxGen)
+	if err != nil {
+		log.Printf("WARN: respawn %s: read max gen: %v", cellName, err)
+		return
+	}
+	nextGen := maxGen + 1
+
+	// INSERT new frame at gen+1
+	var frameID string
+	db.QueryRow("SELECT CONCAT('f-', ?, '-', ?)", frozenID, nextGen).Scan(&frameID)
+	if err := execDB(db,
+		"INSERT INTO frames (id, cell_name, program_id, generation) VALUES (?, ?, ?, ?)",
+		frameID, cellName, progID, nextGen); err != nil {
+		log.Printf("WARN: respawn %s: insert frame: %v", cellName, err)
 		return
 	}
 
+	// Reset cell state back to declared so it can be picked up again.
+	// The cell row is immutable in terms of definition (body, givens,
+	// oracles) but state must flip back to declared for the eval loop.
+	mustExecDB(db,
+		"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
+		frozenID)
+
+	// Create fresh (unfrozen) yield slots for the new frame.
+	// Read yield field names from the existing frozen yields.
 	var yieldFields []string
-	rows, err := db.Query("SELECT field_name FROM yields WHERE cell_id = ?", frozenID)
-	if err == nil {
+	rows, qerr := db.Query("SELECT DISTINCT field_name FROM yields WHERE cell_id = ?", frozenID)
+	if qerr == nil {
 		for rows.Next() {
 			var f string
 			rows.Scan(&f)
@@ -1241,29 +1288,15 @@ func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
 		rows.Close()
 	}
 
-	// Delete frozen cell (all FK children first: oracles, givens, yields)
-	mustExecDB(db, "DELETE FROM oracles WHERE cell_id = ?", frozenID)
-	mustExecDB(db, "DELETE FROM givens WHERE cell_id = ?", frozenID)
-	mustExecDB(db, "DELETE FROM yields WHERE cell_id = ?", frozenID)
-	mustExecDB(db, "DELETE FROM cells WHERE id = ?", frozenID)
-
-	// Insert fresh declared copy with new ID
-	var newID string
-	db.QueryRow("SELECT CONCAT(?, '-', SUBSTR(MD5(RAND()), 1, 8))", progID[:min(8, len(progID))]).Scan(&newID)
-
-	mustExecDB(db,
-		"INSERT INTO cells (id, program_id, name, body_type, body, state) VALUES (?, ?, ?, 'stem', ?, 'declared')",
-		newID, progID, cellName, body.String)
-
 	for _, f := range yieldFields {
 		var yID string
 		db.QueryRow("SELECT CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8))").Scan(&yID)
 		mustExecDB(db,
 			"INSERT INTO yields (id, cell_id, field_name) VALUES (?, ?, ?)",
-			yID, newID, f)
+			yID, frozenID, f)
 	}
 
-	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: respawn stem %s", cellName))
+	mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: respawn stem %s (gen %d)", cellName, nextGen))
 }
 
 // isIterationCell returns true if the cell name ends in -N (numeric suffix).

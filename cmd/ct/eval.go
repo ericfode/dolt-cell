@@ -139,31 +139,22 @@ type readyCellResult struct {
 // modelHint filters by model_hint (empty = any, matching NULL or equal).
 func findReadyCell(db *sql.DB, progID string, excludeProgram string, modelHint string) (*readyCellResult, error) {
 	readySQL := `
-		SELECT c.id, c.program_id, c.name, c.body, c.body_type, c.model_hint
-		FROM cells c
-		WHERE c.state = 'declared'
-		  AND c.id NOT IN (SELECT cell_id FROM cell_claims)
-		  AND (
-		    SELECT COUNT(*) FROM givens g
-		    JOIN cells src ON src.program_id = c.program_id AND src.name = g.source_cell
-		    LEFT JOIN yields y ON y.cell_id = src.id AND y.field_name = g.source_field AND y.is_frozen = 1
-		    WHERE g.cell_id = c.id
-		      AND g.is_optional = FALSE
-		      AND y.id IS NULL
-		  ) = 0`
+		SELECT rc.id, rc.program_id, rc.name, rc.body, rc.body_type, rc.model_hint
+		FROM ready_cells rc
+		WHERE rc.id NOT IN (SELECT cell_id FROM cell_claims)`
 
 	var queryArgs []interface{}
 
 	if progID != "" {
-		readySQL += " AND c.program_id = ?"
+		readySQL += " AND rc.program_id = ?"
 		queryArgs = append(queryArgs, progID)
 	}
 	if excludeProgram != "" {
-		readySQL += " AND c.program_id != ?"
+		readySQL += " AND rc.program_id != ?"
 		queryArgs = append(queryArgs, excludeProgram)
 	}
 	if modelHint != "" {
-		readySQL += " AND (c.model_hint IS NULL OR c.model_hint = ?)"
+		readySQL += " AND (rc.model_hint IS NULL OR rc.model_hint = ?)"
 		queryArgs = append(queryArgs, modelHint)
 	}
 	readySQL += " LIMIT 1"
@@ -816,6 +807,11 @@ type evalStepResult struct {
 // scans ALL programs (watch mode). modelHint filters by model_hint when set.
 // Returns the action and cell info.
 func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalStepResult {
+	// Reap stale claims (2-minute TTL) — prevents dead pistons from blocking the DAG forever.
+	db.Exec(`UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL
+		WHERE state = 'computing' AND computing_since < NOW() - INTERVAL 2 MINUTE`)
+	db.Exec(`DELETE FROM cell_claims WHERE claimed_at < NOW() - INTERVAL 2 MINUTE`)
+
 	// Single-program mode: check if that program is complete
 	// Stem cells are excluded: formal model says programComplete only checks non-stem cells
 	if progID != "" {

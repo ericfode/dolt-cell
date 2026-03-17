@@ -90,13 +90,16 @@ CREATE TABLE IF NOT EXISTS trace (
 -- 2. Multi-piston claiming table
 -- ---------------------------------------------------------------------------
 
--- Atomic cell claiming: first piston to INSERT wins (PRIMARY KEY constraint).
+-- Atomic frame claiming: first piston to INSERT wins (UNIQUE constraint on frame_id).
+-- Matches formal claimMutex (I6): at most one claim per frame.
 -- Dolt has no SELECT FOR UPDATE, so this provides atomic claiming via INSERT.
 CREATE TABLE IF NOT EXISTS cell_claims (
     cell_id    VARCHAR(255) NOT NULL,
+    frame_id   VARCHAR(64) NOT NULL COMMENT 'Frame being claimed (formal: ClaimData.frameId)',
     piston_id  VARCHAR(255) NOT NULL,
     claimed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (cell_id),
+    UNIQUE INDEX idx_cell_claims_frame (frame_id),
     INDEX idx_cell_claims_piston (piston_id),
     INDEX idx_cell_claims_time (claimed_at)
 );

@@ -826,7 +826,9 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 		}
 	}
 
-	// Find and claim a ready cell (atomic via INSERT IGNORE)
+	// Find and claim a ready cell with frame-level mutex (formal: claimMutex I6).
+	// The formal model requires: frame exists, is ready, and not already claimed.
+	// See Retort.lean claimValid and Claims.lean claimStep.
 	for attempt := 0; attempt < 50; attempt++ {
 		rc, err := findReadyCell(db, progID, "", modelHint)
 		if err != nil {
@@ -835,16 +837,28 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 
 		pid := rc.progID
 
-		// Atomic claim
+		// Ensure frame exists before claiming (stem cells don't get gen-0 at pour time).
+		// Formal: claimValid requires ∃ f ∈ r.frames, f.id = cd.frameId.
+		ensureFrameForCell(db, rc.progID, rc.cellName, rc.cellID)
+
+		// Resolve frame ID (formal: ClaimData.frameId)
+		frameID := latestFrameID(db, rc.progID, rc.cellName)
+		if frameID == "" {
+			continue // no frame — cannot satisfy claimValid
+		}
+
+		// Atomic frame-level claim (formal: claimMutex — at most one claim per frame).
+		// INSERT IGNORE with UNIQUE(frame_id) provides the mutex guarantee.
+		// Matches Claims.lean claimStep: `if s.holder fid |>.isNone then ...`
 		res, err := db.Exec(
-			"INSERT IGNORE INTO cell_claims (cell_id, piston_id, claimed_at) VALUES (?, ?, NOW())",
-			rc.cellID, pistonID)
+			"INSERT IGNORE INTO cell_claims (cell_id, frame_id, piston_id, claimed_at) VALUES (?, ?, ?, NOW())",
+			rc.cellID, frameID, pistonID)
 		if err != nil {
 			continue
 		}
 		n, _ := res.RowsAffected()
 		if n == 0 {
-			continue
+			continue // frame already claimed — claimValid failed (frameClaim not isNone)
 		}
 
 		// Ensure frame exists for this cell (idempotent — gen-0 created at pour time)
@@ -894,6 +908,9 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				mustExecDB(db,
 					"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'Hard cell: literal value', NOW())",
 					rc.cellID)
+				// Claim completion audit trail (frame-level)
+				db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'completed')",
+					frameID, pistonID)
 				mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "cell: freeze hard cell "+rc.cellName)
 
 			} else if strings.HasPrefix(rc.body, "sql:") {
@@ -1098,9 +1115,9 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			"UPDATE cells SET state = 'frozen', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
 			cellID)
 
-		// Get piston before deleting claim
-		var claimPiston string
-		db.QueryRow("SELECT piston_id FROM cell_claims WHERE cell_id = ?", cellID).Scan(&claimPiston)
+		// Get piston and frame_id before deleting claim (formal: freeze filters claims by frameId)
+		var claimPiston, claimFrameID string
+		db.QueryRow("SELECT piston_id, frame_id FROM cell_claims WHERE cell_id = ?", cellID).Scan(&claimPiston, &claimFrameID)
 		mustExecDB(db, "DELETE FROM cell_claims WHERE cell_id = ?", cellID)
 		if claimPiston != "" {
 			mustExecDB(db,
@@ -1112,12 +1129,16 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'All yields frozen', NOW())",
 			cellID)
 
-		// Record bindings + claim completion (v2 frame model)
+		// Record bindings + claim completion (frame-level, matching formal model)
 		// Ensure frame exists before recording bindings (idempotent safety net)
 		ensureFrameForCell(db, progID, cellName, cellID)
 		recordBindings(db, progID, cellName, cellID)
 		if claimPiston != "" {
-			frameID := latestFrameID(db, progID, cellName)
+			// Use frame_id from claim if available, fallback to lookup
+			frameID := claimFrameID
+			if frameID == "" {
+				frameID = latestFrameID(db, progID, cellName)
+			}
 			if frameID != "" {
 				db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'completed')",
 					frameID, claimPiston)
@@ -1277,20 +1298,28 @@ func bottomCell(db *sql.DB, progID, cellName, cellID, reason string) {
 //
 // reason: "failure" | "timeout" | "interrupt" — why the claim is being released.
 func replRelease(db *sql.DB, cellID, pistonID, reason string) {
-	// 1. Delete the claim (formal: filter out matching frameId)
+	// 1. Get frame_id before deleting claim (formal: release filters by frameId)
+	var frameID string
+	db.QueryRow("SELECT frame_id FROM cell_claims WHERE cell_id = ? AND piston_id = ?",
+		cellID, pistonID).Scan(&frameID)
+
+	// 2. Delete the claim (formal: r.claims.filter (fun c => c.frameId != rd.frameId))
 	mustExecDB(db,
 		"DELETE FROM cell_claims WHERE cell_id = ? AND piston_id = ?",
 		cellID, pistonID)
 
-	// 2. Reset cell state to declared (undo the computing transition)
+	// 3. Reset cell state to declared (undo the computing transition)
 	mustExecDB(db,
 		"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE id = ? AND state = 'computing'",
 		cellID)
 
-	// 3. Audit trail: claim_log
-	var cellName, progID string
-	db.QueryRow("SELECT name, program_id FROM cells WHERE id = ?", cellID).Scan(&cellName, &progID)
-	frameID := latestFrameID(db, progID, cellName)
+	// 4. Audit trail: claim_log (frame-level, matching formal model)
+	if frameID == "" {
+		// Fallback: look up frame from cell metadata (for pre-migration claims)
+		var cellName, progID string
+		db.QueryRow("SELECT name, program_id FROM cells WHERE id = ?", cellID).Scan(&cellName, &progID)
+		frameID = latestFrameID(db, progID, cellName)
+	}
 	if frameID != "" {
 		db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'released')",
 			frameID, pistonID)

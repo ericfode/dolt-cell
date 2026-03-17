@@ -366,6 +366,130 @@ cell processor (stem)
 	t.Logf("✓ e2e lazy stem spawn: processor did not respawn (no new data), then respawned (new data)")
 }
 
+// TestThawCascading tests that ct thaw resets a cell and all its transitive
+// dependents to declared state with gen+1 frames, while preserving frozen
+// yields from prior generations (append-only).
+func TestThawCascading(t *testing.T) {
+	dsn := os.Getenv("RETORT_DSN")
+	if dsn == "" {
+		t.Skip("RETORT_DSN not set — skipping e2e test (needs live Dolt)")
+	}
+
+	db, err := sql.Open("mysql", dsn+"?multiStatements=true&parseTime=true&tls=false")
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+
+	progID := "e2e-thaw-test"
+
+	// 3-cell chain: A -> B -> C
+	// A is a hard literal, B depends on A, C depends on B.
+	cellText := `cell A
+  yield value = "alpha"
+
+cell B
+  given A.value
+  yield value = "bravo"
+
+cell C
+  given B.value
+  yield value = "charlie"
+`
+
+	// Clean up from previous runs
+	resetProgram(db, progID)
+
+	// Parse and pour
+	cells := mustParse(t, cellText)
+	if len(cells) != 3 {
+		t.Fatalf("expected 3 cells, got %d", len(cells))
+	}
+
+	sqlText := cellsToSQL(progID, cells)
+	if _, err := db.Exec(sqlText); err != nil {
+		if !contains(err.Error(), "nothing to commit") {
+			t.Fatalf("pour SQL: %v", err)
+		}
+	}
+	ensureFrames(db, progID)
+
+	// Manually freeze all three cells (simulate completed evaluation)
+	for _, name := range []string{"A", "B", "C"} {
+		var cellID string
+		db.QueryRow("SELECT id FROM cells WHERE program_id = ? AND name = ?", progID, name).Scan(&cellID)
+		if cellID == "" {
+			t.Fatalf("cell %s not found", name)
+		}
+		mustExecDB(db, "UPDATE cells SET state = 'frozen' WHERE id = ?", cellID)
+		mustExecDB(db, "UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW() WHERE cell_id = ?",
+			name+"-val", cellID)
+	}
+	mustExecDB(db, "CALL DOLT_COMMIT('-Am', 'test: freeze all cells for thaw test')")
+
+	// Verify all frozen
+	var frozenCount int
+	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ? AND state = 'frozen'", progID).Scan(&frozenCount)
+	if frozenCount != 3 {
+		t.Fatalf("expected 3 frozen cells before thaw, got %d", frozenCount)
+	}
+
+	// Count gen-0 frames before thaw
+	var gen0Frames int
+	db.QueryRow("SELECT COUNT(*) FROM frames WHERE program_id = ? AND generation = 0", progID).Scan(&gen0Frames)
+	if gen0Frames != 3 {
+		t.Fatalf("expected 3 gen-0 frames, got %d", gen0Frames)
+	}
+
+	// Thaw A — should cascade to B and C
+	cmdThaw(db, progID, "A")
+
+	// Verify: all three cells should be declared (not frozen)
+	var declaredCount int
+	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ? AND state = 'declared'", progID).Scan(&declaredCount)
+	if declaredCount != 3 {
+		t.Errorf("expected 3 declared cells after thaw, got %d", declaredCount)
+	}
+
+	// Verify: all three should have gen-1 frames
+	var gen1Frames int
+	db.QueryRow("SELECT COUNT(*) FROM frames WHERE program_id = ? AND generation = 1", progID).Scan(&gen1Frames)
+	if gen1Frames != 3 {
+		t.Errorf("expected 3 gen-1 frames after thaw, got %d", gen1Frames)
+	}
+
+	// Verify: gen-0 frames still exist (append-only)
+	db.QueryRow("SELECT COUNT(*) FROM frames WHERE program_id = ? AND generation = 0", progID).Scan(&gen0Frames)
+	if gen0Frames != 3 {
+		t.Errorf("gen-0 frames should be preserved (append-only), got %d", gen0Frames)
+	}
+
+	// Verify: frozen yields from gen-0 still exist
+	var frozenYields int
+	db.QueryRow(`SELECT COUNT(*) FROM yields y
+		JOIN cells c ON c.id = y.cell_id
+		WHERE c.program_id = ? AND y.is_frozen = TRUE`, progID).Scan(&frozenYields)
+	if frozenYields < 3 {
+		t.Errorf("expected at least 3 frozen yields from gen-0 preserved, got %d", frozenYields)
+	}
+
+	// Verify: fresh (unfrozen) yield slots exist for gen-1 frames
+	var freshYields int
+	db.QueryRow(`SELECT COUNT(*) FROM yields y
+		JOIN frames f ON f.id = y.frame_id
+		WHERE f.program_id = ? AND f.generation = 1 AND y.is_frozen = FALSE`, progID).Scan(&freshYields)
+	if freshYields < 3 {
+		t.Errorf("expected at least 3 fresh yield slots for gen-1 frames, got %d", freshYields)
+	}
+
+	// Cleanup
+	resetProgram(db, progID)
+	t.Logf("thaw cascading: A thawed -> B, C cascaded; gen-0 preserved; gen-1 frames + fresh yields created")
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }

@@ -30,6 +30,7 @@ Usage:
   ct yields <program-id>                              Show frozen yields
   ct history <program-id>                             Show execution history
   ct graph <program-id>                               Show DAG (dependency graph from bindings)
+  ct thaw <program-id> <cell>                          Thaw cell + transitive dependents (gen N+1)
   ct reset <program-id>                               Reset program
 
 The piston is YOU (the LLM session using this tool) or a polecat you sling to.
@@ -142,6 +143,9 @@ func main() {
 	case "graph":
 		need(args, 1, "ct graph <program-id>")
 		cmdGraph(db, args[0])
+	case "thaw":
+		need(args, 2, "ct thaw <program-id> <cell>")
+		cmdThaw(db, args[0], args[1])
 	case "reset":
 		need(args, 1, "ct reset <program-id>")
 		cmdReset(db, args[0])

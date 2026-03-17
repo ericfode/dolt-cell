@@ -18,12 +18,12 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 	}
 	fmt.Printf("Pouring %s from %s (%d bytes)...\n", name, cellFile, len(data))
 
-	// Auto-reset if program already exists (idempotent pour)
+	// Reject if program already has cells — pour is additive (formal: cellsPreserved).
+	// Destructive reset must be explicit: ct reset <program-id>
 	var existing int
 	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&existing)
 	if existing > 0 {
-		resetProgram(db, name)
-		fmt.Printf("  (reset %d existing cells)\n", existing)
+		fatal("program %q already has %d cells — pour is additive, not destructive.\n  To overwrite, first run: ct reset %s", name, existing, name)
 	}
 
 	// Phase B: deterministic parser (instant, no LLM)

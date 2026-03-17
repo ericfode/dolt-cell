@@ -17,6 +17,7 @@ import (
 // the resolved prompt and stop — the piston (you) evaluates and calls ct submit.
 func cmdRun(db *sql.DB, progID string) {
 	pistonID := genPistonID()
+	hardSQLFails := map[string]int{} // track hard SQL cell failures to prevent infinite loops
 	for {
 		mustExec(db, "SET @@dolt_transaction_commit = 0")
 		rows, err := db.Query("CALL cell_eval_step(?, ?)", progID, pistonID)
@@ -57,12 +58,17 @@ func cmdRun(db *sql.DB, progID string) {
 				var result string
 				err := db.QueryRow(sqlQuery).Scan(&result)
 				if err != nil {
-					fmt.Printf("  ✗ %s SQL error: %v\n", cellName.String, err)
-					// Bottom the cell — SQL errors are deterministic and won't resolve on retry
-					bottomCell(db, progID, cellName.String, cellID.String, fmt.Sprintf("sql error: %v", err))
-					mustExec(db, "CALL DOLT_COMMIT('-Am', ?)",
-						fmt.Sprintf("cell: bottom %s (SQL error)", cellName.String))
-					fmt.Printf("  ⊥ %s — bottomed (SQL error)\n", cellName.String)
+					hardSQLFails[cellID.String]++
+					fmt.Printf("  ✗ %s SQL error (attempt %d/3): %v\n", cellName.String, hardSQLFails[cellID.String], err)
+					if hardSQLFails[cellID.String] >= 3 {
+						fmt.Printf("  ⊥ %s — bottomed after 3 SQL failures\n", cellName.String)
+						bottomCell(db, progID, cellName.String, cellID.String,
+							fmt.Sprintf("hard SQL failed 3x: %v", err))
+						mustExec(db, "CALL DOLT_COMMIT('-Am', ?)",
+							fmt.Sprintf("cell: bottom hard SQL cell %s after 3 failures", cellName.String))
+					} else {
+						mustExec(db, "UPDATE cells SET state = 'declared' WHERE id = ?", cellID.String)
+					}
 					continue
 				}
 				fmt.Printf("  ■ %s = %s (sql)\n", cellName.String, trunc(result, 60))
@@ -928,17 +934,22 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				yields := getYieldFields(db, pid, rc.cellName)
 				var result string
 				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
-					fmt.Printf("  ✗ %s SQL error: %v\n", rc.cellName, err)
-					// Bottom the cell — SQL errors are deterministic and won't resolve on retry
-					bottomCell(db, pid, rc.cellName, rc.cellID, fmt.Sprintf("sql error: %v", err))
-					mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
-						fmt.Sprintf("cell: bottom %s (SQL error)", rc.cellName))
-					fmt.Printf("  ⊥ %s — bottomed (SQL error)\n", rc.cellName)
-					return evalStepResult{
-						action: "evaluated", progID: pid,
-						cellID: rc.cellID, cellName: rc.cellName,
-						body: rc.body, bodyType: rc.bodyType,
+					// Count prior failures from trace to detect repeated errors
+					var failCount int
+					db.QueryRow("SELECT COUNT(*) FROM trace WHERE cell_id = ? AND event_type = 'released' AND detail LIKE '%failure%'",
+						rc.cellID).Scan(&failCount)
+					failCount++ // include this attempt
+					fmt.Printf("  ✗ %s SQL error (attempt %d/3): %v\n", rc.cellName, failCount, err)
+					if failCount >= 3 {
+						fmt.Printf("  ⊥ %s — bottomed after 3 SQL failures\n", rc.cellName)
+						bottomCell(db, pid, rc.cellName, rc.cellID,
+							fmt.Sprintf("hard SQL failed 3x: %v", err))
+						mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+							fmt.Sprintf("cell: bottom hard SQL cell %s after 3 failures", rc.cellName))
+					} else {
+						replRelease(db, rc.cellID, pistonID, "failure")
 					}
+					continue
 				}
 				for _, y := range yields {
 					replSubmit(db, pid, rc.cellName, y, result)

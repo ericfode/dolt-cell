@@ -857,6 +857,20 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				frameID, pistonID)
 		}
 
+		// Bottom propagation (formal: inputsPoisoned → errorOutputs)
+		// If any non-optional dependency is bottomed, this cell bottoms too.
+		if hasBottomedDependency(db, rc.progID, rc.cellID) {
+			bottomCell(db, rc.progID, rc.cellName, rc.cellID, "bottom: dependency error")
+			mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+				fmt.Sprintf("cell: bottom propagation %s", rc.cellName))
+			fmt.Printf("  ⊥ %s — bottom propagation (poisoned input)\n", rc.cellName)
+			return evalStepResult{
+				action: "evaluated", progID: pid,
+				cellID: rc.cellID, cellName: rc.cellName,
+				body: rc.body, bodyType: rc.bodyType,
+			}
+		}
+
 		// Claimed! Handle hard vs soft
 		if rc.bodyType == "hard" {
 			mustExecDB(db,
@@ -1192,23 +1206,63 @@ func checkGuardSkip(db *sql.DB, progID, cellName, cellID string) {
 			continue // not a numbered iteration (might be a judge)
 		}
 		if sibN > currentN {
-			mustExecDB(db, "UPDATE cells SET state = 'bottom' WHERE id = ?", sibID)
-			mustExecDB(db, "UPDATE yields SET is_bottom = TRUE WHERE cell_id = ?", sibID)
+			ensureFrameForCell(db, progID, sibName, sibID)
+			bottomCell(db, progID, sibName, sibID, "bottom: guard skip")
 			bottomed++
 		}
 	}
 
 	if bottomed > 0 {
-		// Also bottom the judges of bottomed iterations
+		// Also bottom the judges of bottomed iterations (with frozen yields for propagation)
 		for n := currentN + 1; n <= currentN+bottomed; n++ {
 			pattern := fmt.Sprintf("%s-%d-judge-%%", baseName, n)
-			db.Exec("UPDATE cells SET state = 'bottom' WHERE program_id = ? AND name LIKE ? AND state = 'declared'",
+			judgeRows, _ := db.Query(
+				"SELECT id, name FROM cells WHERE program_id = ? AND name LIKE ? AND state = 'declared'",
 				progID, pattern)
+			if judgeRows != nil {
+				for judgeRows.Next() {
+					var jID, jName string
+					judgeRows.Scan(&jID, &jName)
+					ensureFrameForCell(db, progID, jName, jID)
+					bottomCell(db, progID, jName, jID, "bottom: guard skip")
+				}
+				judgeRows.Close()
+			}
 		}
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
 			fmt.Sprintf("cell: guard satisfied at %s, bottomed %d remaining iterations", cellName, bottomed))
 		fmt.Printf("  ⊥ guard satisfied at %s — %d iterations skipped\n", cellName, bottomed)
 	}
+}
+
+// hasBottomedDependency checks if any non-optional given of a cell comes from
+// a source cell in 'bottom' state. This implements the formal model's
+// inputsPoisoned check (Denotational.lean: inputsPoisoned).
+func hasBottomedDependency(db *sql.DB, progID, cellID string) bool {
+	var count int
+	db.QueryRow(`
+		SELECT COUNT(*) FROM givens g
+		JOIN cells src ON src.program_id = ? AND src.name = g.source_cell
+		WHERE g.cell_id = ? AND g.is_optional = FALSE AND src.state = 'bottom'`,
+		progID, cellID).Scan(&count)
+	return count > 0
+}
+
+// bottomCell marks a cell as bottom and freezes its yields with error values.
+// This implements the formal model's bottom propagation (Denotational.lean:
+// errorOutputs). The cell's yields are marked is_frozen=TRUE and is_bottom=TRUE
+// with a sentinel value, so downstream cells see them as "resolved" and can
+// themselves propagate the bottom if needed.
+func bottomCell(db *sql.DB, progID, cellName, cellID, reason string) {
+	frameID := latestFrameID(db, progID, cellName)
+	mustExecDB(db, "UPDATE cells SET state = 'bottom' WHERE id = ?", cellID)
+	mustExecDB(db,
+		"UPDATE yields SET is_bottom = TRUE, is_frozen = TRUE, value_text = ?, frozen_at = NOW(), frame_id = COALESCE(frame_id, ?) WHERE cell_id = ?",
+		reason, frameID, cellID)
+	mustExecDB(db, "DELETE FROM cell_claims WHERE cell_id = ?", cellID)
+	mustExecDB(db,
+		"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'bottom', ?, NOW())",
+		cellID, reason)
 }
 
 // replRelease removes a piston's claim on a cell, resetting the cell to

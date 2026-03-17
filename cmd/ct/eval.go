@@ -283,12 +283,16 @@ func submitYieldDirect(db *sql.DB, progID, cellName, field, value string) {
 }
 
 // recordBindings writes binding edges for a frozen cell: which frames it read from.
+// Enforces formal model invariants:
+//   - I10 generationOrdered: same-cell bindings must go backward in generation
+//   - I11 bindingsPointToFrozen: producer frames must be fully frozen
 func recordBindings(db *sql.DB, progID, cellName, cellID string) {
-	// Find the consumer frame
+	// Find the consumer frame and its generation
 	var consumerFrame string
+	var consumerGen int
 	err := db.QueryRow(
-		"SELECT id FROM frames WHERE program_id = ? AND cell_name = ? ORDER BY generation DESC LIMIT 1",
-		progID, cellName).Scan(&consumerFrame)
+		"SELECT id, generation FROM frames WHERE program_id = ? AND cell_name = ? ORDER BY generation DESC LIMIT 1",
+		progID, cellName).Scan(&consumerFrame, &consumerGen)
 	if err != nil {
 		return // no frame yet (possible for old .sql-poured programs)
 	}
@@ -306,18 +310,37 @@ func recordBindings(db *sql.DB, progID, cellName, cellID string) {
 		var srcCell, srcField string
 		rows.Scan(&srcCell, &srcField)
 
-		// Find the producer frame (latest frozen frame for source cell)
-		var producerFrame string
+		// I11 (bindingsPointToFrozen): verify ALL yields for the source cell are frozen.
+		// The formal model requires frameStatus(producerFrame) = frozen, which maps to
+		// all yields on the producer cell being frozen in the implementation.
+		var unfrozenCount int
 		err := db.QueryRow(`
-			SELECT f.id FROM frames f
-			JOIN yields y ON y.cell_id IN (
-				SELECT c.id FROM cells c WHERE c.program_id = ? AND c.name = ?
-			)
-			WHERE f.program_id = ? AND f.cell_name = ?
-			  AND y.field_name = ? AND y.is_frozen = 1
-			ORDER BY f.generation DESC LIMIT 1`,
-			progID, srcCell, progID, srcCell, srcField).Scan(&producerFrame)
+			SELECT COUNT(*) FROM yields
+			WHERE cell_id IN (SELECT id FROM cells WHERE program_id = ? AND name = ?)
+			  AND is_frozen = FALSE`,
+			progID, srcCell).Scan(&unfrozenCount)
+		if err != nil || unfrozenCount > 0 {
+			log.Printf("I11 bindingsPointToFrozen: skipping binding from %s.%s — %d unfrozen yield(s)", srcCell, srcField, unfrozenCount)
+			continue
+		}
+
+		// Find the producer frame and its generation
+		var producerFrame string
+		var producerGen int
+		err = db.QueryRow(`
+			SELECT id, generation FROM frames
+			WHERE program_id = ? AND cell_name = ?
+			ORDER BY generation DESC LIMIT 1`,
+			progID, srcCell).Scan(&producerFrame, &producerGen)
 		if err != nil {
+			continue
+		}
+
+		// I10 (generationOrdered): for same-cell bindings (stem cells reading their own
+		// previous generation), the producer generation must be strictly less than the
+		// consumer generation. This prevents cycles in the DAG.
+		if srcCell == cellName && producerGen >= consumerGen {
+			log.Printf("I10 generationOrdered: skipping same-cell binding %s gen %d -> gen %d (producer must be < consumer)", cellName, producerGen, consumerGen)
 			continue
 		}
 

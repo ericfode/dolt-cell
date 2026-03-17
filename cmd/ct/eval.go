@@ -865,7 +865,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 		ensureFrameForCell(db, rc.progID, rc.cellName, rc.cellID)
 
 		// Log claim (v2 frame model audit trail)
-		frameID := latestFrameID(db, rc.progID, rc.cellName)
+		frameID = latestFrameID(db, rc.progID, rc.cellName)
 		if frameID != "" {
 			db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'claimed')",
 				frameID, pistonID)

@@ -22,7 +22,7 @@ cell verify-product
   sql: SELECT CASE
        WHEN CAST(JSON_EXTRACT(CAST(f.value_text AS JSON), '$[0]') AS SIGNED)
           * CAST(JSON_EXTRACT(CAST(f.value_text AS JSON), '$[1]') AS SIGNED)
-          = CAST(n.value_text AS SIGNED)
+          = CAST(TRIM(n.value_text) AS SIGNED)
        THEN 'VERIFIED'
        ELSE 'FAILED'
      END

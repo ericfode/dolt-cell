@@ -58,9 +58,11 @@ func cmdRun(db *sql.DB, progID string) {
 				err := db.QueryRow(sqlQuery).Scan(&result)
 				if err != nil {
 					fmt.Printf("  ✗ %s SQL error: %v\n", cellName.String, err)
-					// Bottom the cell — SQL errors are deterministic and won't self-heal
+					// Bottom the cell — SQL errors are deterministic and won't resolve on retry
 					bottomCell(db, progID, cellName.String, cellID.String, fmt.Sprintf("sql error: %v", err))
-					mustExec(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: bottom %s (sql error)", cellName.String))
+					mustExec(db, "CALL DOLT_COMMIT('-Am', ?)",
+						fmt.Sprintf("cell: bottom %s (SQL error)", cellName.String))
+					fmt.Printf("  ⊥ %s — bottomed (SQL error)\n", cellName.String)
 					continue
 				}
 				fmt.Printf("  ■ %s = %s (sql)\n", cellName.String, trunc(result, 60))
@@ -927,11 +929,16 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				var result string
 				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
 					fmt.Printf("  ✗ %s SQL error: %v\n", rc.cellName, err)
-					// Bottom the cell — SQL errors are deterministic and won't self-heal
+					// Bottom the cell — SQL errors are deterministic and won't resolve on retry
 					bottomCell(db, pid, rc.cellName, rc.cellID, fmt.Sprintf("sql error: %v", err))
 					mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
-						fmt.Sprintf("cell: bottom %s (sql error)", rc.cellName))
-					continue
+						fmt.Sprintf("cell: bottom %s (SQL error)", rc.cellName))
+					fmt.Printf("  ⊥ %s — bottomed (SQL error)\n", rc.cellName)
+					return evalStepResult{
+						action: "evaluated", progID: pid,
+						cellID: rc.cellID, cellName: rc.cellName,
+						body: rc.body, bodyType: rc.bodyType,
+					}
 				}
 				for _, y := range yields {
 					replSubmit(db, pid, rc.cellName, y, result)

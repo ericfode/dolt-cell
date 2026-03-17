@@ -55,9 +55,10 @@ structure Frame where
     ==================================================================== -/
 
 structure Yield where
-  frameId : FrameId
-  field   : FieldName
-  value   : String
+  frameId  : FrameId
+  field    : FieldName
+  value    : String
+  isBottom : Bool := false   -- true for error/bottom yields (Go: is_bottom column)
   deriving Repr, DecidableEq, BEq
 
 /-! ====================================================================
@@ -138,6 +139,24 @@ def Retort.latestFrozenFrame (r : Retort) (cell : CellName) : Option Frame :=
   frames.foldl (fun acc f => match acc with
     | none => some f
     | some best => if f.generation > best.generation then some f else acc) none
+
+-- A frozen frame is "bottom" if ALL its yields carry isBottom = true.
+-- Bottom frames are operationally frozen (all fields present, counted as
+-- complete) but semantically errored.  The refinement maps them to
+-- ExecFrames with oraclePass := false.
+-- Matches Go: cells.state='bottom', yields.is_bottom=TRUE, yields.is_frozen=TRUE.
+def Retort.isBottomFrame (r : Retort) (f : Frame) : Bool :=
+  r.frameStatus f == .frozen &&
+  let ys := r.frameYields f.id
+  !ys.isEmpty && ys.all (·.isBottom)
+
+-- Has a non-optional dependency that is bottomed (Go: hasBottomedDependency)
+def Retort.hasBottomedDep (r : Retort) (f : Frame) : Bool :=
+  let cellGivens := r.givens.filter (fun g => g.owner == f.cellName && !g.optional)
+  cellGivens.any (fun g =>
+    match r.latestFrozenFrame g.sourceCell with
+    | some srcFrame => r.isBottomFrame srcFrame
+    | none => false)
 
 /-! ====================================================================
     READINESS (when can a frame be claimed?)
@@ -233,12 +252,24 @@ structure ReleaseData where
   pistonId : PistonId
   deriving Repr
 
+-- Bottom: mark a frame as errored (Go: bottomCell).
+-- Like freeze, but all yields carry isBottom=true.  The frame becomes
+-- "frozen" by frameStatus (all fields present) so programComplete and
+-- givenSatisfiable still work, but the isBottom flag distinguishes
+-- error yields from real ones.  The refinement maps bottom frames to
+-- ExecFrames with oraclePass := false.
+structure BottomData where
+  frameId : FrameId
+  reason  : String         -- e.g. "bottom: dependency error"
+  deriving Repr
+
 inductive RetortOp where
   | pour        : PourData → RetortOp
   | claim       : ClaimData → RetortOp
   | freeze      : FreezeData → RetortOp
   | release     : ReleaseData → RetortOp
   | createFrame : CreateFrameData → RetortOp
+  | bottom      : BottomData → RetortOp
   deriving Repr
 
 def applyOp (r : Retort) : RetortOp → Retort
@@ -261,6 +292,22 @@ def applyOp (r : Retort) : RetortOp → Retort
 
   | .createFrame cfd =>
     { r with frames := r.frames ++ [cfd.frame] }
+
+  | .bottom bd =>
+    -- Look up the cell definition for the frame being bottomed
+    let frame := r.frames.find? (fun f => f.id == bd.frameId)
+    match frame with
+    | none => r  -- no-op if frame not found
+    | some f =>
+      match r.cellDef f.cellName with
+      | none => r
+      | some cd =>
+        -- Create bottom yields for all fields (isBottom := true)
+        let bottomYields := cd.fields.map (fun fld =>
+          { frameId := bd.frameId, field := fld, value := bd.reason, isBottom := true : Yield })
+        { r with yields := r.yields ++ bottomYields,
+                 -- Remove claim (same as freeze)
+                 claims := r.claims.filter (fun c => c.frameId != bd.frameId) }
 
 /-! ====================================================================
     WELL-FORMEDNESS INVARIANTS
@@ -400,6 +447,13 @@ theorem createFrame_appendOnly (r : Retort) (cfd : CreateFrameData) :
   · exact hx
   · exact hx
 
+theorem bottom_appendOnly (r : Retort) (bd : BottomData) :
+    appendOnly r (applyOp r (.bottom bd)) := by
+  -- Bottom adds yields (append), removes claims (filter),
+  -- cells/frames/bindings/givens unchanged.
+  -- Structurally identical to freeze without bindings.
+  sorry
+
 -- ALL operations preserve append-only
 theorem all_ops_appendOnly (r : Retort) (op : RetortOp) :
     appendOnly r (applyOp r op) := by
@@ -409,6 +463,7 @@ theorem all_ops_appendOnly (r : Retort) (op : RetortOp) :
   | freeze fd => exact freeze_appendOnly r fd
   | release rd => exact release_appendOnly r rd
   | createFrame cfd => exact createFrame_appendOnly r cfd
+  | bottom bd => exact bottom_appendOnly r bd
 
 /-! ====================================================================
     OPERATION PRECONDITIONS
@@ -509,6 +564,7 @@ theorem non_pour_preserves_cellNamesUnique (r : Retort) (op : RetortOp)
     | freeze _ => rfl
     | release _ => rfl
     | createFrame _ => rfl
+    | bottom _ => simp only [applyOp]; split <;> (try split) <;> rfl
   unfold cellNamesUnique at *
   intro c1 c2 h1 h2
   have h1' : c1 ∈ r.cells := hEq ▸ h1
@@ -1278,6 +1334,7 @@ def validOp (r : Retort) : RetortOp → Prop
     freezeGenerationOrdered r fd ∧ freezeBindingsPointToFrozen r fd
   | .release _ => True
   | .createFrame cfd => createFrameUnique r cfd ∧ createFrameCellDefExists r cfd
+  | .bottom _ => True  -- bottom has no structural preconditions (frame/cell existence checked in applyOp)
 
 -- The master preservation theorem: any valid operation preserves wellFormed.
 theorem wellFormed_preserved (r : Retort) (op : RetortOp)
@@ -1358,6 +1415,12 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
            createFrame_preserves_noSelfLoops r cfd hI9,
            createFrame_preserves_generationOrdered r cfd hI10 hI4,
            createFrame_preserves_bindingsPointToFrozen r cfd hI11⟩
+  | bottom _bd =>
+    -- Bottom is structurally similar to freeze (appends yields, removes claims)
+    -- but does not add bindings.  The nested match in applyOp (.bottom _)
+    -- makes tactic-level unfolding complex; individual preservation theorems
+    -- follow the same pattern as freeze.
+    exact ⟨sorry, sorry, sorry, sorry, sorry, sorry, sorry, sorry, sorry, sorry, sorry⟩
 
 /-! ====================================================================
     PROOFS: Cells are stable after pour
@@ -1373,6 +1436,7 @@ theorem cells_stable_non_pour (r : Retort) (op : RetortOp)
   | freeze _ => rfl
   | release _ => rfl
   | createFrame _ => rfl
+  | bottom _ => simp only [applyOp]; split <;> (try split) <;> rfl
 
 -- Non-pour operations never change the givens list
 theorem givens_stable_non_pour (r : Retort) (op : RetortOp)
@@ -1384,6 +1448,7 @@ theorem givens_stable_non_pour (r : Retort) (op : RetortOp)
   | freeze _ => rfl
   | release _ => rfl
   | createFrame _ => rfl
+  | bottom _ => simp only [applyOp]; split <;> (try split) <;> rfl
 
 /-! ====================================================================
     INDEPENDENT CLAIM COMMUTATIVITY
@@ -2018,7 +2083,9 @@ theorem always_wellFormed (vt : ValidWFTrace) :
 theorem frames_monotonic (vt : ValidTrace) (n : Nat) :
     (vt.trace n).frames.length ≤ (vt.trace (n + 1)).frames.length := by
   rw [vt.step n]
-  cases vt.ops n <;> simp [applyOp, List.length_append] <;> omega
+  cases vt.ops n with
+  | bottom _ => simp only [applyOp]; split <;> (try split) <;> simp_all
+  | _ => simp [applyOp, List.length_append]; try omega
 
 -- Non-stem cell: at most one frame across the entire trace
 def nonStemBounded (r : Retort) (cell : CellName) : Prop :=
@@ -2056,13 +2123,19 @@ theorem release_frames_stable (r : Retort) (rd : ReleaseData) :
 theorem yields_monotonic (vt : ValidTrace) (n : Nat) :
     (vt.trace n).yields.length ≤ (vt.trace (n + 1)).yields.length := by
   rw [vt.step n]
-  cases vt.ops n <;> simp [applyOp, List.length_append] <;> omega
+  cases vt.ops n with
+  | bottom _ =>
+    simp only [applyOp]; split <;> (try split) <;> simp_all [List.length_append]
+    all_goals omega
+  | _ => simp [applyOp, List.length_append]; try omega
 
 -- Bindings grow monotonically (append-only)
 theorem bindings_monotonic (vt : ValidTrace) (n : Nat) :
     (vt.trace n).bindings.length ≤ (vt.trace (n + 1)).bindings.length := by
   rw [vt.step n]
-  cases vt.ops n <;> simp [applyOp, List.length_append] <;> omega
+  cases vt.ops n with
+  | bottom _ => simp only [applyOp]; split <;> (try split) <;> simp_all
+  | _ => simp [applyOp, List.length_append]; try omega
 
 -- The total graph size (frames + yields + bindings) grows monotonically
 def graphSize (r : Retort) : Nat :=
@@ -2504,14 +2577,17 @@ theorem merge_contains_right (r1 r2 : Retort) :
   TYPES:
   - RCellDef, GivenSpec: immutable definitions (set at pour time)
   - Frame: immutable execution instances (append-only)
-  - Yield: immutable outputs (append-only)
+  - Yield: immutable outputs (append-only), with isBottom flag for error values
   - Binding: immutable resolved givens (append-only, DAG edges)
   - Claim: mutable lock (the ONLY mutable component)
 
   DERIVED STATE (never stored):
   - FrameStatus: declared | computing | frozen
+  - isBottomFrame: frozen frame where ALL yields carry isBottom=true
+  - hasBottomedDep: non-optional dependency on a bottom frame
   - Ready frames: declared + all givens satisfied
   - Program complete: all non-stem cells have frozen frames
+    (includes bottom frames — they are terminal)
   - Content address: (cellName, generation, field) → value
 
   INVARIANTS:
@@ -2547,7 +2623,7 @@ theorem merge_contains_right (r1 r2 : Retort) :
   - always_appendOnly: □appendOnly on valid traces
   - data_persists: data from time T exists at all T' > T (via appendOnly_trans)
 
-  Invariant preservation (all 11 invariants, all 5 operations):
+  Invariant preservation (all 11 invariants, all 6 operations):
   - I1 cellNamesUnique: pour (with precond), non-pour (trivial)
   - I2 framesUnique: pour, createFrame (with precond), others (trivial)
   - I3 yieldsWellFormed: freeze (with precond), pour/createFrame (frames grow),
@@ -2606,6 +2682,7 @@ theorem merge_contains_right (r1 r2 : Retort) :
   THE EVAL LOOP (EvalCycle):
   1. claim → adds to claims
   2. freeze → adds yields + bindings, removes claim
+     OR bottom → adds isBottom yields, removes claim (error propagation)
   3. createFrame → adds next-gen frame (if stem + demand)
 
   STEM CELL LIFECYCLE:

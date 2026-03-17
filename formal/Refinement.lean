@@ -61,7 +61,9 @@ def yieldsToEnv (interp : BodyInterp) (ys : List Yield) : Env :=
 
 /-- Convert a single frozen Retort Frame to a denotational ExecFrame.
     The inputs are resolved from the bindings table; the outputs come
-    from the yields. -/
+    from the yields.  Bottom frames (all yields carry isBottom=true)
+    map to ExecFrames with oraclePass := false, matching the
+    denotational model's error propagation via Val.error. -/
 def frameToExecFrame (r : Retort) (interp : BodyInterp) (f : Frame) : ExecFrame :=
   let yieldList := r.frameYields f.id
   let outputs := yieldsToEnv interp yieldList
@@ -73,7 +75,9 @@ def frameToExecFrame (r : Retort) (interp : BodyInterp) (f : Frame) : ExecFrame 
     generation := f.generation
     inputs     := inputs
     outputs    := outputs
-    oraclePass := true  -- frozen frames passed all checks by construction
+    -- Normal frozen frames passed all checks; bottom frames did not.
+    -- Go: cells.state='bottom' → oraclePass=false; cells.state='frozen' → true.
+    oraclePass := !r.isBottomFrame f
   }
 
 /-- The frozen frames of a Retort, in order of appearance. -/
@@ -82,6 +86,8 @@ def Retort.frozenFrames (r : Retort) : List Frame :=
 
 /-- The abstraction function: map a Retort state to a denotational ExecTrace.
     Each frozen frame in the Retort becomes an ExecFrame in the trace.
+    This includes bottom frames (which are frozen with isBottom yields);
+    they map to ExecFrames with oraclePass := false.
     Frames that are declared or computing are not yet part of the trace
     (they represent in-progress computation). -/
 def Retort.toExecTrace (r : Retort) (interp : BodyInterp) : ExecTrace :=

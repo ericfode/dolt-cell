@@ -52,10 +52,11 @@ BEGIN
     DECLARE v_attempts   INT DEFAULT 0;
     DECLARE v_max_attempts INT DEFAULT 50;
 
-    -- Fast path: check if program is complete (all cells frozen)
+    -- Fast path: check if program is complete (all non-stem cells frozen)
     IF NOT EXISTS (
         SELECT 1 FROM cells
         WHERE program_id = p_program_id
+          AND body_type != 'stem'
           AND state NOT IN ('frozen', 'bottom')
     ) THEN
         SELECT 'complete'  AS action,

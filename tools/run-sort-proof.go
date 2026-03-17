@@ -690,10 +690,10 @@ BEGIN
     SET v_prog = p_program_id;
 
     SELECT COUNT(*) INTO v_total_cells
-    FROM cells WHERE program_id = v_prog;
+    FROM cells WHERE program_id = v_prog AND body_type != 'stem';
 
     SELECT COUNT(*) INTO v_frozen_cells
-    FROM cells WHERE program_id = v_prog AND state = 'frozen';
+    FROM cells WHERE program_id = v_prog AND body_type != 'stem' AND state = 'frozen';
 
     IF v_total_cells > 0 AND v_total_cells = v_frozen_cells THEN
         SELECT

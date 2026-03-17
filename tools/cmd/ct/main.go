@@ -2055,10 +2055,11 @@ type evalStepResult struct {
 // scans ALL programs (watch mode). Returns the action and cell info.
 func replEvalStep(db *sql.DB, progID, pistonID string) evalStepResult {
 	// Single-program mode: check if that program is complete
+	// Stem cells are excluded: formal model says programComplete only checks non-stem cells
 	if progID != "" {
 		var remaining int
 		db.QueryRow(
-			"SELECT COUNT(*) FROM cells WHERE program_id = ? AND state NOT IN ('frozen', 'bottom')",
+			"SELECT COUNT(*) FROM cells WHERE program_id = ? AND body_type != 'stem' AND state NOT IN ('frozen', 'bottom')",
 			progID).Scan(&remaining)
 		if remaining == 0 {
 			return evalStepResult{action: "complete", progID: progID}

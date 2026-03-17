@@ -107,9 +107,9 @@ func cmdSubmit(db *sql.DB, progID, cellName, field, value string) {
 	switch result {
 	case "ok":
 		fmt.Printf("■ %s.%s frozen\n", cellName, field)
-		// Check if the program is now complete
+		// Check if the program is now complete (stem cells excluded per formal model)
 		var remaining int
-		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ? AND state NOT IN ('frozen', 'bottom')", progID).Scan(&remaining)
+		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ? AND body_type != 'stem' AND state NOT IN ('frozen', 'bottom')", progID).Scan(&remaining)
 		if remaining == 0 {
 			fmt.Println("COMPLETE")
 			emitCompletionBead(db, progID)
@@ -815,10 +815,11 @@ type evalStepResult struct {
 // Returns the action and cell info.
 func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalStepResult {
 	// Single-program mode: check if that program is complete
+	// Stem cells are excluded: formal model says programComplete only checks non-stem cells
 	if progID != "" {
 		var remaining int
 		db.QueryRow(
-			"SELECT COUNT(*) FROM cells WHERE program_id = ? AND state NOT IN ('frozen', 'bottom')",
+			"SELECT COUNT(*) FROM cells WHERE program_id = ? AND body_type != 'stem' AND state NOT IN ('frozen', 'bottom')",
 			progID).Scan(&remaining)
 		if remaining == 0 {
 			return evalStepResult{action: "complete", progID: progID}

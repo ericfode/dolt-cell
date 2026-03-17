@@ -1046,7 +1046,7 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		// Stem cell respawn: replace frozen stem with fresh declared copy
 		var bodyType string
 		db.QueryRow("SELECT body_type FROM cells WHERE id = ?", cellID).Scan(&bodyType)
-		if bodyType == "stem" && progID == "cell-zero-eval" {
+		if bodyType == "stem" {
 			replRespawnStem(db, progID, cellName, cellID)
 		}
 	}

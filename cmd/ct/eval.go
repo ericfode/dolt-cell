@@ -827,10 +827,14 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 	// Find and claim a ready cell with frame-level mutex (formal: claimMutex I6).
 	// The formal model requires: frame exists, is ready, and not already claimed.
 	// See Retort.lean claimValid and Claims.lean claimStep.
+	failedCells := make(map[string]bool) // track cells that failed this step (e.g. broken SQL)
 	for attempt := 0; attempt < 50; attempt++ {
 		rc, err := findReadyCell(db, progID, "", modelHint)
 		if err != nil {
 			break // no ready cells
+		}
+		if failedCells[rc.cellID] {
+			break // only ready cell already failed — stop retrying
 		}
 
 		pid := rc.progID
@@ -922,6 +926,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				var result string
 				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
 					fmt.Printf("  ✗ %s SQL error: %v\n", rc.cellName, err)
+					failedCells[rc.cellID] = true
 					replRelease(db, rc.cellID, pistonID, "failure")
 					continue
 				}

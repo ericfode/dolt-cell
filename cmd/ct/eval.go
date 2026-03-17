@@ -467,8 +467,7 @@ func cmdNext(db *sql.DB, progID string, wait bool, modelHint string) {
 	var claimedCellID, claimedPistonID string
 	defer func() {
 		if claimedCellID != "" {
-			db.Exec("DELETE FROM cell_claims WHERE cell_id = ? AND piston_id = ?", claimedCellID, claimedPistonID)
-			db.Exec("UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE id = ? AND state = 'computing'", claimedCellID)
+			replRelease(db, claimedCellID, claimedPistonID, "interrupt")
 		}
 	}()
 
@@ -599,10 +598,7 @@ func cmdRepl(db *sql.DB, args []string) {
 	}()
 
 	defer func() {
-		mustExecDB(db,
-			"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE assigned_piston = ? AND state = 'computing'",
-			pistonID)
-		mustExecDB(db, "DELETE FROM cell_claims WHERE piston_id = ?", pistonID)
+		replReleaseAll(db, pistonID, "interrupt")
 		mustExecDB(db, "UPDATE pistons SET status = 'dead' WHERE id = ?", pistonID)
 		fmt.Printf("\n  piston %s deregistered\n", pistonID)
 	}()
@@ -853,10 +849,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				var result string
 				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
 					fmt.Printf("  ✗ %s SQL error: %v\n", rc.cellName, err)
-					mustExecDB(db,
-						"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE id = ?",
-						rc.cellID)
-					mustExecDB(db, "DELETE FROM cell_claims WHERE cell_id = ?", rc.cellID)
+					replRelease(db, rc.cellID, pistonID, "failure")
 					continue
 				}
 				for _, y := range yields {
@@ -1136,6 +1129,65 @@ func checkGuardSkip(db *sql.DB, progID, cellName, cellID string) {
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
 			fmt.Sprintf("cell: guard satisfied at %s, bottomed %d remaining iterations", cellName, bottomed))
 		fmt.Printf("  ⊥ guard satisfied at %s — %d iterations skipped\n", cellName, bottomed)
+	}
+}
+
+// replRelease removes a piston's claim on a cell, resetting the cell to
+// 'declared' so another piston can claim it. This is the Go-native
+// implementation of the formal RetortOp.release operation.
+//
+// The formal spec (Retort.lean) defines release as:
+//   { r with claims := r.claims.filter (fun c => c.frameId != rd.frameId) }
+//
+// It only modifies the claims table — cells, frames, yields, bindings,
+// and givens are all unchanged by release.
+//
+// reason: "failure" | "timeout" | "interrupt" — why the claim is being released.
+func replRelease(db *sql.DB, cellID, pistonID, reason string) {
+	// 1. Delete the claim (formal: filter out matching frameId)
+	mustExecDB(db,
+		"DELETE FROM cell_claims WHERE cell_id = ? AND piston_id = ?",
+		cellID, pistonID)
+
+	// 2. Reset cell state to declared (undo the computing transition)
+	mustExecDB(db,
+		"UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL WHERE id = ? AND state = 'computing'",
+		cellID)
+
+	// 3. Audit trail: claim_log
+	var cellName, progID string
+	db.QueryRow("SELECT name, program_id FROM cells WHERE id = ?", cellID).Scan(&cellName, &progID)
+	frameID := latestFrameID(db, progID, cellName)
+	if frameID != "" {
+		db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'released')",
+			frameID, pistonID)
+	}
+
+	// 4. Trace log
+	mustExecDB(db,
+		"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'released', ?, NOW())",
+		cellID, fmt.Sprintf("Released by piston %s: %s", pistonID, reason))
+}
+
+// replReleaseAll releases all claims held by a piston, resetting their cells
+// to 'declared'. Used during piston shutdown / interrupt cleanup.
+func replReleaseAll(db *sql.DB, pistonID, reason string) {
+	// Find all cells claimed by this piston
+	rows, err := db.Query(
+		"SELECT cell_id FROM cell_claims WHERE piston_id = ?", pistonID)
+	if err != nil {
+		return
+	}
+	var cellIDs []string
+	for rows.Next() {
+		var cid string
+		rows.Scan(&cid)
+		cellIDs = append(cellIDs, cid)
+	}
+	rows.Close()
+
+	for _, cid := range cellIDs {
+		replRelease(db, cid, pistonID, reason)
 	}
 }
 

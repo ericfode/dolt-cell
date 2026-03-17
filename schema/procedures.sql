@@ -163,6 +163,16 @@ BEGIN
 
                 DELETE FROM cell_claims WHERE cell_id = v_cell_id;
 
+                -- claim_log: record completion (formal: claims.filter on freeze)
+                SET @_cl_frame_id = NULL;
+                SELECT id INTO @_cl_frame_id FROM frames
+                 WHERE program_id = p_program_id AND cell_name = v_cell_name
+                 ORDER BY generation DESC LIMIT 1;
+                IF @_cl_frame_id IS NOT NULL THEN
+                    INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action)
+                    VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), @_cl_frame_id, @_es_piston_id, 'completed');
+                END IF;
+
                 UPDATE pistons
                    SET cells_completed = cells_completed + 1,
                        last_heartbeat = NOW()
@@ -199,6 +209,16 @@ BEGIN
                  WHERE id = v_cell_id;
 
                 DELETE FROM cell_claims WHERE cell_id = v_cell_id;
+
+                -- claim_log: record completion (formal: claims.filter on freeze)
+                SET @_cl_frame_id = NULL;
+                SELECT id INTO @_cl_frame_id FROM frames
+                 WHERE program_id = p_program_id AND cell_name = v_cell_name
+                 ORDER BY generation DESC LIMIT 1;
+                IF @_cl_frame_id IS NOT NULL THEN
+                    INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action)
+                    VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), @_cl_frame_id, @_es_piston_id, 'completed');
+                END IF;
 
                 UPDATE pistons
                    SET cells_completed = cells_completed + 1,
@@ -379,6 +399,16 @@ BEGIN
                     -- Clean up claim
                     DELETE FROM cell_claims WHERE cell_id = v_cell_id;
 
+                    -- claim_log: record completion (formal: claims.filter on freeze)
+                    SET @_cl_frame_id = NULL;
+                    SELECT id INTO @_cl_frame_id FROM frames
+                     WHERE program_id = p_program_id AND cell_name = p_cell_name
+                     ORDER BY generation DESC LIMIT 1;
+                    IF @_cl_frame_id IS NOT NULL AND v_piston_id IS NOT NULL THEN
+                        INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action)
+                        VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), @_cl_frame_id, v_piston_id, 'completed');
+                    END IF;
+
                     -- Update piston stats
                     IF v_piston_id IS NOT NULL THEN
                         UPDATE pistons
@@ -416,6 +446,16 @@ BEGIN
 
                 -- Clean up claim
                 DELETE FROM cell_claims WHERE cell_id = v_cell_id;
+
+                -- claim_log: record completion (formal: claims.filter on freeze)
+                SET @_cl_frame_id = NULL;
+                SELECT id INTO @_cl_frame_id FROM frames
+                 WHERE program_id = p_program_id AND cell_name = p_cell_name
+                 ORDER BY generation DESC LIMIT 1;
+                IF @_cl_frame_id IS NOT NULL AND v_piston_id IS NOT NULL THEN
+                    INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action)
+                    VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), @_cl_frame_id, v_piston_id, 'completed');
+                END IF;
 
                 -- Update piston stats
                 IF v_piston_id IS NOT NULL THEN
@@ -495,6 +535,18 @@ CREATE PROCEDURE cell_release_claim(
 BEGIN
     DECLARE v_rows_affected INT DEFAULT 0;
 
+    -- claim_log: record release/timeout (formal: claims.filter on release)
+    SET @_cl_frame_id = NULL;
+    SET @_cl_cell_name = NULL;
+    SET @_cl_prog_id = NULL;
+    SELECT name, program_id INTO @_cl_cell_name, @_cl_prog_id
+      FROM cells WHERE id = p_cell_id;
+    IF @_cl_prog_id IS NOT NULL THEN
+        SELECT id INTO @_cl_frame_id FROM frames
+         WHERE program_id = @_cl_prog_id AND cell_name = @_cl_cell_name
+         ORDER BY generation DESC LIMIT 1;
+    END IF;
+
     DELETE FROM cell_claims
      WHERE cell_id = p_cell_id
        AND piston_id = p_piston_id;
@@ -504,6 +556,12 @@ BEGIN
     IF v_rows_affected = 0 THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'No matching claim found for this piston';
+    END IF;
+
+    IF v_rows_affected > 0 AND @_cl_frame_id IS NOT NULL THEN
+        INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action)
+        VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), @_cl_frame_id, p_piston_id,
+                CASE WHEN p_reason = 'timeout' THEN 'timed_out' ELSE 'released' END);
     END IF;
 
     IF p_reason IN ('failure', 'timeout') THEN
@@ -545,6 +603,18 @@ BEGIN
            c.assigned_piston = NULL
      WHERE cc.claimed_at < NOW() - INTERVAL p_max_age_minutes MINUTE
        AND c.state = 'computing';
+
+    -- claim_log: record timed_out for stale claims (formal: claims.filter on release)
+    INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action)
+    SELECT CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), f.id, cc.piston_id, 'timed_out'
+      FROM cell_claims cc
+      JOIN cells c ON c.id = cc.cell_id
+      JOIN frames f ON f.program_id = c.program_id AND f.cell_name = c.name
+     WHERE cc.claimed_at < NOW() - INTERVAL p_max_age_minutes MINUTE
+       AND f.generation = (
+           SELECT MAX(f2.generation) FROM frames f2
+            WHERE f2.program_id = c.program_id AND f2.cell_name = c.name
+       );
 
     -- Remove the stale claims
     DELETE FROM cell_claims
@@ -733,6 +803,18 @@ BEGIN
         assigned_piston = NULL
     WHERE assigned_piston = p_id
       AND state = 'computing';
+
+    -- claim_log: record released for all piston claims (formal: claims.filter on release)
+    INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action)
+    SELECT CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), f.id, cc.piston_id, 'released'
+      FROM cell_claims cc
+      JOIN cells c ON c.id = cc.cell_id
+      JOIN frames f ON f.program_id = c.program_id AND f.cell_name = c.name
+     WHERE cc.piston_id = p_id
+       AND f.generation = (
+           SELECT MAX(f2.generation) FROM frames f2
+            WHERE f2.program_id = c.program_id AND f2.cell_name = c.name
+       );
 
     -- Clean up claims
     DELETE FROM cell_claims WHERE piston_id = p_id;

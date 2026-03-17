@@ -8,10 +8,19 @@
 -- atomic claiming via INSERT: first piston to INSERT wins (UNIQUE constraint
 -- on frame_id), others get duplicate key error and try the next ready cell.
 --
--- Lifecycle:
---   1. replEvalStep() resolves frame, checks claimValid, INSERTs claim
---   2. replSubmit() DELETEs the claim after successful freeze
---   3. replRelease() DELETEs the claim on failure/timeout
+-- Formal model (Retort.lean): claims is a List Claim, modified only by:
+--   claim:   claims := claims ++ [new_claim]           (append)
+--   freeze:  claims := claims.filter (c.frameId != fd) (filter)
+--   release: claims := claims.filter (c.frameId != rd) (filter)
+--
+-- Implementation lifecycle (SQL DELETE corresponds to formal filter):
+--   1. cell_eval_step() INSERTs a claim → claim_log 'claimed'
+--   2. cell_submit() DELETEs the claim after freeze → claim_log 'completed'
+--   3. cell_release_claim() DELETEs on failure/timeout → claim_log 'released'/'timed_out'
+--
+-- The append-only claim_log table preserves the full claim lifecycle audit
+-- trail, bridging the gap between SQL's mutable DELETE and the formal
+-- model's immutable filter semantics.
 --
 -- For stuck pistons (crash, timeout), see do-6lq (heartbeat/lease system).
 -- Until that's built, stale claims can be cleaned up by:

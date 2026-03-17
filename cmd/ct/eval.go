@@ -907,6 +907,11 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				mustExecDB(db,
 					"UPDATE pistons SET cells_completed = cells_completed + 1, last_heartbeat = NOW() WHERE id = ?",
 					pistonID)
+				// claim_log: record completion (formal: claims.filter removes claim on freeze)
+				if frameID != "" {
+					db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'completed')",
+						frameID, pistonID)
+				}
 				mustExecDB(db,
 					"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'Hard cell: literal value', NOW())",
 					rc.cellID)

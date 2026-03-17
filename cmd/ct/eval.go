@@ -321,32 +321,34 @@ func recordBindings(db *sql.DB, progID, cellName, cellID string) {
 		rows.Scan(&srcCell, &srcField)
 
 		// Find the producer frame — use the frame_id from the frozen yield we consumed.
-		// This correctly resolves which generation we actually read from.
+		// INNER JOIN to frames ensures the producer frame exists (formal: ∃ f ∈ r.frames).
 		var producerFrame string
 		var producerGen int
 		err := db.QueryRow(`
-			SELECT COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0')), COALESCE(f.generation, 0)
+			SELECT f.id, f.generation
 			FROM yields y
 			JOIN cells src ON src.id = y.cell_id
-			LEFT JOIN frames f ON f.id = COALESCE(y.frame_id, CONCAT('f-', y.cell_id, '-0'))
+			JOIN frames f ON f.id = y.frame_id
 			WHERE src.program_id = ? AND src.name = ? AND y.field_name = ? AND y.is_frozen = 1
-			ORDER BY COALESCE(f.generation, 0) DESC LIMIT 1`,
+			  AND y.frame_id IS NOT NULL
+			ORDER BY f.generation DESC LIMIT 1`,
 			progID, srcCell, srcField).Scan(&producerFrame, &producerGen)
 		if err != nil {
 			continue
 		}
 
-		// I11 (bindingsPointToFrozen): verify ALL yields for the producer frame are frozen.
-		// Scope to the specific frame, not all yields for the source cell.
-		var unfrozenCount int
+		// I11 (bindingsPointToFrozen): verify the producer frame is fully frozen.
+		// Formal spec: r.frameStatus f = .frozen, which requires ALL cell definition
+		// fields to have frozen yields for this frame (not just "no unfrozen yields").
+		var totalYields, frozenYields int
 		db.QueryRow(`
-			SELECT COUNT(*) FROM yields
-			WHERE cell_id IN (SELECT id FROM cells WHERE program_id = ? AND name = ?)
-			  AND COALESCE(frame_id, CONCAT('f-', cell_id, '-0')) = ?
-			  AND is_frozen = FALSE`,
-			progID, srcCell, producerFrame).Scan(&unfrozenCount)
-		if unfrozenCount > 0 {
-			log.Printf("I11 bindingsPointToFrozen: skipping binding from %s.%s frame %s — %d unfrozen yield(s)", srcCell, srcField, producerFrame, unfrozenCount)
+			SELECT COUNT(*), COALESCE(SUM(CASE WHEN y.is_frozen = TRUE THEN 1 ELSE 0 END), 0)
+			FROM yields y
+			WHERE y.cell_id IN (SELECT id FROM cells WHERE program_id = ? AND name = ?)
+			  AND y.frame_id = ?`,
+			progID, srcCell, producerFrame).Scan(&totalYields, &frozenYields)
+		if totalYields == 0 || frozenYields < totalYields {
+			log.Printf("I11 bindingsPointToFrozen: skipping binding from %s.%s frame %s — %d/%d yields frozen", srcCell, srcField, producerFrame, frozenYields, totalYields)
 			continue
 		}
 

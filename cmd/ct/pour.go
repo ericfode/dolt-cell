@@ -242,16 +242,49 @@ func cmdEval(db *sql.DB, name, cellFile string) {
 }
 
 func cmdReset(db *sql.DB, progID string) {
+	// Check if program has any data to reset
+	var cellCount int
+	db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", progID).Scan(&cellCount)
+	if cellCount == 0 {
+		fmt.Printf("⚠ program %q has no cells — nothing to reset\n", progID)
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "⚠ reset is outside the formal model (Retort.lean has no reset operation).\n")
+	fmt.Fprintf(os.Stderr, "  Formal guarantees (append-only, monotonicity) do not hold across resets.\n")
+	fmt.Fprintf(os.Stderr, "  Dolt history preserves pre-reset state: use `dolt log` to recover.\n")
+
 	resetProgram(db, progID)
-	fmt.Printf("✓ Reset %s\n", progID)
+	fmt.Printf("✓ Reset %s (%d cells removed)\n", progID, cellCount)
 }
 
+// resetProgram deletes all data for a program.
+//
+// FORMAL DEVIATION: The Lean spec (Retort.lean) defines exactly 5 operations
+// (pour, claim, freeze, release, createFrame), all of which are append-only.
+// There is no reset operation. The theorem all_ops_appendOnly (line 404) proves
+// every operation preserves the append-only invariant. resetProgram violates
+// cellsPreserved, framesPreserved, yieldsPreserved, bindingsPreserved, and
+// givensPreserved — it is total state destruction.
+//
+// This exists as a PRAGMATIC concession for development and debugging.
+// Formal guarantees (monotonicity, preservation) do not hold across reset
+// boundaries. The Dolt commit tagged "reset: <progID>" marks the epoch boundary.
 func resetProgram(db *sql.DB, progID string) {
 	mustExec(db, "SET @@dolt_transaction_commit = 0")
+
+	// Record the reset as a trace event (epoch boundary marker).
+	// This allows formal analysis to identify where append-only breaks.
+	db.Exec(
+		"INSERT INTO trace (id, cell_id, event_type, detail) VALUES (?, ?, 'reset', ?)",
+		fmt.Sprintf("t-reset-%s-%d", progID, time.Now().UnixMilli()),
+		progID, // cell_id used as program_id sentinel
+		fmt.Sprintf("epoch boundary: all data for program %s destroyed", progID))
+
 	// v1 tables (cell_id based)
-	for _, t := range []string{"trace", "cell_claims", "oracles", "yields", "givens", "cells"} {
+	for _, t := range []string{"cell_claims", "oracles", "yields", "givens", "cells"} {
 		q := fmt.Sprintf("DELETE FROM %s WHERE ", t)
-		if t == "trace" || t == "cell_claims" || t == "oracles" || t == "yields" || t == "givens" {
+		if t == "cell_claims" || t == "oracles" || t == "yields" || t == "givens" {
 			q += "cell_id IN (SELECT id FROM cells WHERE program_id = ?)"
 		} else {
 			q += "program_id = ?"

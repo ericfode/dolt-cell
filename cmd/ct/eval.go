@@ -1376,6 +1376,15 @@ func replRespawnStem(db *sql.DB, progID, cellName, frozenID string) {
 		return
 	}
 
+	// Don't respawn stem cells with no givens — they have nothing to wait
+	// for and would immediately become ready again, causing an infinite loop.
+	var givenCount int
+	db.QueryRow("SELECT COUNT(*) FROM givens WHERE cell_id = ?", frozenID).Scan(&givenCount)
+	if givenCount == 0 {
+		log.Printf("INFO: stem cell %s/%s has no givens — skipping respawn (would loop)", progID, cellName)
+		return
+	}
+
 	// Find current max generation for this cell name
 	var maxGen int
 	err := db.QueryRow(

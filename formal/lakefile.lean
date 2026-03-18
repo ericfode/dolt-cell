@@ -20,3 +20,6 @@ lean_lib Denotational where
 
 lean_lib Refinement where
   roots := #[`Refinement]
+
+lean_lib TupleSpace where
+  roots := #[`TupleSpace]

@@ -3,7 +3,7 @@
 **Author**: obsidian (polecat)
 **Date**: 2026-03-18
 **Bead**: do-ov6l
-**Status**: Draft — breadth-first survey, not final recommendation
+**Status**: Draft — breadth-first survey, refined for correctness (do-wulp)
 
 ---
 
@@ -41,8 +41,10 @@ The Go runtime (`cmd/ct/`) needs to:
 2. Convert that AST into SQL inserts (the "pour" operation)
 3. Drive the DAG evaluation loop (the "piston" operation)
 
-The parser is ~400 lines of Go. The question is whether replacing it with an
-existing language gives us enough to justify the dependency.
+The parser (`cmd/ct/parse.go`) is ~825 lines of Go, including both the V1 and V2
+parsers plus SQL generation. The pure parsing portion is ~550 lines. The question
+is whether replacing it with an existing language gives us enough to justify the
+dependency.
 
 ---
 
@@ -62,9 +64,9 @@ For each candidate:
 ### Lua (via GopherLua / golua)
 
 **Go embedding**: Excellent. [GopherLua](https://github.com/yuin/gopher-lua) is
-a pure-Go Lua 5.1 implementation, battle-tested, actively maintained. Also
-[golua](https://github.com/aarzilli/golua) for C-binding approach. GopherLua is
-the clear choice for pure-Go.
+a pure-Go Lua 5.1 implementation (with `goto` from 5.2), battle-tested, actively
+maintained (~6.9k stars). Also [golua](https://github.com/aarzilli/golua) for
+C-binding approach. GopherLua is the clear choice for pure-Go.
 
 **Expressiveness**: Lua's tables can represent cells naturally:
 
@@ -93,8 +95,9 @@ are flexible enough for all cell constructs. Metatables could provide validation
 **Losses**:
 - Readability for non-programmers. Lua syntax (braces, commas, quotes around
   everything) is noisier than `cell compose / given topic.subject / yield poem`
-- Must handle Lua's eager evaluation vs Cell's declarative DAG
-- Lua has mutable state — must discipline users to only use it declaratively
+- Lua has mutable state and eager evaluation — must discipline users to use it
+  purely declaratively (non-issue if Lua only defines structure, but users could
+  introduce side-effecting code at definition time)
 - Error messages from Lua runtime may be confusing in Cell context
 - Dependency (~15k LOC for GopherLua)
 
@@ -104,8 +107,8 @@ to Lua trades readability for power. The prompt body (the most important part) i
 still opaque text either way.
 
 **Verdict**: Best Go embedding story. Worth considering if we want computed cell
-definitions. But Cell programs are typically <50 lines — the power/readability
-tradeoff may not pay off.
+definitions. Most Cell programs are small, though some reach 100-200 lines where
+the power/readability tradeoff becomes more interesting.
 
 ---
 
@@ -135,7 +138,9 @@ Cell's philosophy — programs are data declarations, not general computation.
 
 **Gains**:
 - Deterministic by design — no I/O, no threads, no randomness
-- Frozen values (Starlark values are immutable after construction — mirrors Cell's monotonicity)
+- Frozen values (Starlark values are mutable during module execution but
+  automatically frozen after module completion — a weaker analog to Cell's
+  monotonicity, where individual yields freeze incrementally)
 - `load()` for modular composition
 - Well-defined subset of Python — familiar syntax
 - Battle-tested in build systems that need reproducibility
@@ -143,13 +148,15 @@ Cell's philosophy — programs are data declarations, not general computation.
 **Losses**:
 - Still noisier than bespoke DSL (parentheses, commas, `yield_` to avoid keyword)
 - Starlark's immutability is deep — but Cell's "frozen" is a runtime concept, not a language concept
-- No Starlark REPL (minor)
-- Slightly more complex than Lua for the Go embedding API
+- Starlark-go ships a REPL (`cmd/starlark/`), but it's less established
+  than Lua's ecosystem of REPL tooling
 
 **Fit**: High. Starlark's "hermetic, deterministic config language" philosophy
 closely matches Cell's "declarative DAG of computations" philosophy. The
-immutability alignment is compelling. The Python-like syntax is more accessible
-than Lua to most developers.
+freeze-after-execution model is a partial analog to Cell's monotonicity (though
+Cell freezes individual yields incrementally, while Starlark freezes everything
+at module completion). The Python-like syntax is more accessible than Lua to
+most developers.
 
 **Verdict**: Strongest philosophical alignment. If we want a replacement
 language, Starlark is the most natural fit. The determinism and immutability
@@ -196,8 +203,10 @@ compose: #Cell & { ... }
 **Gains**:
 - Built-in constraint system — `check` expressions could become CUE constraints
 - Type-safe cell definitions with schema validation at parse time
-- Lattice-based evaluation (CUE unifies values via a lattice — conceptually
-  similar to Cell's effect lattice, though the lattices are different)
+- Lattice-based evaluation (CUE unifies values via a type/value subsumption
+  lattice — both CUE and Cell use lattices, but for entirely different purposes:
+  CUE's orders values by specificity, Cell's classifies effects as
+  Pure < Semantic < Divergent)
 - Can generate JSON Schema, OpenAPI, etc. from cell definitions
 - Hermetic, deterministic, no side effects
 
@@ -224,8 +233,9 @@ grows a richer type system.
 ### Jsonnet
 
 **Go embedding**: Good. [google/go-jsonnet](https://github.com/google/go-jsonnet)
-is the canonical pure-Go implementation. Maintained, used in production (Grafana,
-Tanka, Databricks). Also [jsonnet-go](https://github.com/google/go-jsonnet) — same thing.
+is a pure-Go implementation of Jsonnet. Maintained, used in production (Grafana
+uses Jsonnet for dashboards; Tanka is Grafana Labs' Jsonnet-based Kubernetes tool;
+Databricks uses Jsonnet for configuration).
 
 **Expressiveness**:
 
@@ -318,9 +328,9 @@ Nickel would be a strong contender.
 ### Dhall
 
 **Go embedding**: Weak. Dhall is written in Haskell. There's a
-[dhall-golang](https://github.com/philandstuff/dhall-golang) but it's
-unmaintained (last commit 2022, doesn't support latest Dhall spec). Would need
-the Haskell binary as a subprocess.
+[dhall-golang](https://github.com/philandstuff/dhall-golang) (~120 stars, MIT
+license) but it's unmaintained (last commit June 2022, doesn't support latest
+Dhall spec). Would need the Haskell binary as a subprocess.
 
 **Expressiveness**: Dhall's selling point is total, terminating, typed
 configuration:
@@ -339,7 +349,11 @@ in
 ```
 
 **Gains**:
-- Guaranteed termination (total language) — interesting parallel with Cell's max bounds on recur
+- Guaranteed termination (total language) — interesting parallel with Cell's max
+  bounds on recur. Caveat: "total" means termination is guaranteed but some
+  well-typed programs take longer than the heat death of the universe to evaluate.
+  Dhall achieves totality by forbidding recursion entirely and restricting
+  operations (e.g., no string equality comparison).
 - Strong type system with imports
 - Immutable by design
 
@@ -408,9 +422,11 @@ brings nothing that helps with Cell's actual hard problems.
 
 ### Pkl (Apple)
 
-**Go embedding**: Weak. Pkl is written in Kotlin/JVM. There's a
-[pkl-go](https://github.com/apple/pkl-go) library but it works by running the
-Pkl evaluator as a subprocess (requires JVM). Not a native Go library.
+**Go embedding**: Weak. Pkl is a JVM language (primarily Java ~64%, Kotlin ~30%).
+There's a [pkl-go](https://github.com/apple/pkl-go) library (~320 stars) but it
+works by running the Pkl CLI as a subprocess. Native binaries exist (via GraalVM
+native image) so JVM is not strictly required, but it's still a subprocess model,
+not a native Go library.
 
 **Expressiveness**:
 
@@ -438,21 +454,21 @@ compose: Cell = new {
 - Good IDE support (JetBrains)
 
 **Losses**:
-- JVM dependency — heavyweight for a parser replacement
-- Subprocess-based Go integration adds latency
-- Young language (released 2024), still evolving
+- Subprocess-based Go integration adds latency (native binary avoids JVM
+  startup, but subprocess overhead remains)
+- Young language (open-sourced Feb 2024), still evolving
 - Small community
 
-**Fit**: Low. The JVM dependency is a dealbreaker for a Go tool that needs to
-start fast and run lean.
+**Fit**: Low. The subprocess model (even with native binaries) is heavyweight
+for a Go tool that needs to start fast and run lean.
 
-**Verdict**: Skip. JVM subprocess model is too heavy.
+**Verdict**: Skip. Subprocess model is too heavy.
 
 ---
 
 ## Tier 3: Dark Horses
 
-### Expr (antonmedv/expr)
+### Expr (expr-lang/expr)
 
 **Go embedding**: Excellent. [expr](https://github.com/expr-lang/expr) is a pure-Go
 expression evaluator — small, fast, well-maintained. Not a full language but a
@@ -528,8 +544,8 @@ it over GopherLua or Starlark.
 ### Risor
 
 **Go embedding**: Good. [risor-io/risor](https://github.com/risor-io/risor) is a
-pure-Go scripting language designed specifically for embedding in Go applications.
-Modern, actively maintained, Go-like syntax with Python influences.
+pure-Go scripting language (~900 stars) designed specifically for embedding in Go
+applications. Modern, actively maintained, Go-like syntax with Python influences.
 
 **Gains**:
 - Designed for Go embedding from day one
@@ -571,7 +587,8 @@ and a Go struct decoder is a zero-dependency approach:
 - YAML's gotchas (Norway problem, implicit typing, indentation sensitivity)
 - No computation — can't parameterize or compose
 - Strictly less expressive than the current bespoke DSL
-- No comments-in-data (YAML comments are stripped by parsers)
+- Comments largely lost (standard struct unmarshaling strips YAML comments;
+  go-yaml v3's `yaml.Node` API preserves them, but few workflows use this)
 - Arguably worse than the current `.cell` syntax for readability
 
 **Fit**: Low. YAML is the wrong direction — it's less readable and less
@@ -586,6 +603,7 @@ for this domain.
 
 Not a language but a parsing approach. Write a tree-sitter grammar for `.cell`
 syntax, use [smacker/go-tree-sitter](https://github.com/smacker/go-tree-sitter)
+or the official [tree-sitter/go-tree-sitter](https://github.com/tree-sitter/go-tree-sitter)
 for Go integration.
 
 **Gains**:
@@ -628,8 +646,9 @@ support, but doesn't solve the "should we replace the parser" question.
 
 ## The Real Question
 
-The bespoke `.cell` parser is ~400 lines of Go. It handles everything Cell needs
-today. The cost of maintaining it is low. What would justify replacing it?
+The bespoke `.cell` parser is ~825 lines of Go (~550 lines of pure parsing, the
+rest SQL generation). It handles everything Cell needs today. The cost of
+maintaining it is moderate. What would justify replacing it?
 
 **Arguments for replacement:**
 1. **Modular composition**: `import` / `load()` for cell libraries. Today each
@@ -646,10 +665,13 @@ today. The cost of maintaining it is low. What would justify replacing it?
 1. **Readability is Cell's superpower**. The `.cell` syntax reads like English.
    Every replacement adds syntax noise (braces, commas, quotes). For a language
    whose bodies are natural-language prompts, readability matters more than power.
-2. **~400 lines is cheap**. The parser works, is tested, and handles edge cases.
-   Adding a dependency to avoid maintaining 400 lines is not obviously a win.
-3. **Cell programs are small**. The largest programs are <50 lines. The
-   complexity ceiling where an embedded language starts paying off hasn't been hit.
+2. **~825 lines is manageable**. The parser works, is tested, and handles edge
+   cases. Adding a dependency to avoid maintaining ~550 lines of parsing is not
+   obviously a win.
+3. **Cell programs are small-to-medium**. Most programs are under 50 lines, but
+   several exceed 100 (village-sim.cell is 200 lines, cell-zero-eval.cell is 166,
+   obscure-gol.cell is 165). The complexity ceiling where an embedded language
+   starts paying off may be closer than it appears.
 4. **The hard problems are elsewhere**. Stem completion, guard-skip bottom
    propagation, oracle atomicity — these are runtime problems, not parser problems.
    A better parser doesn't help.
@@ -660,7 +682,8 @@ today. The cost of maintaining it is low. What would justify replacing it?
 
 **Keep the bespoke `.cell` parser.** It's Cell's competitive advantage. The
 English-like readability is a feature, not a bug. None of the replacement
-languages improve on it for programs under 50 lines.
+languages improve on it for Cell's typical program sizes. (Note: some programs
+do exceed 100 lines — the composition argument strengthens as programs grow.)
 
 **Two targeted improvements instead:**
 
@@ -684,14 +707,14 @@ hermetic) and the best Go embedding. But don't add it until the need is proven.
 
 | Library | Go Purity | Stars | Last Release | License |
 |---------|-----------|-------|-------------|---------|
-| go.starlark.net | Pure Go | 2.4k | 2024 | BSD-3 |
-| yuin/gopher-lua | Pure Go | 6.2k | 2024 | MIT |
-| cuelang.org/go | Pure Go | 5.1k | 2024 (pre-1.0) | Apache-2.0 |
-| google/go-jsonnet | Pure Go | 1.6k | 2024 | Apache-2.0 |
-| hashicorp/hcl | Pure Go | 5.3k | 2024 | MPL-2.0 |
-| expr-lang/expr | Pure Go | 6.1k | 2024 | MIT |
-| d5/tengo | Pure Go | 3.5k | 2024 | MIT |
-| risor-io/risor | Pure Go | 1.6k | 2024 | Apache-2.0 |
-| apple/pkl-go | Subprocess | 0.2k | 2024 | Apache-2.0 |
-| philandstuff/dhall-golang | Stale | 0.4k | 2022 | BSD-3 |
-| nickel-lang (no Go) | N/A | 2.3k | 2024 | MIT |
+| go.starlark.net | Pure Go | ~2.7k | 2024 | BSD-3 |
+| yuin/gopher-lua | Pure Go | ~6.9k | 2024 | MIT |
+| cuelang.org/go | Pure Go | ~6.0k | 2026 (pre-1.0, v0.16) | Apache-2.0 |
+| google/go-jsonnet | Pure Go | ~1.8k | 2024 | Apache-2.0 |
+| hashicorp/hcl | Pure Go | ~5.8k | 2024 | MPL-2.0 |
+| expr-lang/expr | Pure Go | ~7.7k | 2024 | MIT |
+| d5/tengo | Pure Go | ~3.8k | 2025 (v3.0) | MIT |
+| risor-io/risor | Pure Go | ~0.9k | 2026 (v2.1) | Apache-2.0 |
+| apple/pkl-go | Subprocess | ~0.3k | 2024 | Apache-2.0 |
+| philandstuff/dhall-golang | Stale | ~0.1k | 2022 | MIT |
+| nickel-lang (no Go) | N/A | ~2.9k | 2024 | MIT |

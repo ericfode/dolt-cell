@@ -1,0 +1,7 @@
+-- Edge case: cell with no body (hard cell, just a yield)
+cell bare
+  yield value = "works"
+
+-- Edge case: cell with empty string yield
+cell empty-val
+  yield text = ""

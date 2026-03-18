@@ -1,0 +1,12 @@
+-- Test: deterministic oracle failure (check X is valid json array on non-JSON)
+
+cell input
+  yield data = "not json at all"
+
+cell process
+  given input.data
+  yield result
+  ---
+  Echo «data» exactly as given. Do not modify it.
+  ---
+  check result is valid json array

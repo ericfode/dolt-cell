@@ -1,0 +1,36 @@
+-- Edge case stress test
+
+cell config
+  yield mode = "strict"
+  yield limit = "100"
+
+cell data
+  yield items = [5, 2, 8, 1, 9, 3]
+
+cell analyze
+  given data.items
+  given? config.mode
+  yield summary
+  ---
+  Analyze «items». If mode is "strict", validate all are positive integers. Count elements and find the sum. Return: "count=N sum=M valid=true/false"
+  ---
+  check summary is not empty
+
+cell transform
+  given data.items
+  given? config.limit
+  yield result
+  ---
+  Take «items» and double each number. If any doubled value exceeds «limit», mark it as "OVER". Return a JSON array of the results.
+  ---
+  check result is valid json array
+
+cell merge
+  given analyze.summary
+  given transform.result
+  yield report
+  ---
+  Combine the analysis «summary» with the transformation «result» into a single JSON object with fields "analysis" and "transformation".
+  ---
+  check report is not empty
+  check~ report is valid JSON containing both analysis and transformation data

@@ -1,0 +1,19 @@
+-- Edge case: special characters in yield values
+
+cell quotes
+  yield text = "She said \"hello\" to 'them'"
+
+cell unicode
+  yield emoji = "Hello 🌍 World"
+
+cell json-val
+  yield data = {"key": "value", "count": 42}
+
+cell consumer
+  given quotes.text
+  given unicode.emoji
+  given json-val.data
+  yield summary
+  ---
+  Concatenate these three values separated by " | ": «text», «emoji», «data». Return the concatenated string.
+  ---

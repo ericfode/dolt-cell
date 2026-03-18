@@ -1,0 +1,46 @@
+-- Stress test: exercises hard literals, hard SQL, soft cells, optional givens,
+-- multi-yield, dependencies, and deterministic oracles (no stems/recur
+-- to avoid the stem-completion bug).
+
+cell constants
+  yield pi_approx = "3.14159"
+  yield e_approx = "2.71828"
+
+cell user-input
+  yield name = "Alice"
+  yield age = "30"
+
+cell greeting
+  given user-input.name
+  given user-input.age
+  yield message
+  ---
+  Write a single-sentence birthday greeting for «name» who is turning «age». Be warm but brief.
+  ---
+  check message is not empty
+
+cell math-check
+  given constants.pi_approx
+  yield validation
+  ---
+  sql: SELECT CASE WHEN ABS(CAST('3.14159' AS DECIMAL(10,5)) - 3.14159) < 0.001 THEN 'VALID' ELSE 'INVALID' END
+  ---
+
+cell compute
+  given constants.pi_approx
+  given constants.e_approx
+  yield sum
+  ---
+  sql: SELECT CAST(3.14159 + 2.71828 AS CHAR)
+  ---
+
+cell report
+  given greeting.message
+  given math-check.validation
+  given compute.sum
+  given? user-input.name
+  yield final
+  ---
+  Create a JSON summary: {"greeting": "«message»", "pi_valid": "«validation»", "pi_plus_e": "«sum»"}. If a name is available, add a "name" field too.
+  ---
+  check final is not empty

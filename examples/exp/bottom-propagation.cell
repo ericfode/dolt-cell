@@ -1,0 +1,21 @@
+-- Test bottom propagation: if a dependency bottoms, dependents should bottom too
+
+cell source
+  yield data
+  ---
+  sql: SELECT * FROM nonexistent_table_xyz
+  ---
+
+cell downstream
+  given source.data
+  yield result
+  ---
+  Process «data» and return it uppercased.
+  ---
+
+cell final
+  given downstream.result
+  yield output
+  ---
+  Summarize «result» in one sentence.
+  ---

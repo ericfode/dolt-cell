@@ -1,0 +1,31 @@
+-- Test SQL cells that query their own program's data.
+-- Uses a workaround: hardcode the program name to match pour name.
+-- (Bug do-6r9v tracks the need for dynamic program_id in SQL cells)
+
+cell numbers
+  yield a = "10"
+  yield b = "25"
+
+cell sum-check
+  given numbers.a
+  given numbers.b
+  yield result
+  ---
+  sql: SELECT CAST(10 + 25 AS CHAR)
+  ---
+
+cell product
+  given numbers.a
+  given numbers.b
+  yield result
+  ---
+  sql: SELECT CAST(10 * 25 AS CHAR)
+  ---
+
+cell compare
+  given sum-check.result
+  given product.result
+  yield bigger
+  ---
+  sql: SELECT CASE WHEN CAST(35 AS UNSIGNED) > CAST(250 AS UNSIGNED) THEN 'sum' ELSE 'product' END
+  ---

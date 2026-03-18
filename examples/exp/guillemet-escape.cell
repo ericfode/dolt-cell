@@ -1,0 +1,11 @@
+-- Edge case: yield value containing guillemets
+
+cell meta
+  yield template = "The value of «x» is computed by «formula»"
+
+cell process
+  given meta.template
+  yield result
+  ---
+  Echo «template» exactly as given. Do not interpret the guillemets inside.
+  ---

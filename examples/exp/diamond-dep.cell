@@ -1,0 +1,28 @@
+-- Diamond dependency: A→B, A→C, B→D, C→D
+-- Tests that D only runs after both B and C are frozen.
+
+cell source
+  yield data = "The quick brown fox"
+
+cell path-left
+  given source.data
+  yield words
+  ---
+  Count the words in «data». Return ONLY the number.
+  ---
+
+cell path-right
+  given source.data
+  yield chars
+  ---
+  Count the characters (including spaces) in «data». Return ONLY the number.
+  ---
+
+cell merge
+  given path-left.words
+  given path-right.chars
+  yield ratio
+  ---
+  Compute the average word length: divide «chars» by «words». Round to 1 decimal place. Return ONLY the number.
+  ---
+  check ratio is not empty

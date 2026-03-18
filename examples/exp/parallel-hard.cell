@@ -1,0 +1,39 @@
+-- Many independent hard cells for parallel piston testing
+
+cell a
+  yield v = "1"
+
+cell b
+  yield v = "2"
+
+cell c
+  yield v = "3"
+
+cell d
+  yield v = "4"
+
+cell e
+  yield v = "5"
+
+cell f
+  yield v = "6"
+
+cell g
+  yield v = "7"
+
+cell h
+  yield v = "8"
+
+cell sum
+  given a.v
+  given b.v
+  given c.v
+  given d.v
+  given e.v
+  given f.v
+  given g.v
+  given h.v
+  yield total
+  ---
+  sql: SELECT CAST(1+2+3+4+5+6+7+8 AS CHAR)
+  ---

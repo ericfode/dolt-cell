@@ -1,7 +1,7 @@
 # Cell: A Versioned Tuple Space with Effect-Aware Execution
 
-**v3 (do-wl6f.4)** — 2026-03-19
-**Status**: Refine 3 (edge cases). Added Section 4.6 covering 12 edge cases.
+**v4 (do-wl6f.5)** — 2026-03-19
+**Status**: Final. Four refinement passes complete (correctness, clarity, edge cases, polish).
 
 ---
 
@@ -53,6 +53,30 @@ The key insight: **effects are classified by what happens on failure**, not by w
 2. **Structured tuples**: cells have dependency DAGs, not flat fields — the executor knows the evaluation order
 3. **Semantic matching**: the LLM reads the tuple because the tuple is natural language
 4. **Self-extension**: agents can add new cells with new DAGs — programs grow at runtime
+
+### The model at a glance
+
+```
+                    .cell file
+                        │
+                      pour ──── (out) ──→ ┌─────────────────────────┐
+                                          │    DOLT TUPLE SPACE     │
+                                          │   (versioned, branched) │
+  ┌──────────┐  claim   │                 │                         │
+  │  PISTON  │←─(inp)───┤  ┌───┐  ┌───┐  │  cells, yields, claims  │
+  │ (LLM or  │          │  │ P │→│ P │→│ R │→│ R │→│ N │            │
+  │  human)  │──submit──→  │   │  │   │  │   │  │   │  │   │        │
+  └──────────┘  (token)  │  └───┘  └───┘  └───┘  └───┘  └───┘      │
+                         │  Pure   Pure   Replay  Replay  NonReplay │
+       ┌──thaw──(rewind) │  ───────────→  ──────────→  ──────→     │
+       │                  │  executor runs │ pauses here │ pauses   │
+       │                  │  inline        │ auto-retry  │ isolate  │
+       └──────────────────└─────────────────────────────────────────┘
+                                          │
+                                      observe ─── (rd)
+```
+
+**Reading the diagram**: The executor sweeps left-to-right through the DAG. Pure cells (P) execute inline. When it hits a Replayable cell (R), it pauses and dispatches to a piston. When it hits a NonReplayable cell (N), it pauses, isolates, and dispatches. If anything fails, `thaw` rewinds the space to a prior state.
 
 ---
 
@@ -466,3 +490,24 @@ Items 1 and 7 can start in parallel with Phase 0.
 | **Claim** | Reserving a cell for evaluation — produces a linear token consumed by submit |
 | **Tuple space** | The shared workspace (the Dolt database) where all cells, yields, and claims live |
 | **Linda** | Gelernter's 1985 coordination model: `out`/`in`/`rd` over a shared tuple space |
+| **Replayable** | An effect that can be retried automatically (LLM call, oracle check) |
+| **NonReplayable** | An effect that requires rewinding to retry (SQL mutation, external IO) |
+| **Effect level** | Classification of a cell by recoverability: Pure < Replayable < NonReplayable |
+
+---
+
+## 9. Version History
+
+| Version | Date | Pass | Key changes |
+|---------|------|------|-------------|
+| v0 | 2026-03-18 | Draft (do-wl6f.1) | Initial synthesis from Wadler, Milner, Dijkstra sage specs |
+| v1 | 2026-03-19 | Correctness (do-wl6f.2) | 21 fixes: inp not in, SQLQuery purity, stem defaults, two isolation modes |
+| v2 | 2026-03-19 | Clarity (do-wl6f.3) | Tables everywhere, glossary, restructured for implementers |
+| v3 | 2026-03-19 | Edge cases (do-wl6f.4) | 12 edge cases (E1-E12): concurrent thaw, timeouts, scope, spawn limits |
+| v4 | 2026-03-19 | Excellence (do-wl6f.5) | Diagram, version history, final polish |
+
+### Origin
+
+This spec emerged from a Socratic dialogue between the project author and a Sussman-modeled interlocutor (2026-03-18). The dialogue began with "I can't decide if building a whole new language is actually worth it" and ended with: Cell is not a language. It is a runtime — a versioned tuple space with LLM agents and an effect-aware deterministic executor. The language is small (a DAG with typed holes). The runtime is the contribution.
+
+Key references: Gelernter "Generative Communication in Linda" (1985), Hewitt "Actor Formalism" (1973), Nii "Blackboard Model" (1986). See `docs/reading-list.md`.

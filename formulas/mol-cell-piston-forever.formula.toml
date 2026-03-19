@@ -1,0 +1,164 @@
+description = """
+Persistent Cell runtime piston — 10 eval cycles per spawn.
+
+A polecat running this formula with --ralph gets a fresh context per step.
+Each step is one piston cycle: claim a cell, think, submit. With 10 steps,
+the polecat evaluates 10 cells before the formula ends.
+
+The ct binary is at ct (in PATH).
+The retort database runs on port 3307.
+Read piston/system-prompt.md for the full Cell runtime protocol.
+
+SIDE EFFECTS: If any cell asks you to write code or make file changes and
+you create git commits, call `gt done` to land them, then nudge your
+supervisor so they can respawn you:
+  gt nudge doltcell/crew/piston "piston <your-name> gt-done: side effects committed"
+"""
+
+formula = "mol-cell-piston-forever"
+version = 4
+
+[[steps]]
+id = "cycle-1"
+title = "Piston cycle 1"
+description = """
+You are a Cell runtime piston. Do exactly this:
+
+1. Run: `ct next --wait`
+   (set bash timeout to 600000ms)
+   If the binary doesn't exist, build it:
+   `cd cmd/ct && go build -o ct . && cd -`
+
+2. Read the output:
+   - If `ACTION: frozen` (hard cell) → run `ct next --wait` again until you get a soft cell
+   - If `BODY_TYPE: soft` → continue
+
+3. Read BODY (the prompt), GIVEN lines (inputs), YIELD (what to submit), ORACLE (constraints).
+
+4. Think about the BODY. Use tools (bash, code execution) if the task requires computation.
+
+5. Submit each yield:
+   `ct submit <program> <cell> <field> '<answer>'`
+
+6. If oracle fails, revise and resubmit (max 3 tries).
+
+7. SIDE EFFECTS: If you created any git commits or file changes during evaluation
+   (e.g. a cell asked you to write code), do this:
+   a. Run `gt done` to land the commits
+   b. Nudge your supervisor: `gt nudge doltcell/crew/piston "piston <your-polecat-name> gt-done: committed side effects"`
+   Normal piston work (ct next + ct submit) has NO side effects — only gt done if you touched git.
+
+One cell per step. Ralph handles the loop."""
+
+[[steps]]
+id = "cycle-2"
+title = "Piston cycle 2"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[[steps]]
+id = "cycle-3"
+title = "Piston cycle 3"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[[steps]]
+id = "cycle-4"
+title = "Piston cycle 4"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[[steps]]
+id = "cycle-5"
+title = "Piston cycle 5"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[[steps]]
+id = "cycle-6"
+title = "Piston cycle 6"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[[steps]]
+id = "cycle-7"
+title = "Piston cycle 7"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[[steps]]
+id = "cycle-8"
+title = "Piston cycle 8"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[[steps]]
+id = "cycle-9"
+title = "Piston cycle 9"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[[steps]]
+id = "cycle-10"
+title = "Piston cycle 10"
+description = """
+Cell piston cycle. Do exactly:
+1. `ct next --wait` (timeout 600000ms). Skip hard cells (ACTION: frozen).
+2. Read BODY, GIVEN, YIELD, ORACLE.
+3. Think. Use bash/code if needed.
+4. Submit: `ct submit <program> <cell> <field> '<answer>'`
+5. Retry on oracle fail (max 3).
+6. If you made git commits → `gt done` then `gt nudge doltcell/crew/piston "piston <name> gt-done: side effects"`"""
+
+[vars]
+[vars.base_branch]
+description = "Ignored — formula compatibility"
+default = "main"

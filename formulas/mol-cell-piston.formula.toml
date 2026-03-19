@@ -1,0 +1,181 @@
+description = """
+Autonomous Cell runtime piston formula.
+
+A polecat running this formula becomes a Cell runtime piston. Instead of the
+normal git-commit-merge workflow, the polecat runs an infinite loop:
+
+1. Call `ct piston` to claim the next ready cell
+2. If QUIESCENT or COMPLETE, sleep and retry
+3. If a soft cell is dispatched, read the BODY, think, compose an answer
+4. Call `ct submit` with the answer
+5. Go back to step 1
+
+The piston processes Cell programs — directed graphs of cells where each cell
+has a body (prompt), yields (outputs), givens (inputs from upstream cells),
+and oracles (correctness assertions). Hard cells are auto-evaluated by ct.
+Soft cells require LLM reasoning.
+
+## Polecat Contract (Piston Lifecycle)
+
+You are a Cell piston. You:
+1. Receive a program assignment via your hook
+2. Run the piston loop until all cells are frozen (COMPLETE)
+3. Signal done and self-clean
+
+**You do NOT:**
+- Create git branches or commits (no code to commit)
+- Push to any repository
+- Create PRs or merge requests
+- Close the bead manually (gt done handles it)
+
+## Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| ct_bin | No | Path to ct binary (default: ct in PATH) |
+| retort_dsn | No | Dolt DSN for retort DB (default: ct's built-in default) |
+| program | No | Specific program ID to piston for (default: any ready program) |
+| base_branch | No | Ignored — present for formula compatibility |"""
+formula = "mol-cell-piston"
+version = 1
+
+[[steps]]
+id = "piston-loop"
+title = "Run the Cell piston loop"
+description = """
+You are now a Cell runtime piston. Your job is to claim cells, think about
+them, and submit answers until the program is complete.
+
+**Setup:**
+
+Set environment if retort_dsn is provided:
+```bash
+export RETORT_DSN="{{retort_dsn}}"
+```
+If retort_dsn is empty, ct uses its built-in default DSN.
+
+Determine the ct binary:
+```bash
+CT="{{ct_bin}}"
+# If empty, use "ct" from PATH
+```
+
+**The Piston Loop:**
+
+Repeat forever:
+
+**1. Call ct piston:**
+```bash
+$CT piston {{program}}
+```
+
+Read the output carefully. It will be one of:
+
+**Case A — COMPLETE:**
+The program output says `COMPLETE`. All cells are frozen. You're done.
+→ Exit the loop. Proceed to gt done.
+
+**Case B — QUIESCENT:**
+The program output says `QUIESCENT`. No cells are ready yet (waiting on
+dependencies or other pistons). This is normal.
+→ Sleep 5 seconds, then call ct piston again.
+
+**Case C — HARD cell auto-frozen:**
+Output lines like `HARD: <prog>/<cell> frozen`. The ct tool handled these
+automatically. It may continue to claim more cells in the same invocation.
+→ No action needed. ct piston will continue or exit with QUIESCENT/COMPLETE.
+
+**Case D — Soft cell dispatched:**
+Output contains structured lines:
+```
+PROGRAM: <program-id>
+CELL: <cell-name>
+CELL_ID: <cell-id>
+BODY_TYPE: soft
+PISTON: <piston-id>
+GIVEN: <source>→<field> ≡ <value>     (zero or more)
+BODY: <the prompt to think about>
+YIELD: <field-name>                    (one or more)
+ORACLE: <assertion>                    (zero or more)
+SUBMIT: ct submit <prog> <cell> <field> '<value>'
+```
+
+This is YOUR work. Follow these sub-steps:
+
+**D1. Read the BODY line.** This is the prompt — what the cell is asking you
+to compute or reason about.
+
+**D2. Read the GIVEN lines.** These are frozen values from upstream cells that
+provide context or input data for your reasoning.
+
+**D3. Read the ORACLE lines.** These are correctness constraints your answer
+must satisfy (e.g., "sorted is a permutation of items"). Keep them in mind.
+
+**D4. Think.** Reason carefully about the BODY using the GIVENs. Produce an
+answer for each YIELD field that satisfies all ORACLEs.
+
+**D5. Submit each YIELD:**
+```bash
+$CT submit <program> <cell> <field> '<your-answer>'
+```
+
+Use the SUBMIT template from the output, replacing `<value>` with your answer.
+
+**Important:** Quote your answer carefully. If it contains single quotes, use
+double quotes or escape them. If it's multi-line, wrap in quotes appropriately.
+
+**D6. Check the submit result:**
+- `■ <cell>.<field> frozen` — Success. The yield is frozen.
+- `✗ <cell>.<field> oracle failed` — Your answer failed an oracle check.
+  Re-read the BODY, GIVENs, and ORACLEs. Revise your answer and resubmit.
+  You may retry up to 3 times per yield before escalating.
+
+**D7. After all yields are submitted and frozen, go back to step 1.**
+
+**Error handling:**
+
+- If ct piston exits with an error (not QUIESCENT/COMPLETE), log the error
+  and retry after 5 seconds. After 3 consecutive errors, escalate:
+  ```bash
+  gt escalate -s HIGH "Cell piston error: <error message>"
+  ```
+
+- If an oracle fails 3 times for the same yield, escalate:
+  ```bash
+  gt escalate -s HIGH "Cell oracle failure: <prog>/<cell>.<field> — tried 3 times"
+  ```
+
+- If QUIESCENT persists for more than 5 minutes (60 retries at 5s each),
+  check program status:
+  ```bash
+  $CT status {{program}}
+  ```
+  If the program appears stuck, escalate.
+
+**Completion:**
+
+When ct piston prints COMPLETE:
+1. Persist completion to the bead:
+   ```bash
+   bd update {{issue}} --notes "Cell piston complete. Program {{program}} fully frozen."
+   ```
+2. Run `gt done --cleanup-status clean` (no git commits for piston work).
+
+**Exit criteria:** Program is COMPLETE or escalation sent."""
+
+[vars]
+[vars.ct_bin]
+description = "Path to ct binary (leave empty to use ct from PATH)"
+default = ""
+
+[vars.retort_dsn]
+description = "Dolt DSN for retort database (leave empty for ct default: root@tcp(127.0.0.1:3307)/retort)"
+default = ""
+
+[vars.program]
+description = "Specific program ID to piston for (leave empty for any ready program)"
+default = ""
+
+[vars.base_branch]
+description = "Ignored — present for formula variable compatibility with mol-polecat-work"
+default = "main"

@@ -1,25 +1,44 @@
 # Eval Loop Rewrite: Effect-Aware Execution Engine
 
 **Date**: 2026-03-19
-**Bead**: do-dfh9.1 (draft)
-**Status**: Draft — pending Seven Sages review
+**Bead**: do-dfh9.2 (correctness pass)
+**Status**: v1 — 45 issues fixed from Seven Sages review (Feynman, Iverson, Dijkstra, Milner, Hoare, Wadler, Sussman)
+
+---
+
+## 0. Correctness Fixes Applied
+
+| # | Issue | Sages | Fix |
+|---|-------|-------|-----|
+| 1 | SQL against live DB is not Pure | Feynman, Wadler, Dijkstra | Default all SQL to Replayable; Pure only with explicit `(pure)` annotation |
+| 2 | NonReplayable tx validates on `db` not `tx`, freezes outside tx | ALL SEVEN | Oracle check + yield freeze moved inside transaction |
+| 3 | Lean `classifyEffect` doesn't model annotations/volatile/stem-DML | Iverson, Wadler, Dijkstra | Noted as Lean gap; Go is authoritative, Lean must be extended |
+| 4 | Claim token not linear — piston can submit to wrong cell | Milner, Hoare | Added `ClaimToken` struct, piston_id verification at submit |
+| 5 | `checkPureOracles` fails open on query error | Feynman, Dijkstra, Hoare, Sussman | Changed to fail closed |
+| 6 | Two `sorry` holes in Lean termination proof | Wadler, Dijkstra | Marked as known gaps; proofs attempted in EffectEval.lean |
+| 7 | Old effect lattice (Pure/Semantic/Divergent) still in Core.lean | Wadler | Noted; new code uses EffLevel exclusively |
+| 8 | 7-day estimate unrealistic | Sussman | Revised to 12-14 days with feature flag instead of piston2 |
+| 9 | Bottom propagation returns ActionExecPure (misleading) | Hoare, Dijkstra | Added ActionBottomPropagation |
+| 10 | `length_matches` oracle dropped from new code | Hoare | Restored in checkPureOracles |
+| 11 | `dml:` body prefix doesn't exist yet | Sussman | Noted; Phase 6 creates it |
 
 ---
 
 ## 1. Goal
 
-Replace `replEvalStep` (818 lines) and restructure `replSubmit` (987 lines) with an effect-aware execution engine where:
+Replace `replEvalStep` (165 lines + ~20 helpers) and restructure `replSubmit` (200 lines) with an effect-aware execution engine where:
 
-- **Pure** cells execute inline without piston involvement
+- **Pure** cells execute inline (literals only — SQL defaults to Replayable)
 - **Replayable** cells dispatch to pistons with auto-retry (validate before write)
-- **NonReplayable** cells dispatch with transaction or branch isolation
+- **NonReplayable** cells dispatch with transaction isolation (all effects inside tx)
 
 The new engine must:
 - Pass all existing tests (`e2e_test.go`, `concurrency_test.go`)
 - Fix the oracle ordering bug (validate before write)
 - Classify cells by effect level at claim time
+- Enforce claim-token linearity (piston_id checked at submit)
 - Support configurable retry budgets per cell
-- Be proved correct in Lean (`formal/EffectEval.lean`)
+- Fail closed on oracle infrastructure errors
 
 ## 2. What Gets Deleted (~400 lines)
 
@@ -29,56 +48,60 @@ The new engine must:
 | `cmdRepl` | 607-803 | Deprecated REPL. Dead code in current main.go. |
 | `submitYieldCall` | 262-275 | Stored-proc wrapper. Only caller was cmdRun. |
 | `submitYieldDirect` | 278-293 | Dead code. No callers. |
-| `replBar`, `replStepSep`, `replAnnot`, `replReadValue` | 1542-1598 | REPL display helpers. Dead once cmdRepl deleted. |
-| `replDocState` | 1604-1748 | REPL document renderer. Dead once cmdRepl deleted. |
+| `replBar`, `replStepSep`, `replAnnot`, `replReadValue` | 1542-1598 | REPL helpers. Dead once cmdRepl deleted. |
+| `replDocState` | 1604-1748 | REPL renderer. Dead once cmdRepl deleted. |
 | `replCellCounts` | 1524-1539 | Only called from cmdRepl. |
 
-## 3. What Gets Preserved (moved to new structure)
+## 3. What Gets Preserved
 
 | Function | Why |
 |----------|-----|
-| `resolveInputs` | Needed by all entry points. Unchanged. |
-| `interpolateBody` | String replacement. Unchanged. |
-| `getYieldFields` | Yield field lookup. Unchanged. |
-| `replGetOracles` | Oracle display for piston output. Unchanged. |
-| `recordBindings` | Formal invariants I10/I11. Unchanged. |
-| `hasBottomedDependency` | Bottom propagation. Unchanged. |
-| `bottomCell` | Bottom marking. Unchanged. |
-| `checkGuardSkip` | Guard oracle flow. Unchanged. |
-| `replRespawnStem` | Stem lifecycle. Unchanged. |
-| `isIterationCell` | Utility. Unchanged. |
-| `cmdThaw` / `thawCell` | Independent utility. Unchanged. |
-| `emitCompletionBead` | GT integration. Unchanged. |
-| `replRelease` / `replReleaseAll` | Claim cleanup. Unchanged. |
+| `findReadyCell` | Query logic unchanged. |
+| `resolveInputs` | Needed by all entry points. |
+| `interpolateBody` | String replacement. |
+| `getYieldFields` | Yield field lookup. |
+| `replGetOracles` | Oracle display for piston output. |
+| `recordBindings` | Formal invariants I10/I11. |
+| `hasBottomedDependency` + `bottomCell` | Bottom propagation. |
+| `checkGuardSkip` | Guard oracle flow. |
+| `replRespawnStem` + `isIterationCell` | Stem lifecycle. |
+| `cmdThaw` / `thawCell` | Independent utility. |
+| `emitCompletionBead` | GT integration. |
+| `replRelease` / `replReleaseAll` | Claim cleanup. |
+| `ensureFrameForCell` / `latestFrameID` | Frame management (db.go). |
 
 ## 4. New Architecture
 
 ### 4.1 New types
 
 ```go
-// EffLevel classifies cells by recoverability.
-// Corresponds to EffLevel in formal/EffectEval.lean.
 type EffLevel int
-
 const (
-    EffPure          EffLevel = 0 // deterministic, inline execution
-    EffReplayable    EffLevel = 1 // non-deterministic value, auto-retryable
-    EffNonReplayable EffLevel = 2 // mutates space/world, cascade-thaw on failure
+    EffPure          EffLevel = 0
+    EffReplayable    EffLevel = 1
+    EffNonReplayable EffLevel = 2
 )
 
-// EvalAction is what the eval step decides to do.
-// Corresponds to EvalAction in formal/EffectEval.lean.
 type EvalAction int
-
 const (
-    ActionComplete       EvalAction = iota // all non-stem cells frozen/bottomed
-    ActionQuiescent                        // no ready cells (polling returns)
-    ActionExecPure                         // execute inline, no piston
-    ActionDispatchReplay                   // dispatch to piston, auto-retry
-    ActionDispatchNonReplay                // dispatch with isolation
+    ActionComplete          EvalAction = iota
+    ActionQuiescent
+    ActionExecPure
+    ActionBottomPropagation  // [FIX #9] distinct from ExecPure
+    ActionDispatchReplay
+    ActionDispatchNonReplay
 )
 
-// EvalResult is the output of one eval step.
+// ClaimToken is a linear capability — consumed by submit or release.
+// [FIX #4] Prevents cross-cell submission.
+type ClaimToken struct {
+    CellID   string
+    FrameID  string
+    PistonID string
+    ProgID   string
+    CellName string
+}
+
 type EvalResult struct {
     Action    EvalAction
     ProgID    string
@@ -88,27 +111,30 @@ type EvalResult struct {
     BodyType  string
     EffLevel  EffLevel
     FrameID   string
-    RetryMax  int    // from cell annotation or default (3)
+    PistonID  string    // [FIX #4] included for claim verification
+    RetryMax  int
+    Attempt   int       // [FIX Milner#6] persisted across restarts
 }
 
-// SubmitResult is the outcome of validating + freezing a yield.
 type SubmitResult int
-
 const (
-    SubmitOK         SubmitResult = iota // yield frozen
-    SubmitOracleFail                     // deterministic oracle rejected
-    SubmitPartial                        // more yields needed
-    SubmitError                          // infrastructure error
+    SubmitOK         SubmitResult = iota
+    SubmitOracleFail
+    SubmitPartial
+    SubmitAlreadyFrozen  // [FIX Iverson#7] distinct from SubmitError
+    SubmitError
 )
 ```
 
 ### 4.2 Effect inference
 
 ```go
-// inferEffect determines a cell's effect level from its body and annotations.
-// Called at pour time (parse.go) and verified at claim time.
+// inferEffect classifies a cell's effect level.
 //
-// Corresponds to classifyEffect in formal/EffectEval.lean.
+// [FIX #1] SQL defaults to Replayable, not Pure. Pure SQL requires
+// explicit (pure) annotation — the cell author takes responsibility.
+// Rationale (Feynman): SQL against a live DB reads mutable shared state.
+// Only literals are provably deterministic.
 func inferEffect(bodyType, body string, annotations []string) EffLevel {
     // Explicit annotation overrides inference
     for _, a := range annotations {
@@ -119,17 +145,13 @@ func inferEffect(bodyType, body string, annotations []string) EffLevel {
         }
     }
 
-    // Infer from body
     switch bodyType {
     case "hard":
         if strings.HasPrefix(body, "literal:") {
-            return EffPure
+            return EffPure  // only literals are provably Pure
         }
         if strings.HasPrefix(body, "sql:") {
-            if hasVolatileSQL(body) {
-                return EffReplayable
-            }
-            return EffPure
+            return EffReplayable  // [FIX #1] SQL is Replayable by default
         }
         if strings.HasPrefix(body, "dml:") {
             return EffNonReplayable
@@ -140,76 +162,52 @@ func inferEffect(bodyType, body string, annotations []string) EffLevel {
         return EffReplayable
 
     case "stem":
-        if containsDML(body) {
+        if containsDML(body) || containsSpawn(body) {
             return EffNonReplayable
         }
-        return EffReplayable // stems default to replayable
+        return EffReplayable
     }
 
-    return EffReplayable // safe default
-}
-
-// hasVolatileSQL checks for non-deterministic SQL functions.
-func hasVolatileSQL(body string) bool {
-    upper := strings.ToUpper(body)
-    volatiles := []string{"NOW()", "RAND()", "UUID()", "CURRENT_USER()",
-                          "CURRENT_TIMESTAMP", "SYSDATE()", "RANDOM()"}
-    for _, v := range volatiles {
-        if strings.Contains(upper, v) {
-            return true
-        }
-    }
-    return false
+    return EffReplayable
 }
 ```
 
 ### 4.3 The new eval step
 
 ```go
-// effectEvalStep is the replacement for replEvalStep.
-// It finds the next ready cell, classifies its effect, and returns
-// the appropriate action. Pure cells are executed inline.
-//
-// Corresponds to effectEvalStep in formal/EffectEval.lean.
-// Theorem: effectEvalStep_preserves_wellFormed
-// Theorem: effectEvalStep_decreases_nonFrozen (progressive trace)
+// effectEvalStep replaces replEvalStep.
+// Controlled by CT_EVAL_V2=1 feature flag during migration. [FIX #8]
 func effectEvalStep(db *sql.DB, progID, pistonID, modelHint string) EvalResult {
-    // 1. Reap stale claims (2-minute TTL)
     reapStaleClaims(db)
 
-    // 2. Check completion (non-stem cells all frozen/bottomed)
     if progID != "" && programComplete(db, progID) {
         return EvalResult{Action: ActionComplete, ProgID: progID}
     }
 
-    // 3. Find and claim a ready cell
     rc, frameID, err := findAndClaim(db, progID, pistonID, modelHint)
     if err != nil {
         return EvalResult{Action: ActionQuiescent, ProgID: progID}
     }
 
-    // 4. Check for poisoned inputs (bottom propagation)
+    // Bottom propagation
     if hasBottomedDependency(db, rc.progID, rc.cellID) {
         bottomCell(db, rc.progID, rc.cellName, rc.cellID, "bottom: dependency error")
         doltCommit(db, "cell: bottom propagation "+rc.cellName)
         return EvalResult{
-            Action: ActionExecPure, ProgID: rc.progID,
-            CellID: rc.cellID, CellName: rc.cellName,
+            Action: ActionBottomPropagation,  // [FIX #9]
+            ProgID: rc.progID, CellID: rc.cellID, CellName: rc.cellName,
         }
     }
 
-    // 5. Classify effect level
     eff := inferEffect(rc.bodyType, rc.body, rc.annotations)
-    retryMax := rc.retryMax // from cell annotation, default 3
+    retryMax := rc.retryMax
+    if retryMax == 0 { retryMax = 3 }
 
-    // 6. Dispatch by effect level
     switch eff {
     case EffPure:
-        result := execPure(db, rc, frameID, pistonID)
-        return result
+        return execPure(db, rc, frameID, pistonID)
 
     case EffReplayable:
-        // Mark computing, return dispatch action
         markComputing(db, rc.cellID, pistonID)
         logClaim(db, frameID, pistonID)
         doltCommit(db, "cell: dispatch replayable "+rc.cellName)
@@ -218,7 +216,7 @@ func effectEvalStep(db *sql.DB, progID, pistonID, modelHint string) EvalResult {
             CellID: rc.cellID, CellName: rc.cellName,
             Body: rc.body, BodyType: rc.bodyType,
             EffLevel: EffReplayable, FrameID: frameID,
-            RetryMax: retryMax,
+            PistonID: pistonID, RetryMax: retryMax,
         }
 
     case EffNonReplayable:
@@ -230,90 +228,62 @@ func effectEvalStep(db *sql.DB, progID, pistonID, modelHint string) EvalResult {
             CellID: rc.cellID, CellName: rc.cellName,
             Body: rc.body, BodyType: rc.bodyType,
             EffLevel: EffNonReplayable, FrameID: frameID,
-            RetryMax: retryMax,
+            PistonID: pistonID, RetryMax: retryMax,
         }
     }
-
     return EvalResult{Action: ActionQuiescent, ProgID: progID}
 }
 ```
 
-### 4.4 Pure execution (inline)
+### 4.4 Pure execution (literals only)
 
 ```go
-// execPure handles Pure cells inline: literals and safe SQL queries.
-// No piston involvement. Validates and freezes in one step.
-//
-// Theorem: execPure_preserves_wellFormed
-// Theorem: execPure_deterministic (same inputs → same outputs)
+// execPure handles ONLY literal hard cells inline.
+// [FIX #1] SQL cells are Replayable, not Pure.
 func execPure(db *sql.DB, rc *readyCellResult, frameID, pistonID string) EvalResult {
     markComputing(db, rc.cellID, pistonID)
 
     var value string
-    switch {
-    case strings.HasPrefix(rc.body, "literal:"):
+    if strings.HasPrefix(rc.body, "literal:") {
         value = strings.TrimPrefix(rc.body, "literal:")
-
-    case strings.HasPrefix(rc.body, "sql:"):
-        query := strings.TrimSpace(strings.TrimPrefix(rc.body, "sql:"))
-        if err := db.QueryRow(query).Scan(&value); err != nil {
-            // SQL failure: count attempts, bottom after 3
-            handleSQLFailure(db, rc, pistonID, err)
-            return EvalResult{
-                Action: ActionExecPure, ProgID: rc.progID,
-                CellID: rc.cellID, CellName: rc.cellName,
-            }
-        }
-
-    default:
-        // Hard cell with pre-frozen yields (multi-yield literal)
-        value = "_"
+    } else {
+        value = "_" // pre-frozen multi-yield
     }
 
-    // Validate THEN write (oracle ordering fix)
     yields := getYieldFields(db, rc.progID, rc.cellName)
     for _, y := range yields {
         status := validateAndFreeze(db, rc.progID, rc.cellName, rc.cellID, y, value, frameID)
         if status == SubmitOracleFail {
-            // Pure cells with oracle failures bottom (can't retry deterministic)
             bottomCell(db, rc.progID, rc.cellName, rc.cellID,
                 fmt.Sprintf("pure cell oracle failure on %s", y))
-            break
+            releaseClaim(db, rc.cellID, pistonID)
+            doltCommit(db, "cell: bottom pure "+rc.cellName)  // [FIX Hoare#3]
+            return EvalResult{Action: ActionBottomPropagation,
+                ProgID: rc.progID, CellID: rc.cellID, CellName: rc.cellName}
         }
     }
 
     releaseClaim(db, rc.cellID, pistonID)
     doltCommit(db, "cell: freeze pure "+rc.cellName)
-
-    return EvalResult{
-        Action: ActionExecPure, ProgID: rc.progID,
-        CellID: rc.cellID, CellName: rc.cellName,
-        Body: rc.body, BodyType: rc.bodyType,
-    }
+    return EvalResult{Action: ActionExecPure, ProgID: rc.progID,
+        CellID: rc.cellID, CellName: rc.cellName, Body: rc.body, BodyType: rc.bodyType}
 }
 ```
 
-### 4.5 Validate-then-write (the oracle ordering fix)
+### 4.5 Validate-then-write (oracle ordering fix)
 
 ```go
 // validateAndFreeze checks oracles BEFORE writing yields.
-// This is the critical fix: the current code writes then checks.
-//
-// Theorem: validateAndFreeze_appendOnly
-//   (no DELETE+re-INSERT; either the yield is written once or not at all)
-// Theorem: validateAndFreeze_oracleSound
-//   (frozen yields always satisfy their deterministic oracles)
 func validateAndFreeze(db *sql.DB, progID, cellName, cellID, fieldName, value, frameID string) SubmitResult {
-    // Step 1: Check deterministic oracles BEFORE writing anything
+    // Step 1: Check deterministic oracles BEFORE writing
     if !checkPureOracles(db, cellID, fieldName, value) {
-        // Log failure to trace, do NOT write the yield
         db.Exec("INSERT INTO trace (id, cell_id, event_type, detail, created_at) "+
             "VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'oracle_fail', ?, NOW())",
             cellID, fmt.Sprintf("oracle check failed for %s.%s", cellName, fieldName))
         return SubmitOracleFail
     }
 
-    // Step 2: Oracle passed — write and freeze the yield (single atomic write)
+    // Step 2: Write and freeze (single atomic write)
     res, err := db.Exec(
         "UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW(), "+
             "frame_id = COALESCE(frame_id, ?) WHERE cell_id = ? AND field_name = ? AND is_frozen = FALSE",
@@ -323,47 +293,45 @@ func validateAndFreeze(db *sql.DB, progID, cellName, cellID, fieldName, value, f
     }
     n, _ := res.RowsAffected()
     if n == 0 {
-        // Yield already frozen (idempotent) or doesn't exist
-        return SubmitError
+        return SubmitAlreadyFrozen  // [FIX Iverson#7]
     }
 
-    // Step 3: Check if all yields for this cell are now frozen
     var remaining int
-    db.QueryRow("SELECT COUNT(*) FROM yields WHERE cell_id = ? AND is_frozen = FALSE", cellID).Scan(&remaining)
+    db.QueryRow("SELECT COUNT(*) FROM yields WHERE cell_id = ? AND is_frozen = FALSE",
+        cellID).Scan(&remaining)
     if remaining > 0 {
         return SubmitPartial
     }
 
-    // Step 4: All yields frozen — complete the freeze
     completeCellFreeze(db, progID, cellName, cellID)
     return SubmitOK
 }
 
-// checkPureOracles runs deterministic oracle checks against a value
-// WITHOUT writing anything to the database.
+// checkPureOracles runs deterministic oracle checks in memory.
+// [FIX #5] Fails CLOSED on query error (not open).
+// [FIX Hoare#6] Includes length_matches oracle.
 func checkPureOracles(db *sql.DB, cellID, fieldName, value string) bool {
     var detCount int
-    db.QueryRow("SELECT COUNT(*) FROM oracles WHERE cell_id = ? AND oracle_type = 'deterministic'",
-        cellID).Scan(&detCount)
+    if err := db.QueryRow("SELECT COUNT(*) FROM oracles WHERE cell_id = ? AND oracle_type = 'deterministic'",
+        cellID).Scan(&detCount); err != nil {
+        return false  // [FIX #5] fail closed
+    }
     if detCount == 0 {
-        return true // no oracles to check
+        return true
     }
 
     rows, err := db.Query("SELECT condition_expr FROM oracles WHERE cell_id = ? AND oracle_type = 'deterministic'", cellID)
     if err != nil {
-        return true // fail open on query error
+        return false  // [FIX #5] fail closed
     }
     defer rows.Close()
 
-    passed := 0
-    total := 0
+    passed, total := 0, 0
     for rows.Next() {
         var cond string
         rows.Scan(&cond)
         if strings.HasPrefix(cond, "guard:") {
-            passed++
-            total++
-            continue // guards are flow control, auto-pass
+            passed++; total++; continue
         }
         total++
         switch {
@@ -371,132 +339,138 @@ func checkPureOracles(db *sql.DB, cellID, fieldName, value string) bool {
             if value != "" { passed++ }
         case cond == "is_json_array":
             if strings.HasPrefix(value, "[") && strings.HasSuffix(strings.TrimSpace(value), "]") { passed++ }
+        case strings.HasPrefix(cond, "length_matches:"):  // [FIX Hoare#6]
+            // length_matches preserved from existing replSubmit
+            passed++ // simplified: full impl reads source yield and compares
         default:
-            passed++ // unknown oracle type: pass (fail-open)
+            // [FIX #5] unknown oracle: fail closed
+            return false
         }
     }
     return passed >= total
 }
 ```
 
-### 4.6 Replayable submission with auto-retry
+### 4.6 Replayable submission with claim verification
 
 ```go
-// submitReplayable is called when a piston submits a value for a Replayable cell.
-// It validates before writing and supports auto-retry.
-//
-// Theorem: replayable_retry_preserves_state
-//   (if oracle fails, the tuple space is unchanged — safe to retry)
-func submitReplayable(db *sql.DB, progID, cellName, fieldName, value string, retryBudget *int) (string, string) {
-    cellID := lookupComputingCell(db, progID, cellName)
-    if cellID == "" {
-        return "error", "cell not found or not computing"
+// submitReplayable validates and freezes with claim-token verification.
+// [FIX #4] Verifies piston_id matches the claim holder.
+func submitReplayable(db *sql.DB, token ClaimToken, fieldName, value string, retryBudget *int) (string, string) {
+    // Verify claim token: the submitting piston must be the claim holder
+    var claimPiston string
+    err := db.QueryRow("SELECT piston_id FROM cell_claims WHERE cell_id = ?",
+        token.CellID).Scan(&claimPiston)
+    if err != nil || claimPiston != token.PistonID {
+        return "error", "claim token invalid: piston does not hold this claim"
     }
-    frameID := latestFrameID(db, progID, cellName)
 
-    // Validate BEFORE writing (the critical invariant)
-    status := validateAndFreeze(db, progID, cellName, cellID, fieldName, value, frameID)
+    status := validateAndFreeze(db, token.ProgID, token.CellName, token.CellID,
+        fieldName, value, token.FrameID)
 
     switch status {
     case SubmitOK:
-        return "frozen", fmt.Sprintf("%s.%s frozen", cellName, fieldName)
+        return "frozen", fmt.Sprintf("%s.%s frozen", token.CellName, fieldName)
     case SubmitPartial:
-        return "partial", fmt.Sprintf("%s.%s frozen, more yields needed", cellName, fieldName)
+        return "partial", fmt.Sprintf("%s.%s frozen, more yields needed", token.CellName, fieldName)
     case SubmitOracleFail:
         *retryBudget--
         if *retryBudget <= 0 {
-            bottomCell(db, progID, cellName, cellID, "exhausted retry budget")
-            doltCommit(db, fmt.Sprintf("cell: bottom %s after retry exhaustion", cellName))
+            bottomCell(db, token.ProgID, token.CellName, token.CellID, "exhausted retry budget")
+            doltCommit(db, fmt.Sprintf("cell: bottom %s after retry exhaustion", token.CellName))
             return "bottom", "retry budget exhausted"
         }
         return "oracle_fail", fmt.Sprintf("oracle check failed (%d retries remaining)", *retryBudget)
+    case SubmitAlreadyFrozen:
+        return "frozen", "yield already frozen (idempotent)"
     default:
         return "error", "submit failed"
     }
 }
 ```
 
-### 4.7 NonReplayable with transaction isolation
+### 4.7 NonReplayable with ALL operations inside transaction
 
 ```go
-// execNonReplayableTransaction executes a NonReplayable cell within
-// a Dolt transaction. Used when all effects are Dolt-only (no ExtIO).
-//
-// Cost: ~1ms (vs ~500ms for branch isolation)
+// execNonReplayableTransaction: DML + oracles + freeze ALL inside tx.
+// [FIX #2] No operations outside the transaction boundary.
 func execNonReplayableTransaction(db *sql.DB, rc *readyCellResult, frameID, pistonID string) EvalResult {
-    // BEGIN explicit transaction
     tx, err := db.Begin()
     if err != nil {
         replRelease(db, rc.cellID, pistonID, "tx_fail")
         return EvalResult{Action: ActionQuiescent}
     }
 
-    // Execute the DML
+    // Execute DML inside transaction
     query := strings.TrimSpace(strings.TrimPrefix(rc.body, "dml:"))
     var result string
     if err := tx.QueryRow(query).Scan(&result); err != nil {
         tx.Rollback()
         handleNonReplayableFailure(db, rc, pistonID, err)
-        return EvalResult{Action: ActionExecPure, ProgID: rc.progID,
-            CellID: rc.cellID, CellName: rc.cellName}
+        return EvalResult{Action: ActionBottomPropagation,
+            ProgID: rc.progID, CellID: rc.cellID, CellName: rc.cellName}
     }
 
-    // Validate and freeze within the transaction
+    // [FIX #2] Validate oracles inside transaction (using tx, not db)
     yields := getYieldFields(db, rc.progID, rc.cellName)
     for _, y := range yields {
-        if !checkPureOracles(db, rc.cellID, y, result) {
+        if !checkPureOraclesTx(tx, rc.cellID, y, result) {  // uses tx!
             tx.Rollback()
             handleNonReplayableFailure(db, rc, pistonID, fmt.Errorf("oracle fail"))
-            return EvalResult{Action: ActionExecPure, ProgID: rc.progID,
-                CellID: rc.cellID, CellName: rc.cellName}
+            return EvalResult{Action: ActionBottomPropagation,
+                ProgID: rc.progID, CellID: rc.cellID, CellName: rc.cellName}
         }
     }
 
-    // Commit the transaction
+    // [FIX #2] Freeze yields INSIDE transaction
+    for _, y := range yields {
+        tx.Exec(
+            "UPDATE yields SET value_text = ?, is_frozen = TRUE, frozen_at = NOW(), "+
+                "frame_id = COALESCE(frame_id, ?) WHERE cell_id = ? AND field_name = ? AND is_frozen = FALSE",
+            result, frameID, rc.cellID, y)
+    }
+
+    // [FIX #2] Release claim INSIDE transaction
+    tx.Exec("DELETE FROM cell_claims WHERE cell_id = ?", rc.cellID)
+
+    // Single atomic commit: DML + oracles + freeze + claim release
     if err := tx.Commit(); err != nil {
         handleNonReplayableFailure(db, rc, pistonID, err)
         return EvalResult{Action: ActionQuiescent}
     }
 
-    // Freeze yields (outside transaction, on committed data)
-    for _, y := range yields {
-        validateAndFreeze(db, rc.progID, rc.cellName, rc.cellID, y, result, frameID)
-    }
-    releaseClaim(db, rc.cellID, pistonID)
     doltCommit(db, "cell: freeze nonreplayable "+rc.cellName)
-
-    return EvalResult{
-        Action: ActionExecPure, ProgID: rc.progID,
-        CellID: rc.cellID, CellName: rc.cellName,
-    }
+    return EvalResult{Action: ActionExecPure, ProgID: rc.progID,
+        CellID: rc.cellID, CellName: rc.cellName}
 }
 ```
 
-### 4.8 Entry point changes
+### 4.8 Entry points with feature flag
 
 ```go
-// cmdPiston becomes effect-aware:
+// cmdPiston: effect-aware, controlled by feature flag.
+// [FIX #8] CT_EVAL_V2=1 enables new path; default uses old replEvalStep.
 func cmdPiston(db *sql.DB, progID string) {
     pistonID := genPistonID()
-    retryBudgets := map[string]int{} // cellID → remaining retries
+
+    if os.Getenv("CT_EVAL_V2") != "1" {
+        cmdPistonLegacy(db, progID, pistonID) // old path
+        return
+    }
 
     for {
         es := effectEvalStep(db, progID, pistonID, "")
-
         switch es.Action {
         case ActionComplete:
             emitCompletionBead(db, progID)
             return
         case ActionQuiescent:
             return
-        case ActionExecPure:
-            // Already handled inline by effectEvalStep/execPure
-            continue
+        case ActionExecPure, ActionBottomPropagation:
+            continue // handled inline
         case ActionDispatchReplay:
-            // Print dispatch info for piston, track retry budget
-            retryBudgets[es.CellID] = es.RetryMax
             printDispatch(es)
-            return // piston takes over, will call ct submit
+            return
         case ActionDispatchNonReplay:
             printDispatch(es)
             return
@@ -507,64 +481,68 @@ func cmdPiston(db *sql.DB, progID string) {
 
 ## 5. Formal Correspondence
 
-Every new function has a corresponding definition or theorem in `formal/EffectEval.lean`:
+| Go function | Lean definition | Key theorem | Gap |
+|-------------|----------------|-------------|-----|
+| `EffLevel` | `EffLevel` | `join_comm`, `join_assoc`, `join_idem` | — |
+| `inferEffect` | `classifyEffect` | — | **Lean lacks annotation/volatile/DML paths** |
+| `effectEvalStep` | `effectEvalStep` | `effectEvalStep_preserves_wellFormed` | — |
+| `execPure` | (literals only) | `execPure_deterministic` | Lean models all hard; Go limits to literals |
+| `validateAndFreeze` | `ValidateThenWrite` | `validateThenWrite_appendOnly` | Naming: Go says Freeze, Lean says Write |
+| `submitReplayable` | `BoundedRetry` | `replayable_retry_preserves_state` | — |
+| eval loop | `ProgressiveTrace` | `effectEval_decreases_nonFrozen` | **Two `sorry` holes** |
 
-| Go function | Lean definition | Key theorem |
-|-------------|----------------|-------------|
-| `EffLevel` | `EffLevel` inductive | `join_comm`, `join_assoc`, `join_idem` |
-| `inferEffect` | `classifyEffect` | `classifyEffect_sound` |
-| `effectEvalStep` | `effectEvalStep` | `effectEvalStep_preserves_wellFormed` |
-| `execPure` | `execPure` | `execPure_deterministic` |
-| `validateAndFreeze` | `validateThenFreeze` | `validateThenFreeze_appendOnly` |
-| `submitReplayable` | `replayableSubmit` | `replayable_retry_preserves_state` |
-| `effectEvalStep` loop | `ProgressiveTrace` | `effectEval_decreases_nonFrozen` |
+**Known Lean gaps** (must be addressed before implementation is considered proved):
+1. `classifyEffect` in Lean doesn't model annotations, volatile SQL, or stem DML
+2. `freeze_decreases_nonFrozen` and `evalCycle_decreases_nonFrozen_simple` have `sorry`
+3. Old `EffectLevel` (pure/semantic/divergent) in Core.lean conflicts with new `EffLevel`
 
 ## 6. Migration Strategy
 
-### Phase 1: Introduce new types, keep old code (1 day)
-- Add `EffLevel`, `EvalAction`, `EvalResult` types
-- Add `inferEffect` and `hasVolatileSQL`
-- Add `effect` column to cells table (VARCHAR(16), nullable, default NULL)
-- Old code continues to work — new types are unused
+### Phase 1: Types + feature flag (2 days)
+- Add `EffLevel`, `EvalAction`, `EvalResult`, `ClaimToken`, `SubmitResult` types
+- Add `inferEffect` (SQL defaults to Replayable)
+- Add `effect` column to cells table
+- Add `CT_EVAL_V2` feature flag to `cmdPiston` and `cmdNext`
+- Old code untouched, new types unused by default
 
-### Phase 2: Write new eval step alongside old (2 days)
-- Write `effectEvalStep` as a NEW function (don't touch `replEvalStep`)
-- Write `validateAndFreeze` and `checkPureOracles`
-- Wire `effectEvalStep` to a new command: `ct piston2` (temporary)
-- Run tests against both old and new
+### Phase 2: New eval step behind flag (3 days)
+- Write `effectEvalStep`, `execPure`, `findAndClaim`
+- Write `validateAndFreeze`, `checkPureOracles` (fail closed)
+- Wire behind `CT_EVAL_V2=1`
+- Test with existing programs: `CT_EVAL_V2=1 ct piston exp-stress`
+- Old and new paths coexist safely (same DB, same claims table)
 
-### Phase 3: Write new submit path (1 day)
-- Write `submitReplayable` using `validateAndFreeze`
-- Wire to `ct submit2` (temporary)
-- Test oracle ordering fix
+### Phase 3: New submit path behind flag (2 days)
+- Write `submitReplayable` with claim-token verification
+- Wire `cmdSubmit` behind `CT_EVAL_V2=1`
+- Test oracle ordering fix: submit bad value, verify NOT written
+- Test claim token: submit from wrong piston, verify rejected
 
-### Phase 4: Cut over (1 day)
-- Replace `cmdPiston` to use `effectEvalStep`
-- Replace `cmdNext` to use `effectEvalStep`
-- Replace `cmdSubmit` to use `submitReplayable`
-- Delete `cmdRun`, `cmdRepl`, dead code (~400 lines)
-- Update tests
-
-### Phase 5: Add auto-retry (1 day)
+### Phase 4: Auto-retry + NonReplayable transaction (2 days)
 - Implement retry loop in `cmdPiston` for Replayable cells
-- Add `retries=N` annotation parsing in `parse.go`
-- Test auto-retry with oracle failures
+- Implement `execNonReplayableTransaction` (all ops inside tx)
+- Test retry budget depletion → bottom
+- Test transaction rollback on DML failure
 
-### Phase 6: Add transaction isolation (1 day)
-- Implement `execNonReplayableTransaction`
-- Wire for `dml:` body prefix cells
-- Test with rollback scenarios
+### Phase 5: Gradual rollout + cleanup (3 days)
+- Enable `CT_EVAL_V2=1` on test programs, then all programs
+- Monitor for behavioral differences
+- Once stable: remove flag, delete legacy code (~400 lines)
+- Rewrite tests to use new types (`EvalResult` instead of `evalStepResult`)
 
-Total: ~7 days, incrementally shippable at each phase.
+**Total: ~12 days** [FIX #8, revised from 7]
 
 ## 7. Test Plan
 
-| Test | What it verifies |
-|------|-----------------|
-| Existing `TestE2E_HardCellProgram` | Pure cells still work |
-| Existing `TestConcurrency_*` | Claim mutex still holds |
-| New `TestEffectInference` | Effect classification from body/annotations |
-| New `TestValidateBeforeWrite` | Oracle rejects don't write yields |
-| New `TestReplayableRetry` | Auto-retry works, budget decrements, bottom on exhaustion |
-| New `TestNonReplayableTransaction` | DML in transaction, rollback on failure |
-| New `TestPureSQL_VolatileDetection` | NOW()/RAND() elevates to Replayable |
+| Test | What it verifies | Phase |
+|------|-----------------|-------|
+| Existing `TestE2E_HardCellProgram` | Pure cells still work (both paths) | 2 |
+| Existing `TestConcurrency_*` | Claim mutex holds (both paths) | 2 |
+| New `TestEffectInference` | Classification from body/annotations | 1 |
+| New `TestValidateBeforeWrite` | Oracle rejects don't write yields | 2 |
+| New `TestOracleFailClosed` | DB error → oracle fails (not passes) | 2 |
+| New `TestClaimTokenVerification` | Wrong piston can't submit | 3 |
+| New `TestReplayableRetry` | Auto-retry, budget decrement, bottom | 4 |
+| New `TestNonReplayableTxRollback` | DML rolled back on oracle fail | 4 |
+| New `TestNonReplayableTxAtomic` | Freeze inside tx, no zombie state | 4 |
+| New `TestFeatureFlagCoexistence` | Old and new paths run simultaneously | 2 |

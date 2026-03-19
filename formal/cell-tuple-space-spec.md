@@ -1,7 +1,20 @@
 # Cell: A Versioned Tuple Space with Effect-Aware Execution
 
-**Draft v0 (do-wl6f.1)** — 2026-03-18
-**Status**: Draft — shape over polish. Synthesized from Wadler, Milner, Dijkstra sage specs.
+**v1 (do-wl6f.2)** — 2026-03-19
+**Status**: Refine 1 (correctness). Fixes 21 issues from Dijkstra, Wadler, Sussman reviews.
+
+---
+
+## 0. Prerequisites
+
+The following existing bugs must be resolved before implementing this spec:
+
+- **do-7i1.5**: Frame migration — re-key from cell_id to frame_id (unblocks branch isolation, effect tracking)
+- **do-7i1.3**: Drop `cells.state` — derive state from frames (unblocks clean effect model)
+- **do-92tf**: Stem completion bug — programs complete before stems run (conflicts with stem effect model)
+- **do-71ms**: Guard-skip bottom propagation — poisons downstream cells (conflicts with thaw semantics)
+
+Estimated prerequisite work: ~10 days. Spec implementation: ~10 days after.
 
 ---
 
@@ -58,13 +71,15 @@ Five operations, mapped to Linda:
 
 | Cell operation | Linda | Description | Effect |
 |---|---|---|---|
-| `pour(cells)` | `out` | Add tuples to the space | Pure (append-only) |
-| `claim(frame, piston)` | `in` | Destructive read with linear token | Pure (mutex via UNIQUE) |
+| `pour(cells)` | `out` | Add tuples to the space | Replayable (extends DAG, append-only, idempotent) |
+| `claim(frame, piston)` | `inp` | Non-blocking destructive read with linear token | Pure (mutex via UNIQUE) |
 | `submit(handle, yields)` | — | Consume token, write results | Pure (append yields, remove claim) |
-| `observe(query)` | `rd` | Non-destructive read | Pure (read frozen yields) |
-| `thaw(cell, gen)` | — | Time-travel rewind | NonReplayable (cascade-thaw) |
+| `observe(query)` | `rd` | Non-destructive read of frozen yields | Pure |
+| `thaw(cell, gen)` | — | Time-travel rewind (no Linda equivalent) | NonReplayable (cascade-thaw) |
 
-`claim` returns a **linear token** (the `ClaimHandle`). The token must be consumed exactly once — by `submit` or `release`. This is enforced by `INSERT IGNORE + UNIQUE(frame_id)`.
+**Note on Linda mapping**: Cell uses polling semantics (`inp`), not blocking (`in`). The executor returns "quiescent" when no ready cell exists rather than blocking. Classical Linda liveness results (deadlock freedom via blocking `in`) do not transfer directly. Cell's progress guarantee comes from `ProgressiveTrace` (monotonically decreasing non-frozen count under fair scheduling).
+
+`claim` returns a **linear token** (the `ClaimHandle`). The token must be consumed exactly once — by `submit` or `release`. Enforced by `INSERT IGNORE + UNIQUE(frame_id)`.
 
 ### 2.3 Properties
 
@@ -72,26 +87,37 @@ Five operations, mapped to Linda:
 2. **Claim mutex**: at most one piston per frame (`Claims.lean: always_mutex_on_valid_trace`).
 3. **Yield immutability**: once frozen, a yield value never changes.
 4. **DAG acyclicity**: givens form a DAG over cell names (`noSelfLoops`, `generationOrdered`).
-5. **Time-travel safety**: `thaw(cell, g)` produces a valid tuple space with cells at gen g-1 state.
-6. **Branch isolation**: operations on branch B do not affect main until merge.
+5. **Time-travel safety**: `thaw(cell, g)` produces a valid tuple space (see Section 4.4).
+6. **Branch isolation**: operations on branch B do not affect main until merge. **Caveat**: holds only for effects routed through Dolt; `ExtIO` effects are not confined by branches (see Section 5.4).
 
 ---
 
 ## 3. Effect Lattice
 
-Effects are classified by **recoverability** — what happens when the operation fails:
+Effects are classified by **recoverability** — what happens when the operation fails.
+
+The three levels form a **totally ordered set** (not a partial order):
 
 ```
 Pure  <  Replayable  <  NonReplayable
 ```
+
+The join operation is `max` on this total order:
+
+```
+join : EffLevel -> EffLevel -> EffLevel
+join a b = max(a, b)
+```
+
+This is commutative, associative, and idempotent by construction.
 
 ### 3.1 Definitions
 
 | Level | Meaning | Failure recovery | Runtime behavior |
 |---|---|---|---|
 | **Pure** | Deterministic, no external agent needed | Retry is free (same result) | Execute inline, no pause |
-| **Replayable** | Non-deterministic value production (LLM oracle) | Auto-retry (bounded, N attempts) | Pause at boundary, auto-retry on failure, bottom on exhaustion |
-| **NonReplayable** | Mutates tuple space or external world | Cascade-thaw required (Dolt time travel) | Pause for authorization, branch isolation, merge-on-approval |
+| **Replayable** | Non-deterministic value production (LLM oracle) | Auto-retry (bounded, N attempts, configurable per-cell) | Pause at boundary, auto-retry on failure, bottom on exhaustion |
+| **NonReplayable** | Mutates the tuple space or external world | Cascade-thaw or transaction rollback required | Pause for authorization, isolated execution, merge-on-approval |
 
 ### 3.2 Operation classification
 
@@ -99,40 +125,43 @@ Pure  <  Replayable  <  NonReplayable
 PistonOp : EffLevel -> Type -> Type
 
 -- Pure operations
-Lookup   : FieldName -> PistonOp Pure String       -- read resolved given
-Yield    : FieldName -> String -> PistonOp Pure ()  -- write yield value
-SQLQuery : String -> PistonOp Pure String           -- read-only SQL (SELECT)
+Lookup    : FieldName -> PistonOp Pure String        -- read resolved given
+YieldVal  : FieldName -> String -> PistonOp Pure ()  -- write yield value
+SQLQuery  : String -> PistonOp Pure String           -- read-only SQL (see note)
+PureCheck : Assertion -> String -> PistonOp Pure Bool -- deterministic oracle (not_empty, is_json)
 
 -- Replayable operations
-LLMCall  : String -> PistonOp Replayable String     -- invoke LLM oracle
-OracleChk: Assertion -> String -> PistonOp Replayable Bool  -- check oracle
+LLMCall   : String -> PistonOp Replayable String     -- invoke LLM oracle
+LLMJudge  : Assertion -> String -> PistonOp Replayable Bool  -- semantic oracle (check~)
 
 -- NonReplayable operations
-SQLExec  : String -> PistonOp NonReplayable String  -- SQL DML (INSERT/UPDATE/DELETE)
-Spawn    : CellDef -> PistonOp NonReplayable ()     -- pour new cells
-Thaw     : CellName -> Gen -> PistonOp NonReplayable ()  -- cascade rewind
-ExtIO    : IOAction -> PistonOp NonReplayable String -- external side effect
+SQLExec   : String -> PistonOp NonReplayable String  -- SQL DML (INSERT/UPDATE/DELETE)
+Spawn     : CellDef -> PistonOp NonReplayable ()     -- pour new cells into the space
+Thaw      : CellName -> Gen -> PistonOp NonReplayable ()  -- cascade rewind
+ExtIO     : IOAction -> PistonOp NonReplayable String -- external side effect (net, fs)
 ```
+
+**SQLQuery purity precondition**: `SQLQuery` is Pure only when (a) the query contains no volatile functions (`NOW()`, `RAND()`, `UUID()`, `CURRENT_USER()`), and (b) all referenced data is from frozen yields or committed generations. If either condition fails, the query is Replayable. The runtime validates this at pour time via static analysis of the SQL; dynamic violations are caught at execution.
+
+**Oracle split**: Deterministic oracles (`not_empty`, `is_json_array`, `is_valid_json`, `length_matches`) are `PureCheck` (Pure). Semantic oracles (`check~`, which spawn LLM judge cells) are `LLMJudge` (Replayable). This prevents simple format checks from inflating a cell's effect level.
+
+**Pour vs Spawn**: `pour` (Section 2.2) is the runtime operation that loads a `.cell` file — it is controlled by the operator, not by a piston. `Spawn` is a piston-initiated pour from within a cell body (e.g., cell-zero-eval). `pour` is an administrative operation outside the effect system. `Spawn` is a piston operation inside it, classified NonReplayable because it extends the DAG.
 
 ### 3.3 Composition
 
-The join semilattice governs composition:
+A **cell's** effect level is the join (max) of all operations it uses. The executor makes decisions **per-cell**, not per-program. A program with one NonReplayable cell still executes its Pure cells inline without branching — the effect level governs individual cell execution, not the program as a whole.
 
-```
-join(Pure, e) = e
-join(Replayable, Replayable) = Replayable
-join(_, NonReplayable) = NonReplayable
-```
-
-A cell's effect level is the join of all operations it uses. A program's effect level is the join of all its cells.
+**Program-level effect** (informational only): the join of all cells in the program. Useful for documentation and capability auditing, but does NOT govern runtime behavior.
 
 ### 3.4 Key laws
 
-1. **Pure determinism**: same inputs → same outputs. Pure cells are cacheable.
-2. **Replayable bounded retry**: runtime can auto-retry up to N times, producing bottom on exhaustion.
-3. **NonReplayable cascade-thaw**: retry requires `thaw(cell, gen)` which invalidates all transitive dependents.
-4. **Effect monotonicity**: a cell declared Pure cannot perform Replayable or NonReplayable operations.
-5. **Handler equivalence for Pure**: any handler produces the same result for Pure cells (parametricity of purity).
+1. **Pure determinism**: same inputs → same outputs. Pure cells are cacheable (referential transparency).
+2. **Replayable bounded retry**: runtime can auto-retry up to N times (configurable per-cell, default 3), producing bottom on exhaustion.
+3. **Replayable retry safety**: retrying a Replayable cell has no observable effect on the tuple space — no mutation occurs until submission passes validation.
+4. **NonReplayable cascade-thaw**: retry requires `thaw(cell, gen)` which invalidates all transitive dependents.
+5. **Effect monotonicity**: a cell cannot exceed its declared effect level. The handler rejects operations above the declared level. **Caveat**: effect inference may be unsound (a soft cell prompt could instruct an LLM to produce SQL); the runtime validates dynamically at submission time.
+6. **Handler equivalence for Pure**: any handler produces the same result for Pure cells.
+7. **Thaw-pour cancellation**: `thaw(c, g); pour(c)` is equivalent to `reset(c, g)` — thaw fully undoes pour's DAG extensions for the affected cells.
 
 ---
 
@@ -140,54 +169,86 @@ A cell's effect level is the join of all operations it uses. A program's effect 
 
 ### 4.1 The deterministic executor
 
-The executor processes cells in topological order of the DAG:
+The executor processes cells individually in topological order of the DAG:
 
 ```
 loop:
   find cell where all givens are frozen AND not claimed AND not frozen
+  if none: return quiescent (polling, not blocking)
+
   match cell.effect:
     Pure:
-      execute inline (literal, sql-query)
+      execute inline (literal, sql-query with purity check)
       freeze yields
       continue loop
+
     Replayable:
-      pause — dispatch to piston
-      on submit: check oracles BEFORE writing yields
-        pass → freeze yields, continue loop
-        fail → auto-retry (up to N), then bottom
+      dispatch to piston
+      on submit:
+        check PureCheck oracles (deterministic) BEFORE writing
+        IF pass: write yield to DB, freeze, continue loop
+        IF fail: reject, auto-retry (up to N per cell), then bottom
+      between retries: no tuple space mutation (cell stays "computing")
+
     NonReplayable:
-      pause — dispatch to piston on isolated branch
-      on submit: validate on branch, merge to main
-        pass → freeze yields, continue loop
-        fail → drop branch, cascade-thaw, re-pour
+      IF effects are Dolt-only (SQLExec, Spawn):
+        execute in Dolt transaction (BEGIN/COMMIT)
+        on failure: ROLLBACK, cascade-thaw
+      IF effects include ExtIO:
+        create Dolt branch `piston/{id}`
+        dispatch to piston on branch
+        on submit: validate on branch, merge to main
+        on failure: drop branch, cascade-thaw
 ```
 
 ### 4.2 Oracle ordering (critical fix)
 
-Yields MUST be validated BEFORE writing to the database. The current implementation writes then checks — this is unsound. The correct order:
+Yields MUST be validated BEFORE writing to the database. The current implementation writes then checks — this is **unsound** (violates append-only invariant via DELETE+re-INSERT on retry). The correct order:
 
 ```
-1. Piston submits value
-2. Runtime checks all deterministic oracles against the value
+1. Piston submits value (held in memory, NOT written to DB)
+2. Runtime checks all PureCheck oracles against the value
 3. IF pass: write yield to DB, freeze
 4. IF fail: reject submission, allow retry (do NOT write)
 ```
 
-### 4.3 Branch-per-piston isolation
+### 4.3 NonReplayable isolation (two modes)
 
-For NonReplayable cells:
+**Transaction isolation** (for Dolt-only effects — SQLExec, Spawn):
+Dolt supports `BEGIN`/`COMMIT`/`ROLLBACK`. This is cheaper than branching (~1ms vs ~500ms) and sufficient when all effects go through Dolt. On failure, ROLLBACK undoes the transaction.
 
-```
-1. claim creates Dolt branch `piston/{id}`
+**Branch isolation** (for external effects — ExtIO, net):
+When a cell has effects outside Dolt, transaction rollback is insufficient. Branch-per-piston provides full isolation:
+1. Claim creates Dolt branch `piston/{id}`
 2. Piston operates on its branch (full SQL access — can't hurt main)
-3. Runtime validates yield on the branch (oracles, scope check)
+3. Runtime validates yield on the branch
 4. Runtime merges branch to main (the authority boundary)
 5. Branch dropped
+
+### 4.4 Cascade-thaw mechanics
+
+When a NonReplayable cell fails and requires thaw:
+
+```
+thaw(cell, gen):
+  1. Bottom all transitive dependent frames at the current generation
+  2. Release any active claims on those frames (stale claims)
+  3. Create gen N+1 frames for the thawed cell and all dependents
+  4. The thawed cell and dependents return to "declared" state at gen N+1
+  5. DOLT_COMMIT records the thaw as an epoch boundary
 ```
 
-For Replayable cells: no branch needed — the piston produces a value, the runtime validates and writes. Auto-retry is cheap because no state was mutated.
+Reference implementation: `ct thaw` (commit `c8ccdc0`).
 
-For Pure cells: no piston interaction at all — the runtime executes directly.
+### 4.5 Cell-zero-eval and mixed-effect stems
+
+`cell-zero-eval` is the meta-program where pistons pour and evaluate other programs. Its stem cells (`eval-one`, `pour-one`) are mixed-effect: the LLM call is Replayable, but the SQL mutations (INSERT cells, UPDATE state) are NonReplayable.
+
+**Canonical decomposition pattern**: split mixed-effect stems into sub-cells:
+- A Replayable cell that produces the LLM judgment (what to do)
+- A NonReplayable cell that executes the SQL (doing it)
+
+This keeps the effect lattice honest and allows the Replayable part to be auto-retried without cascading.
 
 ---
 
@@ -199,28 +260,38 @@ For Pure cells: no piston interaction at all — the runtime executes directly.
 - `yield_immutability`: frozen yields never change
 
 ### 5.2 New (from tuple space reframing)
-- **Linda laws**: `out(t); in(t)` retrieves the same tuple (grounded in append-only proofs)
-- **Time-travel safety**: `thaw(cell, g)` preserves well-formedness
-- **Branch isolation**: operations on branch B do not affect main
-- **Merge correctness**: merging a branch with valid yields preserves main's well-formedness
+- **Linda laws**: `out(t); inp(t)` retrieves the same tuple (grounded in append-only proofs)
+- **Time-travel safety**: `thaw(cell, g)` preserves well-formedness; cascade terminates (gen is bounded)
+- **Branch isolation**: operations on branch B do not affect main (for Dolt-routed effects only)
+- **Merge correctness**: merging a branch with valid yields preserves main's well-formedness (requires disjoint yield sets)
 
 ### 5.3 New (from effect distinction)
-- **Pure cell determinism**: same inputs → same outputs (provable for literals and deterministic SQL)
-- **Replayable bounded retry**: total correctness with decreasing retry budget
-- **NonReplayable cascade-thaw correctness**: thaw preserves well-formedness, cascade terminates
-- **Effect monotonicity**: a cell cannot exceed its declared effect level (handler typing)
+- **Pure cell determinism**: same inputs → same outputs (provable for literals; for SQL, requires purity precondition on query)
+- **Replayable bounded retry**: total correctness with decreasing retry budget as variant
+- **Replayable retry effect-freedom**: no tuple-space mutation between retries
+- **NonReplayable cascade-thaw correctness**: thaw preserves well-formedness, cascade terminates, thaw-pour cancellation holds
+- **Effect monotonicity**: a cell cannot exceed its declared effect level (provable for handler-typed execution; inference soundness is a separate obligation)
 
 ### 5.4 What cannot be proved
 - `bodiesFaithful` for LLM pistons — remains a runtime assumption
 - Oracle semantic correctness — LLM judge may be wrong
-- **BUT**: scope confinement IS now provable under branch isolation (piston literally cannot access data outside its branch)
+- Effect inference soundness for prompt injection — an LLM instructed to emit DML via prompt cannot be caught by the effect system; runtime validates at submission
+- **Scope confinement**: provable for cells whose effects route through Dolt (branch isolation). NOT provable for cells using `ExtIO` — external effects escape the branch boundary
 
 ### 5.5 Weakest preconditions
 
+For producing a **non-bottom** result:
+
 ```
-wp(pure_cell)          = inputs_resolved ∧ body_deterministic
-wp(replayable_cell)    = inputs_resolved ∧ retryBudget > 0
-wp(nonreplayable_cell) = inputs_resolved ∧ authorized ∧ branch_created
+wp(pure_cell, non_bottom)          = inputs_resolved ∧ body_deterministic
+wp(replayable_cell, non_bottom)    = inputs_resolved ∧ retryBudget > 0
+wp(nonreplayable_cell, non_bottom) = inputs_resolved ∧ authorized ∧ (transaction_available ∨ branch_created)
+```
+
+For producing **any valid result** (including bottom):
+
+```
+wp(any_cell, valid) = inputs_resolved
 ```
 
 ---
@@ -233,7 +304,7 @@ The .cell DSL stays small. Effect annotations ride on the existing parenthetical
 cell seed (pure)
   yield n = 10
 
-cell compute (replayable)
+cell compute (replayable, retries=5)
   given seed.n
   yield sequence
   ---
@@ -249,30 +320,36 @@ cell deploy (nonreplayable, sql:write)
   ---
 ```
 
-**Default inference** (backward compatible):
+**Default inference** (backward compatible, runtime validates dynamically):
 - `yield x = "literal"` → Pure
-- `sql: SELECT ...` → Pure
+- `sql: SELECT ...` (no volatile functions) → Pure
+- `sql: SELECT ...` (with NOW/RAND) → Replayable
 - Soft cell with body text → Replayable
-- `(stem)` → NonReplayable
+- `(stem)` → **Replayable** (NOT NonReplayable — stems default to oracle-like)
+- `(stem)` with DML/Spawn/ExtIO in body → NonReplayable
 - `dml:` or `sql:` containing DML → NonReplayable
 
-Seven annotation tokens: `pure`, `replayable`, `nonreplayable`, `sql:read`, `sql:write`, `sql:ddl`, `io`, `net`.
+Annotation tokens: `pure`, `replayable`, `nonreplayable`, `stem`, `sql:read`, `sql:write`, `sql:ddl`, `io`, `net`, `retries=N`.
 
 ---
 
 ## 7. Implementation Path
 
-| # | Change | Touches | Effort |
-|---|--------|---------|--------|
-| 1 | Fix oracle ordering (validate before write) | `eval.go`, `procedures.sql` | 1 day |
-| 2 | Add `effect` column to cells table | `retort-init.sql`, `parse.go` | 0.5 day |
-| 3 | Infer effect level at pour time | `parse.go` (cellsToSQL) | 1 day |
-| 4 | Branch-per-piston for NonReplayable cells | `eval.go` (replEvalStep) | 3 days |
-| 5 | Auto-retry for Replayable cells | `eval.go` (replEvalStep) | 1 day |
-| 6 | Split `sql:` into `sql-query:` / `dml:` | `parse.go`, `eval.go` | 1 day |
-| 7 | Formal model: EffLevel in Lean | `TupleSpace.lean`, `Core.lean` | 2 days |
+| # | Change | Touches | Effort | Blocked by |
+|---|--------|---------|--------|------------|
+| 0a | Frame migration (re-key cell_id → frame_id) | schema, eval.go, parse.go | 5 days | — |
+| 0b | Drop cells.state (derive from frames) | schema, eval.go, watch.go | 3 days | 0a |
+| 0c | Fix stem completion + guard poison bugs | eval.go | 2 days | 0a |
+| 1 | Fix oracle ordering (validate before write) | eval.go, procedures.sql | 1 day | — |
+| 2 | Add `effect` column to cells table | retort-init.sql, parse.go | 0.5 day | 0a |
+| 3 | Infer effect level at pour time | parse.go (cellsToSQL) | 1 day | 2 |
+| 4a | Transaction isolation for Dolt-only NonReplayable | eval.go | 1 day | 0a |
+| 4b | Branch isolation for ExtIO NonReplayable | eval.go | 3 days | 4a |
+| 5 | Auto-retry for Replayable cells (configurable N) | eval.go | 1 day | 1 |
+| 6 | Split `sql:` into `sql-query:` / `dml:` | parse.go, eval.go | 1 day | 3 |
+| 7 | Formal model: EffLevel in Lean | TupleSpace.lean, Core.lean | 2 days | — |
 
-Total: ~10 days. Items 1-3 can proceed in parallel. Item 4 is the infrastructure. Items 5-7 build on it.
+Prerequisites: ~10 days (0a-0c). Spec work: ~11 days (1-7). Items 1 and 7 can start in parallel with prerequisites.
 
 ---
 

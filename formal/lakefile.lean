@@ -23,3 +23,6 @@ lean_lib Refinement where
 
 lean_lib TupleSpace where
   roots := #[`TupleSpace]
+
+lean_lib EffectEval where
+  roots := #[`EffectEval]

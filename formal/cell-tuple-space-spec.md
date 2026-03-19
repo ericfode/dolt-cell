@@ -1,7 +1,7 @@
 # Cell: A Versioned Tuple Space with Effect-Aware Execution
 
-**v2 (do-wl6f.3)** — 2026-03-19
-**Status**: Refine 2 (clarity). Restructured for implementers unfamiliar with the design history.
+**v3 (do-wl6f.4)** — 2026-03-19
+**Status**: Refine 3 (edge cases). Added Section 4.6 covering 12 edge cases.
 
 ---
 
@@ -274,6 +274,58 @@ cell execute (nonreplayable, stem)   -- runtime executes the decision
 ```
 
 This lets the Replayable part be auto-retried without cascading.
+
+### 4.6 Edge cases
+
+These scenarios are not obvious from the main execution model and require explicit handling.
+
+**E1: Concurrent thaw**
+Two pistons independently thaw cells with overlapping transitive dependents. If A and B share dependent C, both thaw cascades try to bottom C and create gen N+1 frames.
+**Resolution**: Thaw acquires a program-level mutex (one thaw at a time per program). Concurrent thaws from different programs are safe because programs have disjoint cell namespaces.
+
+**E2: Claim timeout**
+A piston claims a Replayable cell, then crashes or hangs. The cell stays "computing" forever.
+**Resolution**: Claims have a TTL (default 2 minutes, already implemented in `replEvalStep`). The stale-claim reaper releases expired claims and returns cells to "declared." The retry budget is NOT decremented by a timeout — timeouts are infrastructure failures, not evaluation failures.
+
+**E3: Piston submits to wrong cell**
+A piston holding a claim on cell A submits a value for cell B.
+**Resolution**: The runtime rejects submissions where the claim handle doesn't match the target cell. Currently NOT enforced — `ct submit` takes cell name as a free argument. The linear token model (Section 2.2) requires this check.
+
+**E4: SQL query with volatile functions**
+A cell declared `(pure)` has body `sql: SELECT NOW()`. The parser infers Pure, but the query is non-deterministic.
+**Resolution**: The parser maintains a denylist of volatile SQL functions (`NOW`, `RAND`, `UUID`, `CURRENT_USER`, `CURRENT_TIMESTAMP`, `SYSDATE`). If any are present, the inferred effect is elevated to Replayable. Authors can override with explicit `(pure)` annotation — at their own risk.
+
+**E5: Replayable cell with all retries exhausted**
+A Replayable cell has `retries=3`, all three fail oracle checks. The cell bottoms.
+**Resolution**: Bottom propagates to all transitive dependents (same as NonReplayable failure but without cascade-thaw — no gen N+1 frames are created because no state was mutated). The program may be quiescent with some cells frozen and some bottomed.
+
+**E6: Guard-skip vs. failure bottom**
+A `recur until` guard fires at iteration 2, skipping iterations 3-4. Skipped cells are bottomed. Downstream cells that depend on `reflect[*]` (all iterations) see bottomed inputs and bottom-propagate.
+**Resolution**: Introduce a distinct bottom reason: `bottom:guard-skip` vs. `bottom:failure`. The `hasBottomedDependency` check should ignore `bottom:guard-skip` for optional givens and fan-in patterns (`[*]`). Only `bottom:failure` triggers poison propagation. *This requires fixing bug do-71ms.*
+
+**E7: Mixed-effect stem without decomposition**
+An author writes a stem cell that both calls an LLM and executes SQL DML in the same body, without decomposing into sub-cells (Section 4.5).
+**Resolution**: The parser detects mixed effects in stem bodies (prompt text + `dml:` or `sql:` with DML) and emits a warning recommending decomposition. The cell is classified NonReplayable (max of its operations). The warning is advisory, not an error — the system still works, just with coarser recovery.
+
+**E8: Pour of a program that already exists**
+`ct pour myprogram file.cell` when `myprogram` already has cells.
+**Resolution**: Already handled — pour is additive and errors with "program already has N cells — pour is additive. To overwrite, first run: ct reset." No change needed.
+
+**E9: Branch merge conflict**
+A NonReplayable cell on a branch modifies the same row as a concurrent operation on main (e.g., two pistons both try to freeze the same yield).
+**Resolution**: Dolt merge conflicts are detected at merge time. The runtime rejects the merge and drops the branch — equivalent to a NonReplayable failure, triggering cascade-thaw. The claim mutex (UNIQUE on frame_id) prevents most conflicts; this edge case arises only if the branch modifies non-claim state.
+
+**E10: Piston reads data outside its scope**
+A Replayable piston calls an LLM. The LLM's prompt includes resolved givens, but the piston's database connection can also query arbitrary tables.
+**Resolution**: For Replayable cells, the piston receives only the prompt + resolved givens (no direct database access). The runtime constructs the prompt and the piston returns only yield values. For NonReplayable cells with transaction isolation, the piston operates within a transaction scoped to its frame's tables. For branch isolation, the branch limits visibility.
+
+**E11: Self-referential spawn**
+A stem cell in cell-zero-eval spawns a copy of itself (self-replication). This could create unbounded growth.
+**Resolution**: Spawn is NonReplayable and requires authorization. The runtime enforces a per-program cell count limit (configurable, default 1000). Spawn that would exceed the limit is rejected and the cell bottoms. The `stemHasDemand` predicate in the formal model should be constrained to be monotone — once demand is false, it stays false.
+
+**E12: Partial multi-yield submission**
+A cell has three yields (`word_count`, `char_count`, `longest_word`). The piston submits two but not the third.
+**Resolution**: A cell is frozen only when ALL yields are submitted. Partial submission is valid — the submitted yields are held in a pending state. The cell remains "computing" until all yields arrive or the claim times out. On timeout, all pending yields are discarded and the cell returns to "declared."
 
 ---
 

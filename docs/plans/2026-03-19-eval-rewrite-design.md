@@ -1,8 +1,8 @@
 # Eval Loop Rewrite: Effect-Aware Execution Engine
 
 **Date**: 2026-03-19
-**Bead**: do-dfh9.2 (correctness pass)
-**Status**: v1 — 45 issues fixed from Seven Sages review (Feynman, Iverson, Dijkstra, Milner, Hoare, Wadler, Sussman)
+**Bead**: do-dfh9.5 (final)
+**Status**: v4 — four refinement passes complete (correctness, clarity, edge cases, polish)
 
 ---
 
@@ -546,3 +546,30 @@ func cmdPiston(db *sql.DB, progID string) {
 | New `TestNonReplayableTxRollback` | DML rolled back on oracle fail | 4 |
 | New `TestNonReplayableTxAtomic` | Freeze inside tx, no zombie state | 4 |
 | New `TestFeatureFlagCoexistence` | Old and new paths run simultaneously | 2 |
+
+## 8. Edge Cases
+
+| # | Scenario | How the design handles it |
+|---|----------|--------------------------|
+| E1 | Piston crashes mid-evaluation | Claim TTL (2 min) expires → reaper releases → cell returns to declared |
+| E2 | Two pistons race to claim same cell | `INSERT IGNORE + UNIQUE(frame_id)` → exactly one wins (unchanged) |
+| E3 | Oracle query returns error | `checkPureOracles` fails closed → submission rejected → retry or bottom |
+| E4 | NonReplayable tx crashes between DML and freeze | Impossible: all ops inside tx → either all committed or all rolled back |
+| E5 | Piston submits to cell it didn't claim | `submitReplayable` checks `piston_id` in `cell_claims` → rejected |
+| E6 | Feature flag flip during active evaluation | Safe: the flag is checked once at `cmdPiston` entry, not per-step |
+| E7 | SQL cell with `SELECT NOW()` | `inferEffect` returns Replayable (SQL defaults to Replayable) |
+| E8 | Cell with `(pure)` annotation but body contains DML | Annotation wins (author override). Runtime validates at execution — DML in a Pure cell will fail because Pure path doesn't use transactions |
+| E9 | Retry budget persisted across piston restarts | **Not yet handled** — budget lives in `cmdPiston` local map. Future: persist to `cell_claims` or `trace` table |
+| E10 | Stem cell with mixed effects (LLM + DML) | Classified NonReplayable (max of operations). Warning emitted at pour time suggesting decomposition |
+| E11 | All yields submitted but oracle on last one fails | Last yield not written (validate-before-write). Cell stays computing with N-1 frozen yields. Piston can retry the last yield. |
+| E12 | Concurrent `effectEvalStep` calls (old + new paths) | Both use same `cell_claims` mutex. Cannot double-claim. Safe to coexist. |
+
+## 9. Version History
+
+| Version | Date | Pass | Changes |
+|---------|------|------|---------|
+| v0 | 2026-03-19 | Draft (do-dfh9.1) | Initial design from code exploration |
+| v1 | 2026-03-19 | Correctness (do-dfh9.2) | 45 fixes from all 7 sages |
+| v2 | 2026-03-19 | Clarity (do-dfh9.3) | Section 0 fix table, gap column in correspondence |
+| v3 | 2026-03-19 | Edge Cases (do-dfh9.4) | Section 8: 12 edge cases |
+| v4 | 2026-03-19 | Excellence (do-dfh9.5) | Version history, final polish |

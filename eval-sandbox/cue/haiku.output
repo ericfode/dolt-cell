@@ -1,0 +1,89 @@
+#Effect: "pure" | "replayable" | "non-replayable"
+#YieldField: {
+    value:    _
+    resolved: bool
+}
+#Cell: {
+    name:   string
+    effect: "pure" | "replayable" | "non-replayable"
+}
+topic: {
+    name:   "topic"
+    effect: "pure"
+    literal: {
+        subject: "autumn rain on a temple roof"
+    }
+}
+compose: {
+    name:   "compose"
+    effect: "replayable"
+    body:   "Write a haiku about autumn rain on a temple roof. Follow the traditional 5-7-5 syllable structure across exactly three lines. Return only the three lines of the haiku, separated by newlines."
+    check: ["poem follows 5-7-5 syllable structure"]
+}
+count_words: {
+    name:   "count-words"
+    effect: "pure"
+    compute: {
+        total:      13
+        line_count: 3
+    }
+}
+critique: {
+    name:   "critique"
+    effect: "replayable"
+    body: """
+        Critique this haiku (word count: 13):
+
+        autumn rain falls soft
+        a frog leaps through silver drops
+        temple bell echoes
+
+        Evaluate: Does it follow 5-7-5 syllable structure? Does the imagery
+        evoke the subject? Is there a seasonal reference (kigo)? Is there a
+        cutting word (kireji) or pause between images? Rate overall quality from 1-5.
+        """
+    check: ["review contains at least 2 sentences"]
+}
+haiku_program: {
+    name: "haiku"
+    cells: [{
+        name:   "topic"
+        effect: "pure"
+        literal: {
+            subject: "autumn rain on a temple roof"
+        }
+    }, {
+        name:   "compose"
+        effect: "replayable"
+        body:   "Write a haiku about autumn rain on a temple roof. Follow the traditional 5-7-5 syllable structure across exactly three lines. Return only the three lines of the haiku, separated by newlines."
+        check: ["poem follows 5-7-5 syllable structure"]
+    }, {
+        name:   "count-words"
+        effect: "pure"
+        compute: {
+            total:      13
+            line_count: 3
+        }
+    }, {
+        name:   "critique"
+        effect: "replayable"
+        body: """
+            Critique this haiku (word count: 13):
+
+            autumn rain falls soft
+            a frog leaps through silver drops
+            temple bell echoes
+
+            Evaluate: Does it follow 5-7-5 syllable structure? Does the imagery
+            evoke the subject? Is there a seasonal reference (kigo)? Is there a
+            cutting word (kireji) or pause between images? Rate overall quality from 1-5.
+            """
+        check: ["review contains at least 2 sentences"]
+    }]
+    dag: {
+        topic: []
+        compose: ["topic.subject"]
+        "count-words": ["compose.poem"]
+        critique: ["compose.poem", "count-words.total"]
+    }
+}

@@ -1,0 +1,98 @@
+#Effect: "pure" | "replayable" | "non-replayable"
+#Cell: {
+    name:   string
+    effect: "pure" | "replayable" | "non-replayable"
+}
+source: {
+    name:   "source"
+    effect: "pure"
+    literal: {
+        code: "def is_prime(n): return all(n % i != 0 for i in range(2, n))"
+    }
+}
+analyze: {
+    name:   "analyze"
+    effect: "replayable"
+    body: """
+        Review this Python function for correctness, performance, and style:
+
+        def is_prime(n): return all(n % i != 0 for i in range(2, n))
+
+        Identify all bugs, edge cases, and potential improvements. Format each finding as a bullet point starting with "- ".
+        """
+    check: ["findings contains at least 3 bullet points"]
+}
+count_findings: {
+    name:   "count-findings"
+    effect: "pure"
+    compute: {
+        total:           5
+        demo_input_used: true
+    }
+}
+prioritize: {
+    name:   "prioritize"
+    effect: "replayable"
+    body: """
+        Given 5 findings from the code review:
+
+        - Bug: range(2, n) excludes n, so is_prime(n) returns True for n=1 (range is empty, all() vacuously true)
+        - Bug: is_prime(0) and is_prime(1) return True (vacuously true)
+        - Bug: is_prime(2) returns True but for wrong reason — range(2,2) is empty
+        - Performance: O(n) — should check only up to sqrt(n)
+        - Style: no docstring or type hints
+
+        Prioritize these findings by severity (critical first, minor last). For each, classify as BUG, PERFORMANCE, or STYLE. Write a one-paragraph executive summary suitable for a pull request comment.
+        """
+    check: ["summary is not empty"]
+}
+code_review_program: {
+    name: "code-review"
+    cells: [{
+        name:   "source"
+        effect: "pure"
+        literal: {
+            code: "def is_prime(n): return all(n % i != 0 for i in range(2, n))"
+        }
+    }, {
+        name:   "analyze"
+        effect: "replayable"
+        body: """
+            Review this Python function for correctness, performance, and style:
+
+            def is_prime(n): return all(n % i != 0 for i in range(2, n))
+
+            Identify all bugs, edge cases, and potential improvements. Format each finding as a bullet point starting with "- ".
+            """
+        check: ["findings contains at least 3 bullet points"]
+    }, {
+        name:   "count-findings"
+        effect: "pure"
+        compute: {
+            total:           5
+            demo_input_used: true
+        }
+    }, {
+        name:   "prioritize"
+        effect: "replayable"
+        body: """
+            Given 5 findings from the code review:
+
+            - Bug: range(2, n) excludes n, so is_prime(n) returns True for n=1 (range is empty, all() vacuously true)
+            - Bug: is_prime(0) and is_prime(1) return True (vacuously true)
+            - Bug: is_prime(2) returns True but for wrong reason — range(2,2) is empty
+            - Performance: O(n) — should check only up to sqrt(n)
+            - Style: no docstring or type hints
+
+            Prioritize these findings by severity (critical first, minor last). For each, classify as BUG, PERFORMANCE, or STYLE. Write a one-paragraph executive summary suitable for a pull request comment.
+            """
+        check: ["summary is not empty"]
+    }]
+    dag: {
+        source: []
+        analyze: ["source.code"]
+        "count-findings": ["analyze.findings"]
+        prioritize: ["analyze.findings", "count-findings.total"]
+    }
+    max_effect: "replayable"
+}

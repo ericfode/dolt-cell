@@ -1,0 +1,176 @@
+-- cell-zero-autopour: metacircular evaluator via autopour
+--
+-- This is what cell-zero-eval SHOULD look like once autopour exists.
+-- No SQL escape hatch. No reaching below the abstraction. The cell
+-- language expressing its own evaluation using only cell primitives.
+--
+-- Compare with cell-zero-eval.cell which achieves the same thing
+-- by manipulating Dolt tables directly via SQL. That version proves
+-- the runtime works. This version proves the LANGUAGE is expressive.
+--
+-- Requires two new primitives (not yet implemented):
+--   [autopour]  — yield annotation: runtime pours the yielded program
+--   .definition — built-in field: returns a cell's definition as text
+--
+-- The key insight: eval IS pour. A cell that yields a program IS
+-- an evaluator. The runtime does the rest.
+
+-- ============================================================
+-- PART 1: The Universal Evaluator
+--
+-- Accept a program as text, yield it for autopour.
+-- That's it. That's eval.
+-- ============================================================
+
+cell request
+  yield program_name
+  yield program_text
+  ---
+  This is a pour-request. Another cell or an external agent fills in
+  the program name and the raw .cell text of the program to evaluate.
+
+  Yield program_name = the name for the new program.
+  Yield program_text = the complete .cell source to be poured.
+  ---
+  check program_text is not empty
+  check program_name is not empty
+
+cell evaluator
+  given request.program_text
+  given request.program_name
+  yield evaluated [autopour]
+  yield name
+  ---
+  The universal evaluator. Take «program_text» and yield it as a
+  program for autopour. The runtime will parse it, verify its effect
+  level, and pour it into the retort.
+
+  If the text doesn't parse, this yield becomes bottom (error).
+  If the effect level exceeds the bound, this yield becomes bottom.
+  Otherwise, the program enters the retort and starts evaluating.
+
+  Yield evaluated = «program_text»
+  Yield name = «program_name»
+  ---
+  check evaluated is not empty
+
+-- ============================================================
+-- PART 2: Observing Results
+--
+-- Once a program is poured, its cells evaluate normally via the
+-- runtime. We can observe the results through cross-program givens.
+-- ============================================================
+
+cell status
+  given evaluator.name
+  yield state
+  ---
+  sql: SELECT
+    CASE
+      WHEN COUNT(*) = 0 THEN 'not_found'
+      WHEN COUNT(CASE WHEN state = 'bottom' THEN 1 END) > 0 THEN 'error'
+      WHEN COUNT(CASE WHEN state != 'frozen' THEN 1 END) = 0 THEN 'complete'
+      ELSE 'running'
+    END AS program_state
+  FROM cells
+  WHERE program_id = CONCAT('', '«name»')
+  ---
+
+-- ============================================================
+-- PART 3: The Self-Evaluation Question
+--
+-- Can this evaluator evaluate itself?
+--
+-- If request.program_text contains the text of THIS program
+-- (cell-zero-autopour), then:
+--
+-- 1. evaluator receives its own source
+-- 2. evaluator yields it with [autopour]
+-- 3. Runtime pours a copy (cell-zero-autopour-copy)
+-- 4. The copy's request cell needs program_text — from where?
+-- 5. Nobody provides it → the copy's request cell sits unsatisfied
+-- 6. The copy is inert. Self-evaluation terminates naturally.
+--
+-- This is CORRECT. The self-application of eval to eval produces
+-- an inert copy. It doesn't diverge because the poured copy has
+-- an unsatisfied dependency. No fuel needed for this case.
+--
+-- The fuel bound matters for CHAINED autopour:
+-- Program A autopours Program B which autopours Program C...
+-- Each pour decrements fuel. At fuel=0, autopour yields bottom.
+-- ============================================================
+
+-- ============================================================
+-- PART 4: The Perpetual Evaluator (stem version)
+--
+-- A stem cell that continuously accepts pour-requests and evaluates
+-- them. This replaces the self-spawning pattern in cell-zero-eval.
+-- ============================================================
+
+cell perpetual-request (stem)
+  yield program_name
+  yield program_text
+  ---
+  Poll for a pending pour-request. This is a stem cell — it runs
+  forever, checking each generation for new work.
+
+  sql: SELECT
+    COALESCE(
+      (SELECT value_text FROM yields WHERE cell_id IN
+        (SELECT id FROM cells WHERE program_id = 'cell-zero-autopour'
+         AND name = 'external-request' AND state = 'declared')
+       AND field_name = 'text' LIMIT 1),
+      ''
+    ) AS program_text
+  ---
+
+cell perpetual-evaluator (stem)
+  given perpetual-request.program_text
+  given perpetual-request.program_name
+  yield poured [autopour]
+  ---
+  If «program_text» is not empty, yield it for autopour.
+  If empty, yield nothing (quiescent — no work this generation).
+
+  This is the perpetual metacircular evaluator:
+  a stem cell that continuously pours programs as they arrive.
+  ---
+
+-- ============================================================
+-- DESIGN NOTES
+--
+-- What's different from cell-zero-eval.cell:
+--
+-- 1. NO SQL INSERTs for pouring. The [autopour] annotation tells
+--    the runtime to pour. The cell yields text, not SQL.
+--
+-- 2. NO SQL manipulation for claiming/evaluating. The poured
+--    program's cells are evaluated by the NORMAL runtime loop.
+--    The evaluator doesn't need to claim or dispatch.
+--
+-- 3. NO self-spawning. Stem cells handle perpetuation natively.
+--    No need to INSERT INTO cells to create a successor.
+--
+-- 4. NO reflection. The evaluator never reads from the cells
+--    table or manipulates yields directly. It operates entirely
+--    within the Cell language abstraction.
+--
+-- What's the same:
+--
+-- 1. Both achieve the same result: programs poured and evaluated.
+-- 2. Both are perpetual (stem cells / self-spawning).
+-- 3. Both handle quiescence (no work → idle).
+--
+-- What this proves:
+--
+-- With [autopour] and stem cells, the Cell language CAN express
+-- its own evaluator without leaving the abstraction. This is
+-- Sussman's criterion: "A language that can express its own
+-- evaluator in itself is a language that can be extended by its
+-- users without modifying the implementation."
+--
+-- The SQL in status cell is a hard computed cell — it's WITHIN
+-- the language (hard cells can run SQL). The SQL in cell-zero-eval
+-- was in soft cell bodies — it was the PISTON running SQL, which
+-- is OUTSIDE the language.
+-- ============================================================

@@ -810,6 +810,32 @@ type evalStepResult struct {
 	cellName string
 	body     string
 	bodyType string
+	effect   string // pure, replayable, nonreplayable
+}
+
+// inferEffect classifies a cell's effect level based on its body type and body.
+// Matches the formal model's canonical effect lattice:
+//   Pure < Replayable < NonReplayable
+//
+// Pure:           literal: hard cells (deterministic, no I/O)
+// Replayable:     sql: SELECT hard cells, all soft/stem cells (safe to retry)
+// NonReplayable:  sql: INSERT/UPDATE/DELETE/CALL (side effects)
+func inferEffect(bodyType, body string) string {
+	if bodyType == "hard" {
+		if strings.HasPrefix(body, "literal:") {
+			return "pure"
+		}
+		if strings.HasPrefix(body, "sql:") {
+			sqlBody := strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(body, "sql:")))
+			for _, prefix := range []string{"INSERT", "UPDATE", "DELETE", "CALL", "DROP", "CREATE", "ALTER"} {
+				if strings.HasPrefix(sqlBody, prefix) {
+					return "nonreplayable"
+				}
+			}
+			return "replayable"
+		}
+	}
+	return "replayable"
 }
 
 // replEvalStep finds the next ready cell and claims it. When progID is empty,
@@ -893,6 +919,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				action: "evaluated", progID: pid,
 				cellID: rc.cellID, cellName: rc.cellName,
 				body: rc.body, bodyType: rc.bodyType,
+				effect: inferEffect(rc.bodyType, rc.body),
 			}
 		}
 
@@ -960,6 +987,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				action: "evaluated", progID: pid,
 				cellID: rc.cellID, cellName: rc.cellName,
 				body: rc.body, bodyType: rc.bodyType,
+				effect: inferEffect(rc.bodyType, rc.body),
 			}
 		}
 
@@ -976,6 +1004,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 			action: "dispatch", progID: pid,
 			cellID: rc.cellID, cellName: rc.cellName,
 			body: rc.body, bodyType: rc.bodyType,
+			effect: inferEffect(rc.bodyType, rc.body),
 		}
 	}
 

@@ -490,6 +490,37 @@ cell C
 	t.Logf("thaw cascading: A thawed -> B, C cascaded; gen-0 preserved; gen-1 frames + fresh yields created")
 }
 
+func TestInferEffect(t *testing.T) {
+	tests := []struct {
+		bodyType string
+		body     string
+		want     string
+	}{
+		{"hard", "literal:hello", "pure"},
+		{"hard", "sql:SELECT 1", "replayable"},
+		{"soft", "Evaluate this prompt", "replayable"},
+		{"stem", "Evaluate this prompt", "replayable"},
+		{"hard", "sql:INSERT INTO foo VALUES (1)", "nonreplayable"},
+		{"hard", "sql:UPDATE foo SET x = 1", "nonreplayable"},
+		{"hard", "sql:DELETE FROM foo WHERE x = 1", "nonreplayable"},
+		{"hard", "sql:CALL some_proc()", "nonreplayable"},
+		{"hard", "sql: select 1", "replayable"},
+	}
+	for _, tt := range tests {
+		name := tt.bodyType + "/" + tt.body
+		if len(name) > 30 {
+			name = name[:30]
+		}
+		t.Run(name, func(t *testing.T) {
+			got := inferEffect(tt.bodyType, tt.body)
+			if got != tt.want {
+				t.Errorf("inferEffect(%q, %q) = %q, want %q",
+					tt.bodyType, tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }

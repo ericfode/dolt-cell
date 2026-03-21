@@ -159,7 +159,7 @@ func ensureFrameForCell(db *sql.DB, progID, cellName, cellID string) {
 	}
 	// Create gen-0 frame
 	frameID := "f-" + cellID + "-0"
-	db.Exec(
+	execDB(db,
 		"INSERT IGNORE INTO frames (id, cell_name, program_id, generation) VALUES (?, ?, ?, 0)",
 		frameID, cellName, progID)
 }

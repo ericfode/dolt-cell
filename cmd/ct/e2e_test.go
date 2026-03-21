@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"os"
+	"strings"
 	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -627,6 +628,60 @@ func TestSandboxHardCellSQL(t *testing.T) {
 				t.Errorf("sandboxHardCellSQL(%q) = %v, want nil", tt.sql, err)
 			}
 		})
+	}
+}
+
+func TestDMLBodyParsesAsHard(t *testing.T) {
+	// dml: prefix should parse as hard body type and classify as nonreplayable
+	cellText := `cell writer
+  yield result
+  ---
+  dml:INSERT INTO foo VALUES (1)
+  ---
+`
+	cells := mustParse(t, cellText)
+	if len(cells) != 1 {
+		t.Fatalf("expected 1 cell, got %d", len(cells))
+	}
+	if cells[0].bodyType != "hard" {
+		t.Errorf("body_type = %q, want %q", cells[0].bodyType, "hard")
+	}
+	if !strings.HasPrefix(cells[0].body, "dml:") {
+		t.Errorf("body = %q, want dml: prefix", cells[0].body)
+	}
+	effect := inferEffect(cells[0].bodyType, cells[0].body)
+	if effect != "nonreplayable" {
+		t.Errorf("inferEffect = %q, want %q", effect, "nonreplayable")
+	}
+}
+
+func TestAutopourAnnotationRoundTrip(t *testing.T) {
+	// yield with [autopour] annotation should persist through parse → SQL → parse
+	cellText := `cell evaluator
+  given request.text
+  yield program [autopour]
+  ---
+  Parse the text and yield it.
+  ---
+`
+	cells := mustParse(t, cellText)
+	if len(cells) != 1 {
+		t.Fatalf("expected 1 cell, got %d", len(cells))
+	}
+	if len(cells[0].yields) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(cells[0].yields))
+	}
+	if cells[0].yields[0].fieldName != "program" {
+		t.Errorf("fieldName = %q, want %q", cells[0].yields[0].fieldName, "program")
+	}
+	if cells[0].yields[0].annotation != "autopour" {
+		t.Errorf("annotation = %q, want %q", cells[0].yields[0].annotation, "autopour")
+	}
+
+	// Check that cellsToSQL includes the annotation
+	sqlText := cellsToSQL("test-autopour", cells)
+	if !strings.Contains(sqlText, "autopour") {
+		t.Error("cellsToSQL output does not contain 'autopour' annotation")
 	}
 }
 

@@ -666,65 +666,34 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 					continue
 				}
 				yields := getYieldFields(db, pid, rc.cellName)
-				effect := inferEffect(rc.bodyType, rc.body)
-				if effect == "nonreplayable" {
-					// NonReplayable: atomic execute+freeze (formal: EffectEval.lean)
-					tx, txErr := db.Begin()
-					if txErr != nil {
+				// Execute SQL and submit yields. For all effect levels, atomicity
+				// is provided by DOLT_COMMIT (not MySQL transactions): execute DML,
+				// submit yields, then DOLT_COMMIT makes it durable. If any step
+				// fails before DOLT_COMMIT, the working set is dirty but uncommitted,
+				// and replRelease resets the cell to 'declared'.
+				//
+				// Formal: EffectEval.lean execNonReplayableTransaction — atomicity
+				// is at the Dolt commit level, not the SQL transaction level.
+				var result string
+				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
+					var failCount int
+					db.QueryRow("SELECT COUNT(*) FROM trace WHERE cell_id = ? AND event_type = 'released' AND detail LIKE '%failure%'",
+						rc.cellID).Scan(&failCount)
+					failCount++
+					fmt.Printf("  ✗ %s %s error (attempt %d/3): %v\n", rc.cellName, prefix, failCount, err)
+					if failCount >= 3 {
+						fmt.Printf("  ⊥ %s — bottomed after 3 %s failures\n", rc.cellName, prefix)
+						bottomCell(db, pid, rc.cellName, rc.cellID,
+							fmt.Sprintf("hard %s failed 3x: %v", prefix, err))
+						mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+							fmt.Sprintf("cell: bottom hard %s cell %s after 3 failures", prefix, rc.cellName))
+					} else {
 						replRelease(db, rc.cellID, pistonID, "failure")
-						continue
 					}
-					var result string
-					if err := tx.QueryRow(sqlQuery).Scan(&result); err != nil {
-						tx.Rollback()
-						// count failures and bottom after 3
-						var failCount int
-						db.QueryRow("SELECT COUNT(*) FROM trace WHERE cell_id = ? AND event_type = 'released' AND detail LIKE '%failure%'",
-							rc.cellID).Scan(&failCount)
-						failCount++
-						fmt.Printf("  ✗ %s %s error (attempt %d/3): %v\n", rc.cellName, prefix, failCount, err)
-						if failCount >= 3 {
-							fmt.Printf("  ⊥ %s — bottomed after 3 %s failures\n", rc.cellName, prefix)
-							bottomCell(db, pid, rc.cellName, rc.cellID,
-								fmt.Sprintf("hard %s failed 3x: %v", prefix, err))
-							mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
-								fmt.Sprintf("cell: bottom hard %s cell %s after 3 failures", prefix, rc.cellName))
-						} else {
-							replRelease(db, rc.cellID, pistonID, "failure")
-						}
-						continue
-					}
-					// Submit yields inside the transaction context
-					for _, y := range yields {
-						replSubmit(db, pid, rc.cellName, y, result)
-					}
-					if err := tx.Commit(); err != nil {
-						replRelease(db, rc.cellID, pistonID, "failure")
-						continue
-					}
-				} else {
-					// Pure/Replayable: existing non-transactional path
-					var result string
-					if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
-						var failCount int
-						db.QueryRow("SELECT COUNT(*) FROM trace WHERE cell_id = ? AND event_type = 'released' AND detail LIKE '%failure%'",
-							rc.cellID).Scan(&failCount)
-						failCount++
-						fmt.Printf("  ✗ %s %s error (attempt %d/3): %v\n", rc.cellName, prefix, failCount, err)
-						if failCount >= 3 {
-							fmt.Printf("  ⊥ %s — bottomed after 3 %s failures\n", rc.cellName, prefix)
-							bottomCell(db, pid, rc.cellName, rc.cellID,
-								fmt.Sprintf("hard %s failed 3x: %v", prefix, err))
-							mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
-								fmt.Sprintf("cell: bottom hard %s cell %s after 3 failures", prefix, rc.cellName))
-						} else {
-							replRelease(db, rc.cellID, pistonID, "failure")
-						}
-						continue
-					}
-					for _, y := range yields {
-						replSubmit(db, pid, rc.cellName, y, result)
-					}
+					continue
+				}
+				for _, y := range yields {
+					replSubmit(db, pid, rc.cellName, y, result)
 				}
 			}
 
@@ -959,8 +928,10 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))
 
-		// TODO: autopour — if annotation == "autopour", parse the frozen yield
-		// value as .cell text and pour it into the retort (Autopour.lean).
+		// Autopour: if the frozen yield has annotation="autopour", parse the
+		// value as .cell text and pour it into the retort as a new program.
+		// Formal: Autopour.lean autoPourStep — programs as first-class values.
+		checkAutopour(db, progID, cellName, cellID, fieldName)
 
 		// Guard skip: if iteration cell with satisfied guard, mark remaining as bottom
 		checkGuardSkip(db, progID, cellName, cellID)
@@ -974,6 +945,55 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 	}
 
 	return "ok", fmt.Sprintf("Yield frozen: %s.%s", cellName, fieldName)
+}
+
+// checkAutopour checks if a just-frozen yield has the "autopour" annotation.
+// If so, parses the yield value as .cell text and pours it as a new program.
+// Formal: Autopour.lean autoPourStep — the autopour operation takes a frozen
+// yield value, parses it as a cell program, and pours it into the retort.
+// The new program's name is derived from the source program + cell + field.
+func checkAutopour(db *sql.DB, progID, cellName, cellID, fieldName string) {
+	// Check if this yield has the autopour annotation
+	var annotation, value string
+	err := db.QueryRow(
+		"SELECT COALESCE(annotation, ''), value_text FROM yields WHERE cell_id = ? AND field_name = ? AND is_frozen = 1",
+		cellID, fieldName).Scan(&annotation, &value)
+	if err != nil || annotation != "autopour" {
+		return
+	}
+	if strings.TrimSpace(value) == "" {
+		return // empty value — nothing to pour
+	}
+
+	// Parse the yield value as .cell text
+	cells, parseErr := parseCellFile(value)
+	if parseErr != nil || cells == nil || len(cells) == 0 {
+		log.Printf("WARN: autopour %s/%s.%s: parse failed: %v", progID, cellName, fieldName, parseErr)
+		mustExecDB(db,
+			"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'autopour_fail', ?, NOW())",
+			cellID, fmt.Sprintf("autopour parse failed: %v", parseErr))
+		return
+	}
+
+	// Derive program name: {source_program}-autopour-{cell}-{field}
+	newProgID := fmt.Sprintf("%s-autopour-%s-%s", progID, cellName, fieldName)
+
+	// Generate and execute pour SQL
+	sqlText := cellsToSQL(newProgID, cells)
+	if _, err := db.Exec(sqlText); err != nil {
+		if !strings.Contains(err.Error(), "nothing to commit") {
+			log.Printf("WARN: autopour %s: pour failed: %v", newProgID, err)
+			mustExecDB(db,
+				"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'autopour_fail', ?, NOW())",
+				cellID, fmt.Sprintf("autopour pour failed: %v", err))
+			return
+		}
+	}
+
+	log.Printf("INFO: autopour %s/%s.%s → poured %s (%d cells)", progID, cellName, fieldName, newProgID, len(cells))
+	mustExecDB(db,
+		"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'autopour', ?, NOW())",
+		cellID, fmt.Sprintf("autopour → %s (%d cells)", newProgID, len(cells)))
 }
 
 // checkGuardSkip checks if an iteration cell has a satisfied guard.

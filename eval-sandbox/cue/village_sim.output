@@ -1,0 +1,294 @@
+#Effect: "pure" | "replayable" | "non-replayable"
+#Cell: {
+    name:   string
+    effect: "pure" | "replayable" | "non-replayable"
+}
+#Person: {
+    name:     string
+    role:     string
+    identity: string
+    state:    string
+    secret:   string
+    relationships: {}
+    day_fn: string
+}
+#WorldState: {
+    day:     int & >=0
+    setting: _
+    rules:   _
+    active_conflicts: []
+    people: []
+    history: []
+    world_mood: string
+}
+params: {
+    name:   "params"
+    effect: "pure"
+    literal: {
+        population: 5
+        premise:    "everyone was tiny fluffy cows"
+    }
+}
+world_constructor: {
+    name:   "world-constructor"
+    effect: "replayable"
+    body: """
+        You are a world-builder. Given this premise:
+        "A world in which everyone was tiny fluffy cows"
+
+        Construct the world by returning three things as JSON:
+
+        SETTING: {"name": "...", "era": "...", "geography": "...", "atmosphere": "...", "key_locations": ["...", "..."]}
+
+        RULES: {"premise_mechanic": "how the premise works mechanically", "constraints": ["...", "..."], "escalation_pattern": "how tension increases over time"}
+
+        SEEDS_OF_CONFLICT: ["a specific tension that will grow", "another one", "a hidden truth waiting to surface"]
+
+        The setting should make the premise's consequences INEVITABLE and INTERESTING.
+        The rules should be consistent — the world follows its own logic.
+        The seeds should guarantee the simulation produces drama, not stasis.
+        """
+    check: ["setting is not empty", "rules is not empty"]
+}
+person_constructor: {
+    name:   "person-constructor"
+    effect: "replayable"
+    body: """
+        You are a character designer. Create exactly 5 people for this world.
+
+        WORLD: {world-constructor.setting}
+        RULES: {world-constructor.rules}
+        SEEDS OF CONFLICT: {world-constructor.seeds_of_conflict}
+        PREMISE: "A world in which everyone was tiny fluffy cows"
+
+        Return a JSON array of 5 people. Each person is:
+        {
+          "name": "...",
+          "role": "their function in this world",
+          "identity": "2-sentence backstory",
+          "state": "their current emotional/physical state",
+          "secret": "something they're hiding",
+          "relationships": {"OtherName": "one-word feeling"},
+          "day_fn": "INSTRUCTIONS FOR THIS PERSON'S STEP FUNCTION: ..."
+        }
+        """
+    check: ["people is not empty", "people contains exactly the requested number of characters"]
+}
+assemble: {
+    name:   "assemble"
+    effect: "replayable"
+    body: """
+        Assemble the initial world state from its components.
+
+        Return a single JSON object:
+        {
+          "day": 0,
+          "setting": {world-constructor.setting},
+          "rules": {world-constructor.rules},
+          "active_conflicts": {world-constructor.seeds_of_conflict},
+          "people": {person-constructor.people},
+          "history": [],
+          "world_mood": "initial atmosphere description"
+        }
+
+        Do NOT modify any values — just assemble them into one object.
+        Validate that all people have day_fn fields and relationships reference real names.
+        """
+    check: ["initial_state is not empty"]
+}
+day_cell_template: {
+    name:   "day"
+    effect: "replayable"
+    body: """
+        You are the simulation kernel. You receive the complete world state as JSON.
+
+        WORLD STATE:
+        {world_state}
+
+        Execute ONE tick of the simulation. This is a functional fold:
+
+        STEP 1 — MAP: For each person in people[], execute their day_fn
+        STEP 2 — REDUCE: Collect all actions. Determine CONSEQUENCES
+        STEP 3 — EVOLVE: For each person, update state, relationships, day_fn, secret
+        STEP 4 — ADVANCE: Increment day, update conflicts, history, world_mood
+
+        Return: WORLD_STATE (evolved JSON) followed by NARRATIVE (5-8 sentences).
+        """
+    check: ["world_state is not empty", "narrative is not empty"]
+    iterate: {
+        count: 5
+        note:  "NOT EXECUTABLE IN CUE — unrolled below as day_0..day_2"
+    }
+}
+#SimStep: {
+    step:       int & >=0
+    input_from: string
+    body:       string
+}
+day_0: {
+    step:       0
+    input_from: "assemble.initial_state"
+    body:       "Execute day 0 simulation tick with initial state from assemble.initial_state."
+}
+day_1: {
+    step:       1
+    input_from: "day_0 world_state output"
+    body:       "Execute day 1 simulation tick. Input: evolved state from day 0."
+}
+day_2: {
+    step:       2
+    input_from: "day_1 world_state output"
+    body:       "Execute day 2 simulation tick. Input: evolved state from day 1."
+}
+epilogue: {
+    name:   "epilogue"
+    effect: "replayable"
+    body: """
+        The simulation of "a world in which everyone was tiny fluffy cows" has run for 5 days.
+
+        FINAL WORLD STATE:
+        {day.world_state}
+
+        LAST DAY:
+        {day.narrative}
+
+        Write the epilogue (3-4 paragraphs):
+        1. The arc: how did the premise reshape these people over 5 days?
+        2. The secrets: what was revealed, what stayed hidden?
+        3. The evolution: compare each person's final day_fn to their original
+        4. End with one sentence about what this world becomes.
+        """
+    check: ["story is not empty", "story demonstrates how the premise mechanic drove character evolution"]
+}
+village_sim_program: {
+    name: "village-sim"
+    cells: [{
+        name:   "params"
+        effect: "pure"
+        literal: {
+            population: 5
+            premise:    "everyone was tiny fluffy cows"
+        }
+    }, {
+        name:   "world-constructor"
+        effect: "replayable"
+        body: """
+            You are a world-builder. Given this premise:
+            "A world in which everyone was tiny fluffy cows"
+
+            Construct the world by returning three things as JSON:
+
+            SETTING: {"name": "...", "era": "...", "geography": "...", "atmosphere": "...", "key_locations": ["...", "..."]}
+
+            RULES: {"premise_mechanic": "how the premise works mechanically", "constraints": ["...", "..."], "escalation_pattern": "how tension increases over time"}
+
+            SEEDS_OF_CONFLICT: ["a specific tension that will grow", "another one", "a hidden truth waiting to surface"]
+
+            The setting should make the premise's consequences INEVITABLE and INTERESTING.
+            The rules should be consistent — the world follows its own logic.
+            The seeds should guarantee the simulation produces drama, not stasis.
+            """
+        check: ["setting is not empty", "rules is not empty"]
+    }, {
+        name:   "person-constructor"
+        effect: "replayable"
+        body: """
+            You are a character designer. Create exactly 5 people for this world.
+
+            WORLD: {world-constructor.setting}
+            RULES: {world-constructor.rules}
+            SEEDS OF CONFLICT: {world-constructor.seeds_of_conflict}
+            PREMISE: "A world in which everyone was tiny fluffy cows"
+
+            Return a JSON array of 5 people. Each person is:
+            {
+              "name": "...",
+              "role": "their function in this world",
+              "identity": "2-sentence backstory",
+              "state": "their current emotional/physical state",
+              "secret": "something they're hiding",
+              "relationships": {"OtherName": "one-word feeling"},
+              "day_fn": "INSTRUCTIONS FOR THIS PERSON'S STEP FUNCTION: ..."
+            }
+            """
+        check: ["people is not empty", "people contains exactly the requested number of characters"]
+    }, {
+        name:   "assemble"
+        effect: "replayable"
+        body: """
+            Assemble the initial world state from its components.
+
+            Return a single JSON object:
+            {
+              "day": 0,
+              "setting": {world-constructor.setting},
+              "rules": {world-constructor.rules},
+              "active_conflicts": {world-constructor.seeds_of_conflict},
+              "people": {person-constructor.people},
+              "history": [],
+              "world_mood": "initial atmosphere description"
+            }
+
+            Do NOT modify any values — just assemble them into one object.
+            Validate that all people have day_fn fields and relationships reference real names.
+            """
+        check: ["initial_state is not empty"]
+    }, {
+        name:   "day"
+        effect: "replayable"
+        body: """
+            You are the simulation kernel. You receive the complete world state as JSON.
+
+            WORLD STATE:
+            {world_state}
+
+            Execute ONE tick of the simulation. This is a functional fold:
+
+            STEP 1 — MAP: For each person in people[], execute their day_fn
+            STEP 2 — REDUCE: Collect all actions. Determine CONSEQUENCES
+            STEP 3 — EVOLVE: For each person, update state, relationships, day_fn, secret
+            STEP 4 — ADVANCE: Increment day, update conflicts, history, world_mood
+
+            Return: WORLD_STATE (evolved JSON) followed by NARRATIVE (5-8 sentences).
+            """
+        check: ["world_state is not empty", "narrative is not empty"]
+        iterate: {
+            count: 5
+            note:  "NOT EXECUTABLE IN CUE — unrolled below as day_0..day_2"
+        }
+    }, {
+        name:   "epilogue"
+        effect: "replayable"
+        body: """
+            The simulation of "a world in which everyone was tiny fluffy cows" has run for 5 days.
+
+            FINAL WORLD STATE:
+            {day.world_state}
+
+            LAST DAY:
+            {day.narrative}
+
+            Write the epilogue (3-4 paragraphs):
+            1. The arc: how did the premise reshape these people over 5 days?
+            2. The secrets: what was revealed, what stayed hidden?
+            3. The evolution: compare each person's final day_fn to their original
+            4. End with one sentence about what this world becomes.
+            """
+        check: ["story is not empty", "story demonstrates how the premise mechanic drove character evolution"]
+    }]
+    dag: {
+        params: []
+        "world-constructor": ["params.premise"]
+        "person-constructor": ["params.population", "params.premise", "world-constructor.setting", "world-constructor.rules", "world-constructor.seeds_of_conflict"]
+        assemble: ["world-constructor.setting", "world-constructor.rules", "world-constructor.seeds_of_conflict", "person-constructor.people"]
+        day: ["assemble.initial_state"]
+        epilogue: ["day.world_state", "day.narrative", "params.premise"]
+    }
+    iteration_note: """
+        The `iterate day 5` primitive is NOT expressible in CUE.
+        CUE cannot thread state through successive evaluations.
+        The static unrolled form (day_0..day_N) works for fixed N
+        but loses the language's iterate primitive semantics.
+        This is CUE's fundamental limitation as a config language.
+        """
+}

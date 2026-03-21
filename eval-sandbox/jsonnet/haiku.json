@@ -1,0 +1,118 @@
+{
+   "cells": [
+      {
+         "body": {
+            "type": "literal",
+            "value": {
+               "subject": "autumn rain on a temple roof"
+            }
+         },
+         "checks": [ ],
+         "effect": "pure",
+         "givens": [ ],
+         "name": "topic",
+         "yields": [
+            "subject"
+         ]
+      },
+      {
+         "body": {
+            "template": "Write a haiku about {{subject}}. Follow the traditional 5-7-5 syllable structure across exactly three lines. Return only the three lines of the haiku, separated by newlines.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(poem)",
+               "type": "deterministic"
+            },
+            {
+               "assertion": "poem follows 5-7-5 syllable pattern",
+               "type": "semantic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "topic.subject"
+         ],
+         "name": "compose",
+         "yields": [
+            "poem"
+         ]
+      },
+      {
+         "body": {
+            "expr": {
+               "fields": [
+                  {
+                     "expr": {
+                        "args": [
+                           {
+                              "args": [
+                                 {
+                                    "args": [
+                                       {
+                                          "binding": "compose.poem",
+                                          "op": "get"
+                                       }
+                                    ],
+                                    "fn": "strip",
+                                    "op": "call"
+                                 },
+                                 {
+                                    "op": "lit",
+                                    "value": " "
+                                 }
+                              ],
+                              "fn": "split",
+                              "op": "call"
+                           }
+                        ],
+                        "fn": "length",
+                        "op": "call"
+                     },
+                     "name": "total"
+                  }
+               ],
+               "op": "obj"
+            },
+            "type": "compute"
+         },
+         "checks": [
+            {
+               "expr": "total > 0",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "pure",
+         "givens": [
+            "compose.poem"
+         ],
+         "name": "count-words",
+         "yields": [
+            "total"
+         ]
+      },
+      {
+         "body": {
+            "template": "Critique this haiku (word count: {{total}}):\n\n{{poem}}\n\nEvaluate: Does it follow 5-7-5 syllable structure? Does the imagery evoke the subject? Is there a seasonal reference (kigo)? Is there a cutting word (kireji) or pause between images? Rate overall quality from 1-5.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "sentence_count(review) >= 2",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "compose.poem",
+            "count-words.total"
+         ],
+         "name": "critique",
+         "yields": [
+            "review"
+         ]
+      }
+   ],
+   "program": "haiku"
+}

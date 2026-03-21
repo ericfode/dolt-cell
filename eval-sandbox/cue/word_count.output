@@ -1,0 +1,68 @@
+import "strings"
+
+#WordCountResult: {
+    words:      int & >=0
+    lines:      int & >=1
+    chars:      int & >=0
+    paragraphs: int & >=1
+}
+#Cell: {
+    name:    string
+    effect:  "pure" | "replayable" | "non-replayable"
+    compute: _
+}
+word_count: {
+    name:   "word-count"
+    effect: "pure"
+    compute: {
+        words:      13
+        lines:      3
+        chars:      73
+        paragraphs: 1
+    }
+    check: ["words >= 0", "lines >= 1"]
+}
+#WordCounter: {
+    input: string
+    result: {
+        words: len(_ws)
+        lines: len(_ls)
+        chars: len(strings.Replace(strings.Replace(input, """
+
+
+            """, "", -1), "\t", "", -1))
+    }
+}
+haiku_counts: {
+    input: """
+        autumn rain falls soft
+        a frog leaps through silver drops
+        temple bell echoes
+        """
+    result: {
+        words: 13
+        lines: 3
+        chars: 73
+    }
+}
+code_counts: {
+    input: "def is_prime(n): return all(n % i != 0 for i in range(2, n))"
+    result: {
+        words: 13
+        lines: 1
+        chars: 60
+    }
+}
+summary: {
+    haiku: {
+        words: 13
+        lines: 3
+        chars: 73
+    }
+    code: {
+        words: 13
+        lines: 1
+        chars: 60
+    }
+    note: "All values computed by CUE constraint evaluation, not a runtime"
+}

@@ -1,0 +1,36 @@
+-- Creative Writing
+-- No SQL query can write poetry. The LLM composes, a hard cell counts structure.
+-- Poetry requires imagination, cultural awareness, and aesthetic judgment —
+-- capabilities that exist only in soft cells.
+
+cell topic
+  yield subject = "autumn rain on a temple roof"
+
+cell compose
+  given topic.subject
+  yield poem
+  ---
+  Write a haiku about «subject». Follow the traditional 5-7-5 syllable structure across exactly three lines. Return only the three lines of the haiku, separated by newlines.
+  ---
+
+cell count-words
+  given compose.poem
+  yield total
+  ---
+  sql: SELECT LENGTH(TRIM(p.value_text)) - LENGTH(REPLACE(TRIM(p.value_text), ' ', '')) + 1
+     FROM yields p JOIN cells c ON p.cell_id = c.id
+     WHERE c.name = 'compose' AND p.field_name = 'poem' AND p.is_frozen = 1
+  ---
+
+cell critique
+  given compose.poem
+  given count-words.total
+  yield review
+  ---
+  Critique this haiku (word count: «total»):
+
+«poem»
+
+Evaluate: Does it follow 5-7-5 syllable structure? Does the imagery evoke the subject? Is there a seasonal reference (kigo)? Is there a cutting word (kireji) or pause between images? Rate overall quality from 1-5.
+  ---
+  check review contains at least 2 sentences

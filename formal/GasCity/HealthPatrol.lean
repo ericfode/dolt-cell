@@ -100,22 +100,20 @@ theorem quarantine_auto_expires (h : CrashHistory) (cfg : PatrolConfig)
     isQuarantined h futureNow cfg = false := by
   sorry
 
-/-- One-for-one restart: reconciling agent A does not affect agent B.
-    The action chosen for A depends only on A's state, not B's. -/
+/-- One-for-one restart: applying agent A's reconcile action
+    does not change the session state for agent B. -/
 theorem one_for_one (ps : AgentProtocol.ProviderState)
-    (nameA nameB : SessionName) (hashA hashB : Option String)
-    (histA histB : CrashHistory)
-    (now : Timestamp) (cfg : PatrolConfig)
+    (nameA nameB : SessionName)
     (hne : nameA ≠ nameB)
-    -- Changing B's inputs does not change A's action
-    (histB' : CrashHistory) (hashB' : Option String) :
-    reconcileAgent ps nameA hashA histA now cfg =
-    reconcileAgent ps nameA hashA histA now cfg := by
-  rfl
-  -- NOTE: This holds trivially because reconcileAgent only takes
-  -- one agent's parameters. The real property is that the
-  -- ProviderState lookup for nameA is independent of nameB's state,
-  -- which is true by construction (sessions is a function).
+    (cfg : AgentProtocol.Config) :
+    -- Starting A doesn't change B's session
+    (AgentProtocol.start ps nameA cfg).1.sessions nameB = ps.sessions nameB ∧
+    -- Stopping A doesn't change B's session
+    (AgentProtocol.stop ps nameA).sessions nameB = ps.sessions nameB := by
+  constructor
+  · simp [AgentProtocol.start]
+    split <;> simp [hne]
+  · simp [AgentProtocol.stop, hne]
 
 /-- Reconciliation is idempotent: a healthy agent stays skipped. -/
 theorem reconcile_healthy_skip (ps : AgentProtocol.ProviderState)
@@ -142,6 +140,7 @@ theorem prune_bounded (h : CrashHistory) (now : Timestamp) (window : Nat) :
   simp [prune]
   exact List.length_filter_le _ _
 
+-- TODO: formalize derivation claim as a real theorem
 /-- Derivation: Health Patrol uses only P1, P3, P4.
     No new infrastructure beyond three primitives. -/
 theorem derivation_from_p1_p3_p4 :

@@ -41,6 +41,7 @@ type parsedGiven struct {
 type parsedYield struct {
 	fieldName string
 	prebound  string // non-empty for yield NAME ≡ VALUE
+	autopour  bool   // [autopour] annotation: runtime pours the yielded program
 }
 
 type parsedOracle struct {
@@ -240,9 +241,14 @@ func parseCellFileV2(text string) []parsedCell {
 				continue
 			}
 
-			// Yield: yield NAME = VALUE or yield NAME
+			// Yield: yield NAME [autopour] = VALUE or yield NAME [autopour]
 			if strings.HasPrefix(trimmed, "yield ") {
 				rest := strings.TrimPrefix(trimmed, "yield ")
+				// Check for [autopour] annotation
+				isAutopour := strings.Contains(rest, "[autopour]")
+				if isAutopour {
+					rest = strings.TrimSpace(strings.Replace(rest, "[autopour]", "", 1))
+				}
 				if eqIdx := strings.Index(rest, " = "); eqIdx >= 0 {
 					name := strings.TrimSpace(rest[:eqIdx])
 					value := strings.TrimSpace(rest[eqIdx+3:])
@@ -253,6 +259,7 @@ func parseCellFileV2(text string) []parsedCell {
 					cur.yields = append(cur.yields, parsedYield{
 						fieldName: name,
 						prebound:  value,
+						autopour:  isAutopour,
 					})
 					if cur.bodyType != "stem" {
 						cur.bodyType = "hard"
@@ -265,6 +272,7 @@ func parseCellFileV2(text string) []parsedCell {
 					}
 					cur.yields = append(cur.yields, parsedYield{
 						fieldName: fname,
+						autopour:  isAutopour,
 					})
 				}
 				continue
@@ -447,20 +455,27 @@ func parseCellFileV1(text string) []parsedCell {
 				continue
 			}
 
-			// Yield: yield NAME ≡ VALUE or yield NAME
+			// Yield: yield NAME [autopour] ≡ VALUE or yield NAME [autopour]
 			if strings.HasPrefix(trimmed, "yield ") {
 				inBody = false
 				rest := strings.TrimPrefix(trimmed, "yield ")
+				// Check for [autopour] annotation
+				isAutopour := strings.Contains(rest, "[autopour]")
+				if isAutopour {
+					rest = strings.TrimSpace(strings.Replace(rest, "[autopour]", "", 1))
+				}
 				if strings.Contains(rest, "≡") {
 					parts := strings.SplitN(rest, "≡", 2)
 					cur.yields = append(cur.yields, parsedYield{
 						fieldName: strings.TrimSpace(parts[0]),
 						prebound:  strings.TrimSpace(parts[1]),
+						autopour:  isAutopour,
 					})
 					cur.bodyType = "hard"
 				} else {
 					cur.yields = append(cur.yields, parsedYield{
 						fieldName: strings.TrimSpace(rest),
+						autopour:  isAutopour,
 					})
 				}
 				continue
@@ -669,15 +684,19 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 	frameIDVal := fmt.Sprintf("'%s'", escape("f-"+cellID+"-0"))
 	for _, y := range c.yields {
 		yID := safeID(fmt.Sprintf("y-%s-%s-%s", prefix, c.name, y.fieldName))
+		autopourVal := "FALSE"
+		if y.autopour {
+			autopourVal = "TRUE"
+		}
 		if allPrebound && len(c.yields) > 1 {
 			// Pre-freeze each yield with its value
 			sb.WriteString(fmt.Sprintf(
-				"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES ('%s', '%s', %s, '%s', '%s', TRUE, NOW());\n",
-				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.prebound)))
+				"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, is_autopour, frozen_at) VALUES ('%s', '%s', %s, '%s', '%s', TRUE, %s, NOW());\n",
+				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.prebound), autopourVal))
 		} else {
 			sb.WriteString(fmt.Sprintf(
-				"INSERT INTO yields (id, cell_id, frame_id, field_name) VALUES ('%s', '%s', %s, '%s');\n",
-				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName)))
+				"INSERT INTO yields (id, cell_id, frame_id, field_name, is_autopour) VALUES ('%s', '%s', %s, '%s', %s);\n",
+				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), autopourVal))
 		}
 	}
 

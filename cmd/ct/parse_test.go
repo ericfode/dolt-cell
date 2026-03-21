@@ -1317,3 +1317,82 @@ func TestParseRejectsInvalidNames(t *testing.T) {
 		})
 	}
 }
+
+func TestAutopourAnnotation(t *testing.T) {
+	// v2 syntax
+	cells, err := parseCellFile("cell evaluator\n  yield result [autopour]\n  ---\n  body\n  ---\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cells) != 1 {
+		t.Fatalf("expected 1 cell, got %d", len(cells))
+	}
+	if len(cells[0].yields) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(cells[0].yields))
+	}
+	y := cells[0].yields[0]
+	if y.fieldName != "result" {
+		t.Errorf("expected field name 'result', got %q", y.fieldName)
+	}
+	if !y.autopour {
+		t.Error("expected autopour=true")
+	}
+
+	// yield without autopour should have autopour=false
+	cells2, err := parseCellFile("cell plain\n  yield output\n  ---\n  body\n  ---\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cells2[0].yields[0].autopour {
+		t.Error("expected autopour=false for plain yield")
+	}
+}
+
+func TestAutopourCellsToSQL(t *testing.T) {
+	// autopour yield should emit is_autopour=TRUE in SQL
+	cells := []parsedCell{{
+		name:     "eval",
+		bodyType: "soft",
+		yields:   []parsedYield{{fieldName: "result", autopour: true}},
+	}}
+	sql := cellsToSQL("test-prog", cells)
+	if !strings.Contains(sql, "is_autopour") {
+		t.Error("expected is_autopour in generated SQL for autopour yield")
+	}
+	if !strings.Contains(sql, "TRUE") {
+		t.Error("expected TRUE value for autopour yield")
+	}
+
+	// non-autopour yield should emit is_autopour=FALSE
+	cells2 := []parsedCell{{
+		name:     "plain",
+		bodyType: "soft",
+		yields:   []parsedYield{{fieldName: "output"}},
+	}}
+	sql2 := cellsToSQL("test-prog2", cells2)
+	if !strings.Contains(sql2, "is_autopour") {
+		t.Error("expected is_autopour in generated SQL even for non-autopour yield")
+	}
+}
+
+func TestAutopourCellZeroParsesClean(t *testing.T) {
+	data, err := os.ReadFile("../../examples/cell-zero-autopour.cell")
+	if err != nil {
+		t.Skip("cell-zero-autopour.cell not found")
+	}
+	cells, err := parseCellFile(string(data))
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	found := false
+	for _, c := range cells {
+		for _, y := range c.yields {
+			if y.autopour {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("no autopour yield found in cell-zero-autopour.cell")
+	}
+}

@@ -56,3 +56,7 @@ lean_lib Config where
 lean_lib Layering where
   roots := #[`Layering]
   extraDepTargets := #[`Core, `Config, `BeadStore, `EventBus, `AgentProtocol, `PromptTemplates]
+
+lean_lib PrimitiveTest where
+  roots := #[`PrimitiveTest]
+  extraDepTargets := #[`Core]

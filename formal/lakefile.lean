@@ -52,3 +52,7 @@ lean_lib Dispatch where
 
 lean_lib Config where
   roots := #[`Config]
+
+lean_lib Layering where
+  roots := #[`Layering]
+  extraDepTargets := #[`Core, `Config, `BeadStore, `EventBus, `AgentProtocol, `PromptTemplates]

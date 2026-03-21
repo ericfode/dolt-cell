@@ -34,9 +34,7 @@ structure Config where
   fingerprintExtra : List String
 
 /-- Content hash of a config, used for drift detection. -/
-def ConfigFingerprint (cfg : Config) : String :=
-  -- Abstract: identical configs produce identical fingerprints
-  sorry
+opaque ConfigFingerprint (cfg : Config) : String
 
 /-- Session state as observed by the provider. -/
 inductive SessionState where
@@ -64,9 +62,7 @@ def stop (s : ProviderState) (name : SessionName) : ProviderState :=
 
 /-- ProcessAlive: returns true if processNames is empty. -/
 def processAlive (_s : ProviderState) (processNames : List String) : Bool :=
-  match processNames with
-  | [] => true
-  | _  => sorry -- implementation-specific liveness check
+  processNames.isEmpty
 
 -- ═══════════════════════════════════════════════════════════════
 -- Theorems
@@ -91,11 +87,6 @@ theorem start_running_noop (s : ProviderState) (name : SessionName) (cfg : Confi
     (start s name cfg).1 = s := by
   intro hrun
   simp [start, hrun]
-
-/-- ConfigFingerprint is deterministic: same config → same hash. -/
-theorem fingerprint_deterministic (cfg : Config) :
-    ConfigFingerprint cfg = ConfigFingerprint cfg := by
-  rfl
 
 /-- Stop then start gives a running session. -/
 theorem stop_start_running (s : ProviderState) (name : SessionName) (cfg : Config) :

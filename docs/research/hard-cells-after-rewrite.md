@@ -4,11 +4,11 @@
 **Date**: 2026-03-20
 **Author**: Alchemist (dolt-cell)
 
-> **Note (2026-03-21):** This research predates the Zygo S-expression
-> substrate (dc-jo2). Code examples use the old cell syntax. The
+> **Note (2026-03-21):** This research predates the Lua substrate design.
+> Code examples use the old cell syntax (guillemets, sql: bodies). The
 > analysis and conclusions remain valid — only the surface syntax has
-> changed. See `docs/plans/2026-03-21-zygo-substrate-design.md` for
-> the current syntax.
+> changed. See `docs/plans/2026-03-21-lua-substrate-design.md` for
+> the current design.
 
 ## The Problem
 

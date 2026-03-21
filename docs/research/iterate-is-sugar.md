@@ -1,97 +1,197 @@
-# iterate is sugar — Design Rationale
+# Design Decision: `iterate` is Sugar for `recur`
 
-> **Note (2026-03-21):** This research predates the Zygo S-expression
-> substrate (dc-jo2). Code examples use the old cell syntax. The
+*Sussmind — 2026-03-21*
+*Bead: dc-wdw*
+
+---
+
+> **Note (2026-03-21):** This research predates the Lua substrate design.
+> Code examples use the old cell syntax (guillemets, sql: bodies). The
 > analysis and conclusions remain valid — only the surface syntax has
-> changed. See `docs/plans/2026-03-21-zygo-substrate-design.md` for
-> the current syntax.
+> changed. See `docs/plans/2026-03-21-lua-substrate-design.md` for
+> the current design.
 
-## Summary
+## 1. The Question
 
-`iterate NAME N` is syntactic sugar for `cell NAME` + `recur (max N)`.
-The parser desugars it at parse time; no runtime distinction exists.
+`village-sim.cell` uses `iterate day 5` — a keyword not in the v2 syntax
+spec. What is it? Is it a new primitive? Or syntactic sugar for something
+we already have?
 
-## Why a keyword?
+## 2. The Answer
 
-The v1 syntax `⊢∘ NAME × N` was the most common recursion pattern:
-run a cell N times, chaining outputs. In v2, the equivalent is:
+**`iterate` is sugar for `recur (max N)` without a guard.**
+
+The implementation confirms this. In `parse.go`, both forms set the same
+internal field (`parsedCell.iterate`) and expand through the same function
+(`expandIteration`). There is no semantic difference — only a syntactic
+convenience.
+
+| Surface form | Internal representation | Guard | Max |
+|---|---|---|---|
+| `iterate NAME N` | `iterate = N, guard = ""` | none | N |
+| `recur (max N)` | `iterate = N, guard = ""` | none | N |
+| `recur until GUARD (max N)` | `iterate = N, guard = GUARD` | GUARD | N |
+
+All three expand to the same chain: `NAME-1 → NAME-2 → ... → NAME-N`,
+with each step's givens wired to the previous step's yields.
+
+## 3. Why This is Correct (The Algebra)
+
+The effect lattice and the denotational semantics treat iteration as
+**bounded unrolling of a fixed-point computation.** That's recursion, not
+iteration in the classical sense.
+
+Classical iteration (a `for` loop) implies:
+- Deterministic step count
+- Mutable state threaded through the loop body
+- No early termination based on output quality
+
+Cell's "iteration" is none of these. It is:
+- A chain of independent cell evaluations
+- Each cell receives the *previous cell's yields* as givens
+- Each evaluation is a fresh LLM call — **nondeterministically idempotent**
+- A guard can terminate the chain early
+
+This is **guarded recursion** in the sense of domain theory: a productive
+corecursive process truncated by a well-founded termination condition.
+The `(max N)` bound makes it well-founded. The guard makes it potentially
+shorter.
+
+The nondeterministic idempotence point is key: each step of the recursion
+may produce a *different* output for the same input (because LLMs are
+stochastic). But the *structure* is recursive — each step refines the
+previous step's output. The guard tests whether the refinement has
+converged. This is a fixpoint iteration, not a counting loop.
+
+`iterate` without a guard is the degenerate case: "run this recursion
+exactly N times, no early exit." It's useful for simulations
+(village-sim's `iterate day 5`) where you want N applications of a
+state-transition function with no convergence test.
+
+## 4. Why `iterate` Should Stay as Sugar
+
+Despite being semantically identical to `recur (max N)`, the `iterate`
+keyword earns its place as sugar for two reasons:
+
+1. **Intent clarity**: `iterate day 5` reads as "simulate 5 days."
+   `recur (max 5)` reads as "recurse up to 5 times." Both do the same
+   thing, but `iterate` better communicates *bounded application* while
+   `recur` communicates *convergence-seeking refinement*.
+
+2. **No guard = no guard**: `iterate NAME N` makes it explicit that
+   there is no early-exit condition. `recur (max N)` leaves the reader
+   wondering "where's the `until`?"
+
+But it MUST be documented as sugar, not as a separate primitive. The
+spec should define `recur` as the fundamental form and `iterate` as
+shorthand.
+
+## 5. The SQL Problem
+
+While investigating `iterate`, a deeper concern surfaced: **the presence
+of SQL as a cell body type is a leaky abstraction.**
+
+Hard computed cells use raw SQL:
+```
+cell count-words
+  yield total
+  ---
+  sql: SELECT LENGTH(...) FROM yields ...
+  ---
+```
+
+This violates the language's own principles:
+
+1. **It breaks metacircularity.** cell-zero cannot evaluate a hard
+   computed cell without access to the Dolt substrate. The whole point
+   of cell-zero-autopour was to eliminate SQL escape hatches — but
+   `sql:` bodies are SQL escape hatches baked into the syntax.
+
+2. **It couples the language to the store.** Cell programs should be
+   portable across tuple space implementations. A cell program with
+   `sql:` bodies is Dolt-specific.
+
+3. **It conflates effect levels.** A `sql: SELECT` is Pure (read-only,
+   deterministic). A `sql: INSERT` or `sql: CALL DOLT_COMMIT` is
+   NonReplayable. But the parser marks all hard computed cells as Pure.
+   The effect lattice is violated silently.
+
+4. **It prevents crystallization reasoning.** The formal model treats
+   hard cells as Pure values. But a `sql:` body that reads from a
+   changing table is NOT pure — it's Replayable at best.
+
+### Recommendation
+
+SQL should be a **piston capability**, not a **language primitive.**
+
+Instead of:
+```
+cell count-words
+  yield total
+  ---
+  sql: SELECT ...
+  ---
+```
+
+Use a soft cell that instructs the piston:
+```
+cell count-words
+  given compose.poem
+  yield total
+  ---
+  Count the words in «poem».
+  ---
+```
+
+Or, for cases where you truly need deterministic computation, use
+hard literals with a derivation chain:
+```
+cell count-words
+  yield total = 17
+```
+
+The `sql:` body type should be deprecated in favor of:
+- **Soft cells** for computations the piston handles
+- **Hard literals** for known values
+- **A future `compute:` cell type** that runs a pure function
+  (no database access, no side effects, deterministic) — this
+  preserves the effect lattice while allowing computation
+
+This is a larger design change (not part of dc-wdw) but the `iterate`
+investigation surfaced it. Filed as a concern for the crew.
+
+## 6. Spec Update
+
+The v2 syntax spec (`docs/cell-v2-syntax.md`) should add:
 
 ```
-cell NAME
-  ...
-  recur (max N)
-  ...
+## Bounded Iteration (Sugar)
+
+`iterate` is shorthand for `recur` without a guard:
+
+    iterate NAME N
+      given SEED.FIELD
+      yield FIELD
+      ---
+      Body text...
+      ---
+
+is equivalent to:
+
+    cell NAME
+      given SEED.FIELD
+      yield FIELD
+      recur (max N)
+      ---
+      Body text...
+      ---
+
+Use `iterate` when you want exactly N applications of a state-transition
+function (simulation ticks, generation steps). Use `recur until` when
+you're seeking convergence.
 ```
 
-This is correct but verbose for the common case. `iterate NAME N`
-provides a one-liner that reads naturally for the "do this N times"
-intent while expanding to the same AST.
+## 7. Implementation Note
 
-## iterate is recursion, not classical iteration
-
-Despite the name, `iterate` is fundamentally recursion:
-
-| Property | Classical iteration | Cell iterate |
-|----------|-------------------|--------------|
-| State | Mutable loop variable | Immutable yield chain |
-| Determinism | Deterministic | Nondeterministic (LLM eval) |
-| Body | Side-effecting statements | Pure transformation |
-| Termination | Loop counter / break | Fixed bound, no early exit |
-| Composition | Sequential | Dataflow (given/yield) |
-
-Each step is a fresh cell evaluation. The output of step K becomes
-the input of step K+1 via the yield chain. There is no shared
-mutable state between steps.
-
-## Nondeterministic idempotence
-
-A key property: `iterate NAME 1` is NOT guaranteed to be a no-op.
-Even with identical input, the LLM may produce different output.
-This distinguishes iterate from a mathematical fixpoint iteration
-where f(f(x)) = f(x) implies convergence.
-
-For Cell, "iterate 1" means "evaluate once" — the same as a plain
-cell with no recursion. "iterate 3" means "evaluate, then evaluate
-the result, then evaluate that result." Each evaluation is an
-independent nondeterministic transformation.
-
-This is why guarded recursion (`recur until GUARD`) exists separately:
-it provides a semantic convergence criterion that doesn't depend on
-deterministic equality.
-
-## When to use iterate vs recur
-
-| Scenario | Use |
-|----------|-----|
-| Refine until a quality criterion is met | `recur until GUARD (max N)` |
-| Run exactly N refinement passes | `iterate NAME N` |
-| Single evaluation, no recursion | Plain `cell NAME` |
-| Perpetual daemon (never freezes) | `cell NAME (stem)` |
-
-## The SQL-as-body concern
-
-During design, we noted that `iterate` cells with SQL bodies create
-an odd pattern: iterating a deterministic SQL query N times always
-produces the same result. This is technically valid but useless.
-We chose not to lint or forbid it — the type system (Pure vs Semantic
-effect levels) already makes this visible, and adding a special case
-would complicate the parser for no real safety gain.
-
-## Parser implementation
-
-The desugaring is trivial:
-
-```
-iterate NAME N  →  cell NAME
-  ...               ...
-  recur (max N)      recur (max N)
-  ...               ...
-```
-
-The parser treats `iterate` as an alternative cell-declaration keyword.
-All subsequent indented lines (yields, givens, body, checks) parse
-identically. The only difference is that `recur (max N)` is injected
-automatically from the declaration line.
-
-If the body also contains an explicit `recur` statement, the parser
-raises a diagnostic: "iterate already implies recur (max N)."
+No code changes required. The parser already handles both forms
+identically. This is purely a documentation and spec update.

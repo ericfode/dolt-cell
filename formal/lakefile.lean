@@ -36,3 +36,6 @@ lean_lib EventBus where
 
 lean_lib AgentProtocol where
   roots := #[`AgentProtocol]
+
+lean_lib PromptTemplates where
+  roots := #[`PromptTemplates]

@@ -1,0 +1,368 @@
+{
+   "cells": [
+      {
+         "body": {
+            "template": "This is a pour-request. Another cell or an external agent fills in the program name and the raw source text of the program to evaluate.\n\nYield program_name = the name for the new program.\nYield program_text = the complete source to be poured.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(program_text)",
+               "type": "deterministic"
+            },
+            {
+               "expr": "not_empty(program_name)",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [ ],
+         "name": "request",
+         "yields": [
+            "program_name",
+            "program_text"
+         ]
+      },
+      {
+         "autopour": "evaluated",
+         "body": {
+            "template": "The universal evaluator. Take {{program_text}} and yield it as a program for autopour. The runtime will parse it, verify its effect level, and pour it into the retort.\n\nIf the text doesn't parse, this yield becomes bottom (error).\nIf the effect level exceeds the bound, this yield becomes bottom.\nOtherwise, the program enters the retort and starts evaluating.\n\nYield evaluated = {{program_text}}\nYield name = {{program_name}}",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(evaluated)",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "non_replayable",
+         "givens": [
+            "request.program_text",
+            "request.program_name"
+         ],
+         "name": "evaluator",
+         "yields": [
+            "evaluated",
+            "name"
+         ]
+      },
+      {
+         "body": {
+            "expr": {
+               "fields": [
+                  {
+                     "expr": {
+                        "bindings": [
+                           {
+                              "expr": {
+                                 "args": [
+                                    {
+                                       "binding": "evaluator.name",
+                                       "op": "get"
+                                    },
+                                    {
+                                       "op": "lit",
+                                       "value": "cells"
+                                    }
+                                 ],
+                                 "fn": "observe",
+                                 "op": "call"
+                              },
+                              "name": "cells"
+                           },
+                           {
+                              "expr": {
+                                 "args": [
+                                    {
+                                       "binding": "cells",
+                                       "op": "get"
+                                    }
+                                 ],
+                                 "fn": "length",
+                                 "op": "call"
+                              },
+                              "name": "total"
+                           },
+                           {
+                              "expr": {
+                                 "args": [
+                                    {
+                                       "args": [
+                                          {
+                                             "op": "lit",
+                                             "value": "is_bottom"
+                                          },
+                                          {
+                                             "binding": "cells",
+                                             "op": "get"
+                                          }
+                                       ],
+                                       "fn": "filter",
+                                       "op": "call"
+                                    }
+                                 ],
+                                 "fn": "length",
+                                 "op": "call"
+                              },
+                              "name": "bottoms"
+                           },
+                           {
+                              "expr": {
+                                 "args": [
+                                    {
+                                       "args": [
+                                          {
+                                             "op": "lit",
+                                             "value": "is_not_frozen"
+                                          },
+                                          {
+                                             "binding": "cells",
+                                             "op": "get"
+                                          }
+                                       ],
+                                       "fn": "filter",
+                                       "op": "call"
+                                    }
+                                 ],
+                                 "fn": "length",
+                                 "op": "call"
+                              },
+                              "name": "unfrozen"
+                           }
+                        ],
+                        "body": {
+                           "else": {
+                              "else": {
+                                 "else": {
+                                    "op": "lit",
+                                    "value": "running"
+                                 },
+                                 "op": "cond",
+                                 "pred": {
+                                    "left": {
+                                       "binding": "unfrozen",
+                                       "op": "get"
+                                    },
+                                    "op": "==",
+                                    "right": {
+                                       "op": "lit",
+                                       "value": 0
+                                    }
+                                 },
+                                 "then": {
+                                    "op": "lit",
+                                    "value": "complete"
+                                 }
+                              },
+                              "op": "cond",
+                              "pred": {
+                                 "left": {
+                                    "binding": "bottoms",
+                                    "op": "get"
+                                 },
+                                 "op": ">",
+                                 "right": {
+                                    "op": "lit",
+                                    "value": 0
+                                 }
+                              },
+                              "then": {
+                                 "op": "lit",
+                                 "value": "error"
+                              }
+                           },
+                           "op": "cond",
+                           "pred": {
+                              "left": {
+                                 "binding": "total",
+                                 "op": "get"
+                              },
+                              "op": "==",
+                              "right": {
+                                 "op": "lit",
+                                 "value": 0
+                              }
+                           },
+                           "then": {
+                              "op": "lit",
+                              "value": "not_found"
+                           }
+                        },
+                        "op": "let"
+                     },
+                     "name": "state"
+                  }
+               ],
+               "op": "obj"
+            },
+            "type": "compute"
+         },
+         "checks": [ ],
+         "effect": "pure",
+         "givens": [
+            "evaluator.name"
+         ],
+         "name": "status",
+         "yields": [
+            "state"
+         ]
+      },
+      {
+         "body": {
+            "template": "Poll for a pending pour-request. This is a stem cell — it runs forever, checking each generation for new work.\n\nUse observe(\"cell-zero\", \"pending-requests\") to check for work.\nIf a request is pending: yield program_name and program_text from it, return :more to cycle again.\nIf no request: yield empty strings, return :more (quiescent).",
+            "type": "soft"
+         },
+         "checks": [ ],
+         "effect": "non_replayable",
+         "givens": [ ],
+         "name": "perpetual-request",
+         "stem": true,
+         "yields": [
+            "program_name",
+            "program_text"
+         ]
+      },
+      {
+         "autopour": "poured",
+         "body": {
+            "template": "If {{program_text}} is not empty, yield it for autopour.\nIf empty, yield empty string (quiescent — no work this generation).\n\nThis is the perpetual metacircular evaluator:\na stem cell that continuously pours programs as they arrive.\n\nYield poured = {{program_text}} (or empty if quiescent)\nYield status = \"evaluating\" or \"quiescent\"\nReturn :more to cycle again.",
+            "type": "soft"
+         },
+         "checks": [ ],
+         "effect": "non_replayable",
+         "givens": [
+            "perpetual-request.program_text",
+            "perpetual-request.program_name"
+         ],
+         "name": "perpetual-evaluator",
+         "stem": true,
+         "yields": [
+            "poured",
+            "status"
+         ]
+      },
+      {
+         "body": {
+            "type": "literal",
+            "value": {
+               "subject": "the metacircular evaluator"
+            }
+         },
+         "checks": [ ],
+         "effect": "pure",
+         "givens": [ ],
+         "name": "example-topic",
+         "yields": [
+            "subject"
+         ]
+      },
+      {
+         "body": {
+            "template": "Write a haiku about {{subject}}. Follow 5-7-5 syllable structure. Return only the three lines.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(poem)",
+               "type": "deterministic"
+            },
+            {
+               "assertion": "poem follows 5-7-5 syllable pattern",
+               "type": "semantic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "example-topic.subject"
+         ],
+         "name": "example-haiku",
+         "yields": [
+            "poem"
+         ]
+      },
+      {
+         "body": {
+            "expr": {
+               "fields": [
+                  {
+                     "expr": {
+                        "args": [
+                           {
+                              "op": "lit",
+                              "value": 1
+                           },
+                           {
+                              "args": [
+                                 {
+                                    "args": [
+                                       {
+                                          "args": [
+                                             {
+                                                "binding": "example-haiku.poem",
+                                                "op": "get"
+                                             }
+                                          ],
+                                          "fn": "strip",
+                                          "op": "call"
+                                       },
+                                       {
+                                          "op": "lit",
+                                          "value": " "
+                                       }
+                                    ],
+                                    "fn": "split",
+                                    "op": "call"
+                                 }
+                              ],
+                              "fn": "length",
+                              "op": "call"
+                           }
+                        ],
+                        "fn": "add",
+                        "op": "call"
+                     },
+                     "name": "total"
+                  }
+               ],
+               "op": "obj"
+            },
+            "type": "compute"
+         },
+         "checks": [
+            {
+               "expr": "total > 0",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "pure",
+         "givens": [
+            "example-haiku.poem"
+         ],
+         "name": "example-word-count",
+         "yields": [
+            "total"
+         ]
+      }
+   ],
+   "metacircularity": {
+      "answer": "Structurally yes, executionally no.",
+      "chained_autopour": {
+         "explanation": "A pours B pours C... requires a fuel bound. Each pour decrements fuel. At fuel=0, autopour yields bottom. This is a runtime invariant, not expressible in the static program description.",
+         "mechanism": "fuel counter"
+      },
+      "executional_metacircularity": {
+         "achievable": false,
+         "explanation": "Jsonnet is a data language that manifests to JSON. It has no runtime execution model for cells — no pour, no observe, no :more. The JSON output is a DESCRIPTION of the evaluator, not an execution of it. A separate runtime (the ct tool) must execute the description."
+      },
+      "question": "Can this evaluator evaluate itself?",
+      "self_eval_termination": {
+         "explanation": "If cell-zero pours itself, the copy's request cell has no source of program_text. The unsatisfied dependency halts evaluation naturally. No fuel counter needed for this case.",
+         "mechanism": "unsatisfied dependency"
+      },
+      "structural_metacircularity": {
+         "achievable": true,
+         "explanation": "The Jsonnet program CAN describe a cell program whose cells implement the cell evaluator. The request + evaluator + autopour chain is fully representable as JSON data."
+      }
+   },
+   "program": "cell-zero"
+}

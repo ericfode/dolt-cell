@@ -1,0 +1,97 @@
+{
+   "cells": [
+      {
+         "body": {
+            "type": "literal",
+            "value": {
+               "code": "def is_prime(n): return all(n % i != 0 for i in range(2, n))"
+            }
+         },
+         "checks": [ ],
+         "effect": "pure",
+         "givens": [ ],
+         "name": "source",
+         "yields": [
+            "code"
+         ]
+      },
+      {
+         "body": {
+            "template": "Review this Python function for correctness, performance, and style:\n\n{{code}}\n\nIdentify all bugs, edge cases, and potential improvements. Format each finding as a bullet point starting with \"- \".",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "bullet_count(findings) >= 3",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "source.code"
+         ],
+         "name": "analyze",
+         "yields": [
+            "findings"
+         ]
+      },
+      {
+         "body": {
+            "expr": {
+               "fields": [
+                  {
+                     "expr": {
+                        "args": [
+                           {
+                              "op": "lit",
+                              "value": "- "
+                           },
+                           {
+                              "binding": "analyze.findings",
+                              "op": "get"
+                           }
+                        ],
+                        "fn": "count_occurrences",
+                        "op": "call"
+                     },
+                     "name": "total"
+                  }
+               ],
+               "op": "obj"
+            },
+            "type": "compute"
+         },
+         "checks": [ ],
+         "effect": "pure",
+         "givens": [
+            "analyze.findings"
+         ],
+         "name": "count-findings",
+         "yields": [
+            "total"
+         ]
+      },
+      {
+         "body": {
+            "template": "Given {{total}} findings from the code review:\n\n{{findings}}\n\nPrioritize these findings by severity (critical first, minor last). For each, classify as BUG, PERFORMANCE, or STYLE. Write a one-paragraph executive summary suitable for a pull request comment.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(summary)",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "analyze.findings",
+            "count-findings.total"
+         ],
+         "name": "prioritize",
+         "yields": [
+            "summary"
+         ]
+      }
+   ],
+   "program": "code-review"
+}

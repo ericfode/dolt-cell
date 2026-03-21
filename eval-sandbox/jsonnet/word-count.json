@@ -1,0 +1,127 @@
+{
+   "cells": [
+      {
+         "body": {
+            "type": "literal",
+            "value": {
+               "text": "the quick brown fox jumps over the lazy dog"
+            }
+         },
+         "checks": [ ],
+         "effect": "pure",
+         "givens": [ ],
+         "name": "input",
+         "yields": [
+            "text"
+         ]
+      },
+      {
+         "body": {
+            "expr": {
+               "fields": [
+                  {
+                     "expr": {
+                        "args": [
+                           {
+                              "args": [
+                                 {
+                                    "op": "lit",
+                                    "value": "not_empty"
+                                 },
+                                 {
+                                    "args": [
+                                       {
+                                          "args": [
+                                             {
+                                                "binding": "input.text",
+                                                "op": "get"
+                                             }
+                                          ],
+                                          "fn": "strip",
+                                          "op": "call"
+                                       },
+                                       {
+                                          "op": "lit",
+                                          "value": " "
+                                       }
+                                    ],
+                                    "fn": "split",
+                                    "op": "call"
+                                 }
+                              ],
+                              "fn": "filter",
+                              "op": "call"
+                           }
+                        ],
+                        "fn": "length",
+                        "op": "call"
+                     },
+                     "name": "total"
+                  },
+                  {
+                     "expr": {
+                        "args": [
+                           {
+                              "op": "lit",
+                              "value": "not_empty"
+                           },
+                           {
+                              "args": [
+                                 {
+                                    "args": [
+                                       {
+                                          "binding": "input.text",
+                                          "op": "get"
+                                       }
+                                    ],
+                                    "fn": "strip",
+                                    "op": "call"
+                                 },
+                                 {
+                                    "op": "lit",
+                                    "value": " "
+                                 }
+                              ],
+                              "fn": "split",
+                              "op": "call"
+                           }
+                        ],
+                        "fn": "filter",
+                        "op": "call"
+                     },
+                     "name": "words"
+                  }
+               ],
+               "op": "obj"
+            },
+            "type": "compute"
+         },
+         "checks": [
+            {
+               "expr": "total >= 0",
+               "type": "deterministic"
+            },
+            {
+               "expr": "length(words) == total",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "pure",
+         "givens": [
+            "input.text"
+         ],
+         "name": "word-count",
+         "yields": [
+            "total",
+            "words"
+         ]
+      }
+   ],
+   "program": "word-count",
+   "proof": {
+      "computed_at_manifest_time": 9,
+      "expression_tree_would_yield": 9,
+      "input": "the quick brown fox jumps over the lazy dog",
+      "trees_agree": true
+   }
+}

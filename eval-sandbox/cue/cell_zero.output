@@ -1,0 +1,219 @@
+#Effect: "pure" | "replayable" | "non-replayable"
+#Program: {
+    name: string
+    cells: []
+}
+#CellDef: {
+    name:   string
+    effect: "pure" | "replayable" | "non-replayable"
+    givens: []
+    yields: []
+}
+#Cell: {
+    name:   string
+    effect: "pure" | "replayable" | "non-replayable"
+}
+request: {
+    name:   "request"
+    effect: "replayable"
+    body:   "Yield the program name and S-expression source text for the program to be evaluated."
+    check: ["program_name is not empty", "program_text is not empty"]
+}
+evaluator: {
+    name:     "evaluator"
+    effect:   "non-replayable"
+    autopour: true
+    check: ["evaluated is not empty"]
+    compute: {
+        identity_law:    "evaluated = program_text (eval is pour)"
+        autopour_target: "evaluated"
+    }
+}
+status: {
+    name:   "status"
+    effect: "replayable"
+    body: """
+        Observe the program named {evaluator.name} in the retort.
+        Return its status: one of "not_found", "error", "complete", "running".
+        Check: if 0 cells found → not_found. If any cell state = bottom → error.
+        If all cells frozen → complete. Otherwise → running.
+        """
+    compute: {
+        logic: """
+            let cells = observe(name, :cells)
+            let total = len(cells)
+            let bottoms = len(filter(c => c.state == "bottom", cells))
+            let unfrozen = len(filter(c => c.state != "frozen", cells))
+            state = if total == 0: "not_found"
+                 elif bottoms > 0: "error"
+                 elif unfrozen == 0: "complete"
+                 else: "running"
+            """
+    }
+}
+self_eval_analysis: {
+    question:                         "If request.program_text = <source of this program>, does it diverge?"
+    answer:                           "No. The poured copy has an unsatisfied dependency (request.program_text)."
+    reason:                           "The DAG acts as a natural termination condition — inert copies are safe."
+    fuel_needed_for_self_eval:        false
+    fuel_needed_for_chained_autopour: true
+    self_eval_terminates:             true
+}
+perpetual_request: {
+    name:   "perpetual-request"
+    effect: "non-replayable"
+    compute: {
+        loop_behavior: ":more returned each cycle to request next iteration"
+        observe_call:  "observe(\"cell-zero\", :pending-requests)"
+        quiescent:     "if pending = nil → yield empty values, return :more"
+        active:        "if pending → yield {program_name, program_text}, return :more"
+    }
+    stem: true
+}
+perpetual_evaluator: {
+    name:     "perpetual-evaluator"
+    effect:   "non-replayable"
+    autopour: true
+    compute: {
+        loop_behavior: ":more returned each cycle"
+        quiescent:     "if program_text == \"\" → yield {poured: \"\", status: \"quiescent\"}, return :more"
+        active:        "if program_text != \"\" → yield {poured: program_text, status: \"evaluating\"}, return :more"
+    }
+    stem: true
+}
+example_topic: {
+    name:   "example-topic"
+    effect: "pure"
+    literal: {
+        subject: "the metacircular evaluator"
+    }
+}
+example_haiku: {
+    name:   "example-haiku"
+    effect: "replayable"
+    body:   "Write a haiku about the metacircular evaluator. Follow 5-7-5 syllable structure. Return only the three lines."
+    check: ["poem is not empty", "poem follows 5-7-5 syllable pattern"]
+}
+example_word_count: {
+    name:   "example-word-count"
+    effect: "pure"
+    compute: {
+        total: 13
+    }
+}
+evaluator_yields: {
+    evaluated: {
+        name: "haiku-autopoured"
+        cells: [{
+            name:   "topic"
+            effect: "pure"
+            givens: []
+            yields: ["subject"]
+        }, {
+            name:   "compose"
+            effect: "replayable"
+            body:   "Write a haiku about the given subject."
+            givens: ["topic.subject"]
+            yields: ["poem"]
+        }]
+    }
+    name: "haiku-autopoured"
+}
+cell_zero_program: {
+    name: "cell-zero"
+    cells: [{
+        name:   "request"
+        effect: "replayable"
+        body:   "Yield the program name and S-expression source text for the program to be evaluated."
+        check: ["program_name is not empty", "program_text is not empty"]
+    }, {
+        name:     "evaluator"
+        effect:   "non-replayable"
+        autopour: true
+        check: ["evaluated is not empty"]
+        compute: {
+            identity_law:    "evaluated = program_text (eval is pour)"
+            autopour_target: "evaluated"
+        }
+    }, {
+        name:   "status"
+        effect: "replayable"
+        body: """
+            Observe the program named {evaluator.name} in the retort.
+            Return its status: one of "not_found", "error", "complete", "running".
+            Check: if 0 cells found → not_found. If any cell state = bottom → error.
+            If all cells frozen → complete. Otherwise → running.
+            """
+        compute: {
+            logic: """
+                let cells = observe(name, :cells)
+                let total = len(cells)
+                let bottoms = len(filter(c => c.state == "bottom", cells))
+                let unfrozen = len(filter(c => c.state != "frozen", cells))
+                state = if total == 0: "not_found"
+                     elif bottoms > 0: "error"
+                     elif unfrozen == 0: "complete"
+                     else: "running"
+                """
+        }
+    }, {
+        name:   "perpetual-request"
+        effect: "non-replayable"
+        compute: {
+            loop_behavior: ":more returned each cycle to request next iteration"
+            observe_call:  "observe(\"cell-zero\", :pending-requests)"
+            quiescent:     "if pending = nil → yield empty values, return :more"
+            active:        "if pending → yield {program_name, program_text}, return :more"
+        }
+        stem: true
+    }, {
+        name:     "perpetual-evaluator"
+        effect:   "non-replayable"
+        autopour: true
+        compute: {
+            loop_behavior: ":more returned each cycle"
+            quiescent:     "if program_text == \"\" → yield {poured: \"\", status: \"quiescent\"}, return :more"
+            active:        "if program_text != \"\" → yield {poured: program_text, status: \"evaluating\"}, return :more"
+        }
+        stem: true
+    }, {
+        name:   "example-topic"
+        effect: "pure"
+        literal: {
+            subject: "the metacircular evaluator"
+        }
+    }, {
+        name:   "example-haiku"
+        effect: "replayable"
+        body:   "Write a haiku about the metacircular evaluator. Follow 5-7-5 syllable structure. Return only the three lines."
+        check: ["poem is not empty", "poem follows 5-7-5 syllable pattern"]
+    }, {
+        name:   "example-word-count"
+        effect: "pure"
+        compute: {
+            total: 13
+        }
+    }]
+    dag: {
+        request: []
+        evaluator: ["request.program_text", "request.program_name"]
+        status: ["evaluator.name"]
+        "perpetual-request": []
+        "perpetual-evaluator": ["perpetual-request.program_text", "perpetual-request.program_name"]
+        "example-topic": []
+        "example-haiku": ["example-topic.subject"]
+        "example-word-count": ["example-haiku.poem"]
+    }
+    metacircularity: {
+        cue_is_metacircular:           true
+        cell_lang_metacircular_in_cue: false
+        reason: """
+            CUE can describe the STRUCTURE of the metacircular evaluator,
+            validate its shape, and render prompt bodies. But CUE cannot
+            EXECUTE it: there is no pour, no observe, no stem loop, no autopour.
+            The cell language's metacircularity requires a runtime.
+            CUE's metacircularity is constraint-level: definitions constrain
+            values that instantiate those definitions. This is real but different.
+            """
+    }
+}

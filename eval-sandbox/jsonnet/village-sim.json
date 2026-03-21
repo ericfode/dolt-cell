@@ -1,0 +1,155 @@
+{
+   "cells": [
+      {
+         "body": {
+            "type": "literal",
+            "value": {
+               "population": 5,
+               "premise": "a world in which everyone was tiny fluffy cows"
+            }
+         },
+         "checks": [ ],
+         "effect": "pure",
+         "givens": [ ],
+         "name": "params",
+         "yields": [
+            "population",
+            "premise"
+         ]
+      },
+      {
+         "body": {
+            "template": "You are a world-builder. Given this premise:\n\"A world in which {{premise}}\"\n\nConstruct the world by returning three things as JSON:\n\nSETTING: {\"name\": \"...\", \"era\": \"...\", \"geography\": \"...\", \"atmosphere\": \"...\", \"key_locations\": [\"...\", \"...\"]}\n\nRULES: {\"premise_mechanic\": \"how the premise works mechanically\", \"constraints\": [\"...\", \"...\"], \"escalation_pattern\": \"how tension increases over time\"}\n\nSEEDS_OF_CONFLICT: [\"a specific tension that will grow\", \"another one\", \"a hidden truth waiting to surface\"]\n\nThe setting should make the premise's consequences INEVITABLE and INTERESTING.\nThe rules should be consistent — the world follows its own logic.\nThe seeds should guarantee the simulation produces drama, not stasis.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(setting)",
+               "type": "deterministic"
+            },
+            {
+               "expr": "not_empty(rules)",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "params.premise"
+         ],
+         "name": "world-constructor",
+         "yields": [
+            "setting",
+            "rules",
+            "seeds_of_conflict"
+         ]
+      },
+      {
+         "body": {
+            "template": "You are a character designer. Create exactly {{population}} people for this world.\n\nWORLD: {{setting}}\nRULES: {{rules}}\nSEEDS OF CONFLICT: {{seeds_of_conflict}}\nPREMISE: \"A world in which {{premise}}\"\n\nReturn a JSON array of {{population}} people. Each person is:\n{\n  \"name\": \"...\",\n  \"role\": \"their function in this world\",\n  \"identity\": \"2-sentence backstory\",\n  \"state\": \"current emotional/physical state\",\n  \"secret\": \"something they're hiding\",\n  \"relationships\": {\"OtherName\": \"one-word feeling\"},\n  \"day_fn\": \"INSTRUCTIONS FOR THIS PERSON'S STEP FUNCTION: ...\"\n}\n\nDesign rules:\n- Each person must have a DIFFERENT relationship to the premise\n- At least one person benefits from the premise, one suffers from it\n- Relationships should create triangles\n- Each day_fn must be specific enough that a different LLM could play this person\n- Secrets should interconnect — no isolated storylines",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(people)",
+               "type": "deterministic"
+            },
+            {
+               "assertion": "people contains exactly the requested number of characters with interconnected secrets",
+               "type": "semantic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "params.population",
+            "params.premise",
+            "world-constructor.setting",
+            "world-constructor.rules",
+            "world-constructor.seeds_of_conflict"
+         ],
+         "name": "person-constructor",
+         "yields": [
+            "people"
+         ]
+      },
+      {
+         "body": {
+            "template": "Assemble the initial world state from its components.\n\nReturn a single JSON object:\n{\n  \"day\": 0,\n  \"setting\": {{setting}},\n  \"rules\": {{rules}},\n  \"active_conflicts\": {{seeds_of_conflict}},\n  \"people\": {{people}},\n  \"history\": [],\n  \"world_mood\": \"initial atmosphere description\"\n}\n\nDo NOT modify any values — just assemble them into one object.\nValidate that all people have day_fn fields and relationships reference real names.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(initial_state)",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "world-constructor.setting",
+            "world-constructor.rules",
+            "world-constructor.seeds_of_conflict",
+            "person-constructor.people"
+         ],
+         "name": "assemble",
+         "yields": [
+            "initial_state"
+         ]
+      },
+      {
+         "body": {
+            "template": "You are the simulation kernel. You receive the complete world state as JSON.\n\nWORLD STATE:\n{{world_state}}\n\nExecute ONE tick of the simulation. This is a functional fold:\n\nSTEP 1 — MAP: For each person in people[], execute their day_fn:\n  - Read their day_fn (their personal step function)\n  - Given their state, relationships, and the world's active_conflicts,\n    determine their ACTION for today\n\nSTEP 2 — REDUCE: Collect all actions. Determine CONSEQUENCES:\n  - How do actions interact? (conflicts, cooperation, accidents)\n  - What does the premise mechanic cause to happen?\n  - One UNEXPECTED consequence that nobody planned\n\nSTEP 3 — EVOLVE: For each person, update state, relationships, day_fn, secret.\n\nSTEP 4 — ADVANCE: Increment day, update active_conflicts, world_mood, history[].\n\nReturn:\nWORLD_STATE: The complete evolved JSON.\nNARRATIVE: 5-8 sentences telling what happened today as a STORY.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(world_state)",
+               "type": "deterministic"
+            },
+            {
+               "expr": "not_empty(narrative)",
+               "type": "deterministic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "assemble.initial_state"
+         ],
+         "iterate": {
+            "count": 5,
+            "seed": "assemble.initial_state",
+            "state_field": "world_state"
+         },
+         "name": "day",
+         "yields": [
+            "world_state",
+            "narrative"
+         ]
+      },
+      {
+         "body": {
+            "template": "The simulation of \"a world in which {{premise}}\" has run for 5 days.\n\nFINAL WORLD STATE:\n{{world_state}}\n\nLAST DAY:\n{{narrative}}\n\nWrite the epilogue (3-4 paragraphs):\n1. The arc: how did the premise reshape these people over 5 days?\n2. The secrets: what was revealed, what stayed hidden?\n3. The evolution: compare each person's final day_fn to their original\n4. End with one sentence about what this world becomes.",
+            "type": "soft"
+         },
+         "checks": [
+            {
+               "expr": "not_empty(story)",
+               "type": "deterministic"
+            },
+            {
+               "assertion": "story demonstrates how the premise mechanic drove character evolution",
+               "type": "semantic"
+            }
+         ],
+         "effect": "replayable",
+         "givens": [
+            "day.world_state",
+            "day.narrative",
+            "params.premise"
+         ],
+         "name": "epilogue",
+         "yields": [
+            "story"
+         ]
+      }
+   ],
+   "program": "village-sim"
+}

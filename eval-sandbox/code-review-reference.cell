@@ -1,0 +1,41 @@
+-- Code Review
+-- Semantic understanding of source code requires LLM judgment.
+-- No SQL query can identify bugs, evaluate design, or suggest improvements.
+-- The hard cell counts findings; the soft cells do the actual analysis.
+
+cell source
+  yield code = "def is_prime(n): return all(n % i != 0 for i in range(2, n))"
+
+cell analyze
+  given source.code
+  yield findings
+  ---
+  Review this Python function for correctness, performance, and style:
+
+«code»
+
+Identify all bugs, edge cases, and potential improvements. Format each finding as a bullet point starting with "- ".
+  ---
+  check findings contains at least 3 bullet points
+
+cell count-findings
+  given analyze.findings
+  yield total
+  ---
+  sql: SELECT (LENGTH(f.value_text) - LENGTH(REPLACE(f.value_text, '- ', ''))) / 2
+     FROM yields f JOIN cells c ON f.cell_id = c.id
+     WHERE c.name = 'analyze' AND f.field_name = 'findings' AND f.is_frozen = 1
+  ---
+
+cell prioritize
+  given analyze.findings
+  given count-findings.total
+  yield summary
+  ---
+  Given «total» findings from the code review:
+
+«findings»
+
+Prioritize these findings by severity (critical first, minor last). For each, classify as BUG, PERFORMANCE, or STYLE. Write a one-paragraph executive summary suitable for a pull request comment.
+  ---
+  check summary is not empty

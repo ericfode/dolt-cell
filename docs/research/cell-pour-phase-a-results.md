@@ -11,6 +11,12 @@
 > the current syntax.
 **Parent bead**: do-vii
 
+> **Note (2026-03-21):** This research predates the Lua substrate design.
+> Code examples use the old cell syntax (guillemets, sql: bodies). The
+> analysis and conclusions remain valid — only the surface syntax has
+> changed. See `docs/plans/2026-03-21-lua-substrate-design.md` for
+> the current design.
+
 ## Summary
 
 The LLM-based soft parser achieves **100% structural accuracy** on first try

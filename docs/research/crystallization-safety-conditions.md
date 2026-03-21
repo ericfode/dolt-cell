@@ -5,6 +5,12 @@
 **Status**: Research
 **Parent**: dc-9gl
 
+> **Note (2026-03-21):** This research predates the Lua substrate design.
+> Code examples use the old cell syntax (guillemets, sql: bodies). The
+> analysis and conclusions remain valid — only the surface syntax has
+> changed. See `docs/plans/2026-03-21-lua-substrate-design.md` for
+> the current design.
+
 ## The Question
 
 When can a Replayable cell safely crystallize into a Pure cell?

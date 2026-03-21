@@ -401,6 +401,43 @@ def eval (fuel : Nat) (env : ZEnv) (expr : SExpr) : EvalResult :=
 def EvalResult.respectsTier (r : EvalResult) (tier : EffLevel) : Prop :=
   ∀ e ∈ r.effects, e ≤ tier
 
+/-! ====================================================================
+    HELPER LEMMAS FOR EFFECT SAFETY
+    ==================================================================== -/
+
+/-- If all effects in two lists respect a tier, so does their append. -/
+private theorem respectsTier_append {l1 l2 : List EffLevel} {tier : EffLevel}
+    (h1 : ∀ e ∈ l1, e ≤ tier) (h2 : ∀ e ∈ l2, e ≤ tier) :
+    ∀ e ∈ l1 ++ l2, e ≤ tier := by
+  intro e he
+  rw [List.mem_append] at he
+  cases he with
+  | inl h => exact h1 e h
+  | inr h => exact h2 e h
+
+/-- If symbolAllowed returns true and the symbol resolves to a builtin,
+    then the builtin's effect level ≤ tier. -/
+private theorem symbolAllowed_builtin_le {fname : String} {tier : EffLevel} {b : Builtin}
+    (hAllowed : symbolAllowed fname tier = true)
+    (hResolve : resolveBuiltin fname = some b) :
+    b.effLevel ≤ tier := by
+  simp [symbolAllowed, hResolve, EffLevel.le] at hAllowed
+  exact hAllowed
+
+/-- mergeEffects respects tier if every result in the list does. -/
+private theorem respectsTier_mergeEffects {results : List EvalResult} {tier : EffLevel}
+    (h : ∀ r ∈ results, ∀ e ∈ r.effects, e ≤ tier) :
+    ∀ e ∈ mergeEffects results, e ≤ tier := by
+  intro e he
+  simp [mergeEffects] at he
+  obtain ⟨effs, ⟨r, hr, rfl⟩, he⟩ := he
+  exact h r hr e he
+
+/-- Singleton list membership: e ∈ [x] implies e = x. -/
+private theorem mem_singleton {α : Type} {e x : α} (h : e ∈ [x]) : e = x := by
+  simp [List.mem_cons] at h
+  exact h
+
 /-- Bool version for decidable checking. -/
 def EvalResult.respectsTierB (r : EvalResult) (tier : EffLevel) : Bool :=
   r.effects.all (fun e => EffLevel.le e tier)
@@ -426,37 +463,134 @@ theorem pure_result_respects_all (v : ZVal) (tier : EffLevel) :
   intro e he
   simp [EvalResult.pure] at he
 
+/-- Helper: effects from mapping eval over args respect tier if all args pass checkEffects. -/
+private theorem eval_map_respectsTier (n : Nat) (env : ZEnv) (args : List SExpr) (tier : EffLevel)
+    (ih : ∀ (env' : ZEnv) (expr : SExpr), checkEffects n expr tier = true →
+      (eval n env' expr).respectsTier tier)
+    (hArgs : ∀ a ∈ args, checkEffects n a tier = true) :
+    ∀ e ∈ mergeEffects (args.map (eval n env)), e ≤ tier := by
+  intro e he
+  simp [mergeEffects] at he
+  obtain ⟨effs, ⟨arg, harg, heval⟩, he⟩ := he
+  rw [← heval] at he
+  exact ih env arg (hArgs arg harg) e he
+
 /-- KEY THEOREM: If checkEffects passes for a tier, then evaluating
     the expression produces only effects at or below that tier.
 
     This is the static effect checking soundness theorem from
     Zygo substrate design Section 9.
 
-    Proof sketch:
-    - Literals (.str, .num) produce no effects → trivially safe
-    - Symbols produce no effects → safe
-    - Compound expressions: checkEffects checks the head symbol AND
-      recursively checks all arguments. If the head is a known built-in,
-      its effect level ≤ tier. By induction on fuel, all sub-expression
-      effects ≤ tier. The result's effects are the union of sub-effects
-      plus the head's effect, all ≤ tier.
-
-    The proof is by well-founded induction on fuel. -/
+    The proof is by induction on fuel, then case analysis matching eval's
+    pattern-match arms. Each arm either returns pure (empty effects) or
+    combines sub-expression effects (covered by IH) with at most one
+    builtin effect tag (covered by symbolAllowed). -/
 theorem effect_safety (fuel : Nat) (env : ZEnv) (expr : SExpr) (tier : EffLevel)
     (hCheck : checkEffects fuel expr tier = true) :
     (eval fuel env expr).respectsTier tier := by
-  sorry
-  -- The proof requires mutual induction over:
-  -- (a) fuel decreasing (structural)
-  -- (b) checkEffects = true on all subexpressions (from the && and List.all)
-  -- (c) symbolAllowed = true implies Builtin.effLevel ≤ tier
-  --
-  -- This is a standard type-safety-style theorem for a simple effect
-  -- system. The mathematical content is straightforward but the Lean
-  -- proof requires careful case analysis over the SExpr match arms.
-  --
-  -- See: "Types and Programming Languages" Ch. 8 (Safety = Progress + Preservation)
-  -- adapted to an effect system instead of a type system.
+  induction fuel generalizing env expr with
+  | zero => simp [checkEffects] at hCheck
+  | succ n ih =>
+    match expr with
+    | .str _ => exact pure_result_respects_all _ tier
+    | .num _ => exact pure_result_respects_all _ tier
+    | .sym _ => exact pure_result_respects_all _ tier
+    | .slist [] => exact pure_result_respects_all _ tier
+    | .slist (head :: args) =>
+      simp only [checkEffects, Bool.and_eq_true, List.all_eq_true] at hCheck
+      obtain ⟨hHead, hArgs⟩ := hCheck
+      -- Convenience: IH for any subexpression
+      have ihSub : ∀ (env' : ZEnv) (e : SExpr),
+          checkEffects n e tier = true → (eval n env' e).respectsTier tier :=
+        fun env' e hc => ih env' e hc
+      -- Non-symbol heads fall through to eval's last arm: pure error
+      match head with
+      | .str _ => exact pure_result_respects_all _ tier
+      | .num _ => exact pure_result_respects_all _ tier
+      | .slist _ => exact pure_result_respects_all _ tier
+      | .sym fname =>
+        have hSym : symbolAllowed fname tier = true := by
+          match n with
+          | 0 => simp [checkEffects] at hHead
+          | m + 1 => simp [checkEffects] at hHead; exact hHead
+        have ihArg : ∀ (a : SExpr), a ∈ args → ∀ env',
+            (eval n env' a).respectsTier tier :=
+          fun a ha env' => ihSub env' a (hArgs a ha)
+        -- Proof strategy: unfold eval to expose the pattern match, then
+        -- split into one subgoal per eval arm. Close each subgoal by:
+        --   (1) pure_result_respects_all for empty-effect arms
+        --   (2) contradiction on heq for impossible patterns
+        --   (3) IH + membership for sub-eval effects
+        --   (4) symbolAllowed_builtin_le for builtin effect tags
+        --
+        -- Helper: mergeEffects from eval-mapping respects tier (for list/generic)
+        have hMerge : ∀ e ∈ mergeEffects (args.map (eval n env)), e ≤ tier := by
+          intro e he; simp [mergeEffects] at he
+          obtain ⟨effs, ⟨arg, harg, heval⟩, he⟩ := he
+          rw [← heval] at he; exact ihSub env arg (hArgs arg harg) e he
+        -- Helper: builtin effect ≤ tier when symbolAllowed
+        have hBuiltin : ∀ b, resolveBuiltin fname = some b → b.effLevel ≤ tier := by
+          intro b hb; simp [symbolAllowed, hb, EffLevel.le] at hSym; exact hSym
+        -- Unfold eval and split on the match tree
+        unfold eval; split
+        -- Phase 1: close pure-result goals (catch-all arm of eval returns pure error)
+        all_goals first
+          | exact pure_result_respects_all _ _
+          | skip
+        -- Phase 2: simplify heq and substitute equalities
+        all_goals
+          (first | (rename_i heq; simp [SExpr.slist.injEq, SExpr.sym.injEq] at heq) | skip)
+        all_goals (first
+          | (rename_i heq; first
+              | (obtain ⟨rfl, rfl⟩ := heq)
+              | (obtain ⟨rfl, rfl, rfl⟩ := heq)
+              | (subst heq))
+          | (try subst_vars))
+        -- Phase 3: close all remaining goals using IH, membership, and helpers
+        -- Every remaining goal has effects composed from sub-expression evals
+        -- (possibly under value-matches and if-then-else) plus at most one
+        -- builtin effect tag.
+        all_goals (
+          intro e he
+          -- Reduce let-bindings (have := ...) in the hypothesis
+          try dsimp only [] at he
+          first
+          -- (A) Direct: e is in a single sub-eval's effects
+          | exact ihArg _ (by simp [List.mem_cons]) env e he
+          -- (B) Append: e ∈ a.effects ++ b.effects
+          | (rw [List.mem_append] at he; rcases he with he | he
+             · exact ihArg _ (by simp [List.mem_cons]) env e he
+             · first
+               | exact ihArg _ (by simp [List.mem_cons]) env e he
+               -- let-binding: bodyExpr uses modified env, apply ihSub
+               | exact ihSub _ _ (hArgs _ (by simp [List.mem_cons])) e he)
+          -- (C) Effects under value-match (binary ops, cons, strlen, car, cdr, len)
+          | (split at he <;> (
+               first
+               | exact ihArg _ (by simp [List.mem_cons]) env e he
+               | (rw [List.mem_append] at he; rcases he with he | he
+                  · exact ihArg _ (by simp [List.mem_cons]) env e he
+                  · first
+                    | exact ihArg _ (by simp [List.mem_cons]) env e he
+                    | exact ihSub _ _ (hArgs _ (by simp [List.mem_cons])) e he)))
+          -- (D) if: match on cr.val then if-then-else branching
+          | (split at he
+             · exact ihArg _ (by simp [List.mem_cons]) env e he
+             · split at he <;> (
+                 rw [List.mem_append] at he; rcases he with he | he
+                 · exact ihArg _ (by simp [List.mem_cons]) env e he
+                 · first
+                   | exact ihArg _ (by simp [List.mem_cons]) env e he
+                   | exact ihSub _ _ (hArgs _ (by simp [List.mem_cons])) e he))
+          -- (E) mergeEffects only (list constructor)
+          | exact hMerge e he
+          -- (F) Generic fallthrough: mergeEffects ++ [b.effLevel]
+          | (split at he
+             · rename_i b hb; simp at he; rcases he with he | he
+               · exact hMerge e he
+               · rw [he]; exact hBuiltin b hb
+             · exact hMerge e he)
+        )
 
 /-- Corollary: checkEffects is monotone in tier —
     if it passes at a lower tier, it passes at a higher tier. -/

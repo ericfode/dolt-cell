@@ -1,0 +1,37 @@
+-- Bottom propagation: deep chain — bottom at the root poisons every link
+-- A → B → C → D → E. A bottoms via SQL on nonexistent table.
+-- Every downstream cell should bottom without ever being dispatched.
+
+cell root
+  yield data
+  ---
+  sql: SELECT * FROM table_that_does_not_exist_xyz
+  ---
+
+cell step-1
+  given root.data
+  yield out
+  ---
+  Echo «data» verbatim.
+  ---
+
+cell step-2
+  given step-1.out
+  yield out
+  ---
+  Echo «out» verbatim.
+  ---
+
+cell step-3
+  given step-2.out
+  yield out
+  ---
+  Echo «out» verbatim.
+  ---
+
+cell step-4
+  given step-3.out
+  yield out
+  ---
+  Echo «out» verbatim.
+  ---

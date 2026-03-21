@@ -1,0 +1,37 @@
+-- Bottom propagation: partial freeze — some cells freeze, some bottom
+-- Independent branches: one succeeds, one fails. The program should
+-- reach quiescence with a mix of frozen and bottomed cells.
+
+cell input
+  yield text = "Four score and seven years ago"
+
+cell good-branch
+  given input.text
+  yield words
+  ---
+  Count the words in «text». Return ONLY the integer.
+  ---
+  check words is not empty
+
+cell bad-branch
+  given input.text
+  yield data
+  ---
+  Return «text» unchanged.
+  ---
+  check data is valid json array
+
+cell good-leaf
+  given good-branch.words
+  yield report
+  ---
+  The word count is «words». Write one sentence about it.
+  ---
+  check report is not empty
+
+cell bad-leaf
+  given bad-branch.data
+  yield report
+  ---
+  Summarize «data» in one sentence.
+  ---

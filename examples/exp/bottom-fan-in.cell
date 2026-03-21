@@ -1,0 +1,25 @@
+-- Bottom propagation: fan-in — multiple required dependencies, one bottoms
+-- Three independent producers feed a single consumer.
+-- Producer B bottoms; consumer has all three as required givens → bottoms.
+
+cell a
+  yield val = "alpha"
+
+cell b
+  yield val
+  ---
+  sql: SELECT * FROM nonexistent_table_fanin
+  ---
+
+cell c
+  yield val = "gamma"
+
+cell consumer
+  given a.val
+  given b.val
+  given c.val
+  yield merged
+  ---
+  Concatenate the three values: «val», «val», «val» separated by commas.
+  ---
+  check merged is not empty

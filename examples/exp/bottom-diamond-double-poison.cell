@@ -1,0 +1,30 @@
+-- Bottom propagation: diamond where BOTH paths bottom
+-- A → B (bottoms), A → C (bottoms), B+C → D.
+-- D bottoms because both required givens are bottom.
+-- Verifies the runtime doesn't double-report or deadlock.
+
+cell source
+  yield text = "hello world"
+
+cell left-fail
+  given source.text
+  yield result
+  ---
+  Return «text» unchanged.
+  ---
+  check result is valid json array
+
+cell right-fail
+  given source.text
+  yield result
+  ---
+  sql: SELECT * FROM nonexistent_table_abc
+  ---
+
+cell merge
+  given left-fail.result
+  given right-fail.result
+  yield combined
+  ---
+  Merge «result» and «result» into one string.
+  ---

@@ -1,0 +1,25 @@
+-- Bottom propagation: guard-skip vs failure (see bug do-71ms in spec)
+-- Iteration with recur: guard fires early, skipping later iterations.
+-- Cells that depend on all iterations via [*] must handle the skipped
+-- (guard-bottomed) steps. This exercises the guard-skip vs failure
+-- distinction described in edge case E6.
+
+cell seed
+  yield n = "3"
+
+cell countdown
+  given seed.n
+  yield step
+  recur until step equals "done" (max 5)
+  ---
+  You are counting down from «n». Subtract 1 each time.
+  If the result is 0 or below, return "done". Otherwise return the number.
+  ---
+
+cell collect
+  given countdown[*].step
+  yield trace
+  ---
+  Collect all «step» values into a JSON array in order.
+  ---
+  check trace is valid json array

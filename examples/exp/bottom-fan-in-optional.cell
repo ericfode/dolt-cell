@@ -1,0 +1,27 @@
+-- Bottom propagation: fan-in with optional givens — graceful degradation
+-- Three producers feed a consumer, but two are optional.
+-- Producer B bottoms; consumer should still fire because B is optional.
+-- This is partial failure handled gracefully.
+
+cell a
+  yield val = "alpha"
+
+cell b
+  yield val
+  ---
+  sql: SELECT * FROM nonexistent_table_fanin_opt
+  ---
+
+cell c
+  yield val = "gamma"
+
+cell consumer
+  given a.val
+  given? b.val
+  given? c.val
+  yield merged
+  ---
+  Start with «val». If additional values are available, append them
+  separated by commas. Return the result.
+  ---
+  check merged is not empty

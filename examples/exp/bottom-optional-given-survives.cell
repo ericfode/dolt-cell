@@ -1,0 +1,24 @@
+-- Bottom propagation: optional given absorbs bottom
+-- The enrichment cell bottoms, but the report uses given? so it
+-- should still fire with the available data.
+
+cell data
+  yield items = [1, 2, 3, 4, 5]
+
+cell enrich
+  given data.items
+  yield extra
+  ---
+  Return «items» as a comma-separated string of roman numerals.
+  ---
+  check extra is valid json array
+
+cell report
+  given data.items
+  given? enrich.extra
+  yield summary
+  ---
+  Summarize «items». If enrichment «extra» is available, include it.
+  Otherwise just report the raw items.
+  ---
+  check summary is not empty

@@ -1,0 +1,30 @@
+-- Bottom propagation: diamond with one poisoned path
+-- A → B (succeeds), A → C (bottoms via oracle failure), B+C → D.
+-- D should bottom because C — a required given — is bottom.
+
+cell source
+  yield text = "The quick brown fox jumps over the lazy dog"
+
+cell count-words
+  given source.text
+  yield n
+  ---
+  Count the words in «text». Return ONLY the integer.
+  ---
+  check n is not empty
+
+cell force-fail
+  given source.text
+  yield n
+  ---
+  Return «text» verbatim. Do not modify it.
+  ---
+  check n is valid json array
+
+cell merge
+  given count-words.n
+  given force-fail.n
+  yield summary
+  ---
+  Combine word count «n» with parsed data «n». Return a JSON object.
+  ---

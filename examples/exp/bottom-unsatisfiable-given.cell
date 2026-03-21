@@ -1,0 +1,13 @@
+-- Bottom propagation: unsatisfiable given
+-- Cell references a yield that no cell produces.
+-- The runtime cannot resolve the given, so the cell bottoms.
+
+cell source
+  yield greeting = "hello"
+
+cell orphan
+  given nowhere.nothing
+  yield result
+  ---
+  Echo «nothing» verbatim.
+  ---

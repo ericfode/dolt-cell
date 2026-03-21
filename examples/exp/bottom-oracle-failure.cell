@@ -1,0 +1,22 @@
+-- Bottom propagation: oracle failure exhausts retries
+-- The check will always fail because the source value is not JSON.
+-- After retries are exhausted the cell bottoms, poisoning its dependent.
+
+cell raw
+  yield data = "this is plain text, not json"
+
+cell parse
+  given raw.data
+  yield parsed
+  ---
+  Return «data» exactly as given. Do not transform it.
+  ---
+  check parsed is valid json array
+
+cell consumer
+  given parse.parsed
+  yield report
+  ---
+  Summarize «parsed» in one sentence.
+  ---
+  check report is not empty

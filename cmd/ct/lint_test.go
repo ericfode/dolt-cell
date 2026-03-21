@@ -6,16 +6,23 @@ import (
 )
 
 func TestLint_Clean(t *testing.T) {
-	cells := mustParse(t,`cell topic
-  yield subject = "hello"
-
-cell use
-  given topic.subject
-  yield result
-  ---
-  Use «subject».
-  ---
+	tmpFile := writeTempLua(t, `
+return {
+  cells = {
+    topic = { kind = "hard", body = { subject = "hello" } },
+    use = {
+      kind = "soft",
+      givens = { "topic.subject" },
+      yields = { "result" },
+    },
+  },
+  order = { "topic", "use" },
+}
 `)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadLuaProgram: %v", err)
+	}
 	errs := lintCells(cells)
 	if len(errs) != 0 {
 		t.Errorf("clean program should have no errors: %v", errs)
@@ -23,13 +30,22 @@ cell use
 }
 
 func TestLint_DanglingGiven(t *testing.T) {
-	cells := mustParse(t,`cell use
-  given nonexistent.field
-  yield result
-  ---
-  Body.
-  ---
+	tmpFile := writeTempLua(t, `
+return {
+  cells = {
+    use = {
+      kind = "soft",
+      givens = { "nonexistent.field" },
+      yields = { "result" },
+    },
+  },
+  order = { "use" },
+}
 `)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadLuaProgram: %v", err)
+	}
 	errs := lintCells(cells)
 	found := false
 	for _, e := range errs {
@@ -43,12 +59,13 @@ func TestLint_DanglingGiven(t *testing.T) {
 }
 
 func TestLint_DuplicateName(t *testing.T) {
-	cells := mustParse(t,`cell foo
-  yield x = "1"
-
-cell foo
-  yield y = "2"
-`)
+	// Two cells with the same name — LoadLuaProgram returns only one since
+	// Lua tables overwrite duplicate keys. Simulate duplicate by building
+	// parsedCells directly.
+	cells := []parsedCell{
+		{name: "foo", bodyType: "hard", yields: []parsedYield{{fieldName: "x", prebound: "1"}}},
+		{name: "foo", bodyType: "hard", yields: []parsedYield{{fieldName: "y", prebound: "2"}}},
+	}
 	errs := lintCells(cells)
 	found := false
 	for _, e := range errs {
@@ -62,11 +79,11 @@ cell foo
 }
 
 func TestLint_NoYields(t *testing.T) {
-	cells := mustParse(t,`cell empty
-  ---
-  Body with no yields.
-  ---
-`)
+	// A cell with no yields — construct directly since LoadLuaProgram
+	// would require a yields field.
+	cells := []parsedCell{
+		{name: "empty", bodyType: "soft", body: "Body with no yields."},
+	}
 	errs := lintCells(cells)
 	found := false
 	for _, e := range errs {
@@ -80,20 +97,27 @@ func TestLint_NoYields(t *testing.T) {
 }
 
 func TestLint_Cycle(t *testing.T) {
-	cells := mustParse(t,`cell a
-  given b.x
-  yield x
-  ---
-  Body.
-  ---
-
-cell b
-  given a.x
-  yield x
-  ---
-  Body.
-  ---
+	tmpFile := writeTempLua(t, `
+return {
+  cells = {
+    a = {
+      kind = "soft",
+      givens = { "b.x" },
+      yields = { "x" },
+    },
+    b = {
+      kind = "soft",
+      givens = { "a.x" },
+      yields = { "x" },
+    },
+  },
+  order = { "a", "b" },
+}
 `)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadLuaProgram: %v", err)
+	}
 	errs := lintCells(cells)
 	found := false
 	for _, e := range errs {
@@ -107,24 +131,29 @@ cell b
 }
 
 func TestLint_IterationValid(t *testing.T) {
-	cells := mustParse(t,`cell seed
-  yield text = "hello"
-
-cell refine (stem)
-  given seed.text
-  yield text
-  recur (max 3)
-  ---
-  Improve «text».
-  ---
-
-cell final
-  given refine.text
-  yield result
-  ---
-  Done.
-  ---
+	tmpFile := writeTempLua(t, `
+return {
+  cells = {
+    seed = { kind = "hard", body = { text = "hello" } },
+    refine = {
+      kind = "stem",
+      givens = { "seed.text" },
+      yields = { "text" },
+      iterate = 3,
+    },
+    final = {
+      kind = "soft",
+      givens = { "refine.text" },
+      yields = { "result" },
+    },
+  },
+  order = { "seed", "refine", "final" },
+}
 `)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadLuaProgram: %v", err)
+	}
 	errs := lintCells(cells)
 	if len(errs) != 0 {
 		t.Errorf("iteration program should be valid: %v", errs)
@@ -133,11 +162,11 @@ cell final
 
 func TestLint_AllExamples(t *testing.T) {
 	files := []string{
-		"../../examples/haiku.cell",
-		"../../examples/haiku-refine.cell",
-		"../../examples/fact-check.cell",
-		"../../examples/code-audit.cell",
-		"../../examples/parallel-research.cell",
+		"../../examples/haiku.lua",
+		"../../examples/haiku-refine.lua",
+		"../../examples/fact-check.lua",
+		"../../examples/code-audit.lua",
+		"../../examples/parallel-research.lua",
 	}
 	for _, f := range files {
 		t.Run(f, func(t *testing.T) {
@@ -145,9 +174,13 @@ func TestLint_AllExamples(t *testing.T) {
 			if err != nil {
 				t.Skip(err)
 			}
-			cells := mustParse(t,string(data))
+			_ = data
+			cells, err := LoadLuaProgram(f)
+			if err != nil {
+				t.Skipf("cannot load %s: %v", f, err)
+			}
 			if cells == nil {
-				t.Skipf("cannot parse %s", f)
+				t.Skipf("no cells in %s", f)
 			}
 			errs := lintCells(cells)
 			if len(errs) > 0 {

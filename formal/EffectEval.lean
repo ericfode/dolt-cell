@@ -85,6 +85,11 @@ inductive FStatus where
   | declared | computing | frozen
   deriving Repr, DecidableEq, BEq
 
+instance : LawfulBEq FStatus where
+  eq_of_beq {a b} h := by
+    cases a <;> cases b <;> first | rfl | exact absurd h (by decide)
+  rfl {a} := by cases a <;> decide
+
 def RS.frameYields (r : RS) (fid : FrameId) : List Yield' :=
   r.yields.filter (fun y => y.frameId == fid)
 
@@ -514,6 +519,101 @@ theorem effect_trace_frames_always_eq (et : EffectTrace) (n : Nat) :
   | zero => rfl
   | succ k ih => rw [effect_trace_frames_stable et k]; exact ih
 
+/-- Helper: if predicate p implies q on a list, then filter p is a sublist
+    of filter q, so its length is ≤. -/
+private theorem filter_length_le (l : List Frame') (p q : Frame' → Bool)
+    (h : ∀ (x : Frame'), x ∈ l → p x = true → q x = true) :
+    (l.filter p).length ≤ (l.filter q).length := by
+  induction l with
+  | nil => exact Nat.le_refl _
+  | cons a t ih =>
+    have ih' := ih (fun x hx hp => h x (List.mem_cons_of_mem _ hx) hp)
+    by_cases hp : p a = true <;> by_cases hq : q a = true
+    · -- p true, q true
+      simp only [List.filter, hp, hq, List.length_cons]
+      exact Nat.succ_le_succ ih'
+    · -- p true, q false: impossible since p implies q
+      exact absurd (h a (List.mem_cons_self ..) hp) (by simp [hq])
+    · -- p false, q true
+      simp only [List.filter, hp, hq, List.length_cons]
+      exact Nat.le_succ_of_le ih'
+    · -- p false, q false
+      simp only [List.filter, hp, hq]
+      exact ih'
+
+/-- Cells are unchanged by an effect eval cycle. -/
+theorem effectEvalCycle_cells_stable (r : RS) (eec : EffectEvalCycle) :
+    (applyEffectEvalCycle r eec).cells = r.cells := by
+  unfold applyEffectEvalCycle applyFreeze applyClaim; rfl
+
+/-- frameYields is monotone under yield-append: if yields only grow,
+    so does the filtered set for any frame. -/
+theorem frameYields_mono (r r' : RS) (fid : FrameId)
+    (hYields : ∀ (y : Yield'), y ∈ r.yields → y ∈ r'.yields) :
+    ∀ (y : Yield'), y ∈ RS.frameYields r fid → y ∈ RS.frameYields r' fid := by
+  intro y hy
+  simp only [RS.frameYields, List.mem_filter] at hy ⊢
+  exact ⟨hYields y hy.1, hy.2⟩
+
+/-- List.contains is monotone: if every element of l is in l', and
+    l contains x, then l' contains x. -/
+private theorem contains_mono (l l' : List FieldName) (x : FieldName)
+    (hSub : ∀ (a : FieldName), a ∈ l → a ∈ l')
+    (hc : l.contains x = true) : l'.contains x = true := by
+  simp only [List.contains_eq_any_beq, List.any_eq_true] at hc ⊢
+  obtain ⟨a, ha, heq⟩ := hc
+  exact ⟨a, hSub a ha, heq⟩
+
+/-- List.all is monotone under list growth when the predicate checks
+    membership: if all elements of `fields` are in `l`, and `l ⊆ l'`,
+    then all elements of `fields` are in `l'`. -/
+private theorem all_contains_mono
+    (fields : List FieldName) (l l' : List FieldName)
+    (hSub : ∀ (a : FieldName), a ∈ l → a ∈ l')
+    (hAll : fields.all (fun fld => l.contains fld) = true) :
+    fields.all (fun fld => l'.contains fld) = true := by
+  rw [List.all_eq_true] at hAll ⊢
+  intro fld hfld
+  exact contains_mono l l' fld hSub (hAll fld hfld)
+
+/-- Frozen status is monotone: if a frame is frozen and yields only grow
+    (and cells are unchanged), the frame stays frozen. -/
+theorem frozen_mono (r r' : RS) (f : Frame')
+    (hCells : r'.cells = r.cells)
+    (hYields : ∀ (y : Yield'), y ∈ r.yields → y ∈ r'.yields)
+    (hFrozen : RS.frameStatus r f = .frozen) :
+    RS.frameStatus r' f = .frozen := by
+  unfold RS.frameStatus at hFrozen ⊢
+  -- cellDef is unchanged since cells are unchanged
+  have hCellDef : RS.cellDef r' f.cellName = RS.cellDef r f.cellName := by
+    unfold RS.cellDef; rw [hCells]
+  rw [hCellDef]
+  match hm : RS.cellDef r f.cellName with
+  | none => simp [hm] at hFrozen
+  | some cd =>
+    simp only [hm] at hFrozen ⊢
+    -- frozenFields in r' is a superset of frozenFields in r
+    have hFieldsMono : ∀ (a : FieldName),
+        a ∈ (RS.frameYields r f.id).map (·.field) →
+        a ∈ (RS.frameYields r' f.id).map (·.field) := by
+      intro a ha
+      rw [List.mem_map] at ha ⊢
+      obtain ⟨y, hy, heq⟩ := ha
+      exact ⟨y, frameYields_mono r r' f.id hYields y hy, heq⟩
+    split at hFrozen
+    · -- The "all fields covered" case was true in r, show it's true in r'
+      rename_i hAllOld
+      have hAllNew := all_contains_mono cd.fields
+        ((RS.frameYields r f.id).map (·.field))
+        ((RS.frameYields r' f.id).map (·.field))
+        hFieldsMono hAllOld
+      simp only [hAllNew, ite_true]
+    · -- The non-frozen cases can't happen since hFrozen says it IS frozen
+      rename_i hNotAll
+      split at hFrozen
+      · exact absurd hFrozen (by decide)
+      · exact absurd hFrozen (by decide)
+
 /-- nonFrozenCount is monotonically non-increasing across the trace.
     Each eval cycle can only freeze frames (moving them OUT of the
     non-frozen set); it cannot unfreeze or add frames.
@@ -523,18 +623,30 @@ theorem effect_trace_frames_always_eq (et : EffectTrace) (n : Nat) :
 theorem nonFrozen_mono (et : EffectTrace) (n : Nat) (prog : ProgramId) :
     nonFrozenCount (et.trace (n + 1)) prog <=
     nonFrozenCount (et.trace n) prog := by
-  sorry
-  -- This sorry depends on showing that frameStatus is monotone under
-  -- yield-growth: more yields => more fields covered => frozen status
-  -- can only become true, never revert to false.  Specifically:
-  --   (a) frames are unchanged (effectEvalCycle_frames_stable)
-  --   (b) yields only grow (effectEvalCycle_yields_grow)
-  --   (c) frameYields is monotone under yield-append
-  --   (d) "all fields covered" can only go from false to true
-  -- This is the same "frozen is monotone" property needed by
-  -- Retort.lean's demandFromGivens_monotone (also sorry there).
-  -- The mathematical content is sound; the gap is a missing library
-  -- lemma about List.filter length under predicate weakening.
+  -- frames are stable
+  have hFrames := effect_trace_frames_stable et n
+  -- yields only grow
+  have hYields : ∀ (y : Yield'), y ∈ (et.trace n).yields → y ∈ (et.trace (n + 1)).yields :=
+    (effect_trace_appendOnly et n).2.2.1
+  -- cells are stable
+  have hCells : (et.trace (n + 1)).cells = (et.trace n).cells := by
+    rw [et.step n]; exact effectEvalCycle_cells_stable (et.trace n) (et.cycles n)
+  -- The non-frozen predicate on trace(n+1) implies the one on trace(n)
+  -- (contrapositively: frozen in trace(n) implies frozen in trace(n+1))
+  unfold nonFrozenCount
+  rw [hFrames]
+  exact filter_length_le (et.trace n).frames
+    (fun f => f.program == prog && RS.frameStatus (et.trace (n + 1)) f != .frozen)
+    (fun f => f.program == prog && RS.frameStatus (et.trace n) f != .frozen)
+    (fun f _ hpf => by
+      simp only [Bool.and_eq_true] at hpf ⊢
+      refine ⟨hpf.1, ?_⟩
+      -- hpf.2 : (frameStatus r' f != .frozen) = true
+      -- Goal:   (frameStatus r  f != .frozen) = true
+      -- Contrapositive of frozen_mono: not frozen in r' → not frozen in r
+      have h2 := hpf.2
+      rw [bne_iff_ne] at h2 ⊢
+      exact fun hFr => h2 (frozen_mono (et.trace n) (et.trace (n + 1)) f hCells hYields hFr))
 
 /-! ====================================================================
     SECTION 9: BOUNDED RETRY TERMINATION
@@ -630,19 +742,20 @@ theorem no_success_means_unchanged (r : RS) (br : BoundedRetry)
     17. effect_trace_frames_always_eq
         Frames at any time T equal frames at time 0.
 
-    SORRY (1 total, with justification):
+    18. nonFrozen_mono
+        nonFrozenCount is non-increasing across eval cycles.
+        Proved via: (a) frames stable, (b) yields monotone,
+        (c) frozen status monotone under yield-growth (frozen_mono),
+        (d) filter length monotone under predicate weakening.
 
-    1. nonFrozen_mono — The proof that nonFrozenCount is non-increasing
-       requires showing that frameStatus is monotone under yield-growth
-       (more yields => more fields covered => frozen status can only
-       become true, never revert to false).  This depends on a
-       monotonicity lemma on List.filter length under predicate weakening,
-       combined with the fact that frameYields is a subset-growing function.
-       This is the same "frozen is monotone" property needed by
-       Retort.lean's demandFromGivens_monotone (also sorry there).
-       The mathematical content is sound; the gap is purely a missing
-       library lemma about List.filter monotonicity under predicate
-       implication.
+    19. frozen_mono
+        Frame frozen status is monotone: once frozen, stays frozen
+        when yields only grow and cells are unchanged.
+
+    20. effectEvalCycle_cells_stable
+        Cells are unchanged by eval cycles.
+
+    SORRY: None — all theorems fully proved.
 -/
 
 end EffectEval

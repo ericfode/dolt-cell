@@ -1185,9 +1185,55 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		if bodyType == "stem" {
 			replRespawnStem(db, progID, cellName, cellID)
 		}
+
+		// Autopour: if frozen yields have is_autopour=TRUE, pour them
+		autopourYields(db, progID, cellID)
 	}
 
 	return "ok", fmt.Sprintf("Yield frozen: %s.%s", cellName, fieldName)
+}
+
+// autopourYields checks for autopour yields on a freshly frozen cell.
+// If found, parses and pours the yielded program text into the retort.
+func autopourYields(db *sql.DB, progID, cellID string) {
+	rows, err := db.Query(
+		"SELECT field_name, value_text FROM yields WHERE cell_id = ? AND is_autopour = TRUE AND is_frozen = TRUE AND value_text IS NOT NULL AND value_text != ''",
+		cellID)
+	if err != nil || rows == nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var fieldName, valueText string
+		if err := rows.Scan(&fieldName, &valueText); err != nil {
+			continue
+		}
+
+		// Parse the yielded text as a .cell program
+		cells, parseErr := parseCellFile(valueText)
+		if parseErr != nil || cells == nil {
+			log.Printf("autopour: %s.%s: parse failed: %v", cellID, fieldName, parseErr)
+			continue
+		}
+
+		// Generate a program name: <parent>-ap-<field>
+		subProgID := fmt.Sprintf("%s-ap-%s", progID, fieldName)
+
+		// Generate and execute the pour SQL
+		pourSQL := cellsToSQL(subProgID, cells)
+		for _, stmt := range splitSQL(pourSQL) {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" || stmt == "USE retort" {
+				continue
+			}
+			execDB(db, stmt)
+		}
+
+		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+			fmt.Sprintf("cell: autopour %s from %s.%s", subProgID, cellID, fieldName))
+		log.Printf("autopour: poured %s from %s.%s (%d cells)", subProgID, cellID, fieldName, len(cells))
+	}
 }
 
 // checkGuardSkip checks if an iteration cell has a satisfied guard.

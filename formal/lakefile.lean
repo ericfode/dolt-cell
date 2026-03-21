@@ -26,3 +26,6 @@ lean_lib TupleSpace where
 
 lean_lib EffectEval where
   roots := #[`EffectEval]
+
+lean_lib Autopour where
+  roots := #[`Autopour]

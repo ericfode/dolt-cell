@@ -1,0 +1,6 @@
+[order]
+description = "Dispatch a piston polecat when a soft cell needs LLM evaluation"
+gate = "event"
+on = "cell.needs_piston"
+formula = "mol-cell-piston"
+pool = "dolt-cell/piston"

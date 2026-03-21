@@ -4,14 +4,14 @@
   This module formalizes the effect-stratified execution model described in
   cell-tuple-space-spec.md, Section 3 and Section 4.  It defines:
 
-    1. EffLevel: Pure < Replayable < NonReplayable with join (max)
+    1. EffLevel join (max) and algebraic laws (type from Core.lean)
     2. effectEvalStep: the scheduler that classifies cells and returns actions
     3. Retry safety: retrying a Replayable cell preserves the tuple space
     4. Validate-then-write: the oracle-before-write protocol
     5. Effect monotonicity: join is monotone under composition
     6. Progressive trace: effect-aware eval still decreases nonFrozenCount
 
-  Self-contained: imports only Core.lean (identity types + BodyType).
+  Imports Core.lean (identity types, EffLevel, BodyType).
   Mirrors the subset of Retort types needed here to avoid depending on
   Retort.lean (which has known Lean 4.28 compat issues in this repo).
 -/
@@ -111,31 +111,7 @@ def yieldsPreserved' (before after : RS) : Prop :=
     SECTION 1: EFFECT LEVEL — Total Order and Join
     ==================================================================== -/
 
-/-- The three effect levels, ordered by recovery cost. -/
-inductive EffLevel where
-  | pure          -- deterministic: literal, SQL query
-  | replayable    -- bounded nondeterminism: LLM oracle, auto-retry
-  | nonReplayable -- world-mutating: SQL exec, spawn, thaw
-  deriving Repr, DecidableEq, BEq
-
-/-- Numeric encoding for the total order. -/
-def EffLevel.toNat : EffLevel -> Nat
-  | .pure          => 0
-  | .replayable    => 1
-  | .nonReplayable => 2
-
-/-- LE instance via toNat. -/
-instance : LE EffLevel where
-  le a b := a.toNat <= b.toNat
-
-instance : LT EffLevel where
-  lt a b := a.toNat < b.toNat
-
-instance (a b : EffLevel) : Decidable (a <= b) :=
-  inferInstanceAs (Decidable (a.toNat <= b.toNat))
-
-instance (a b : EffLevel) : Decidable (a < b) :=
-  inferInstanceAs (Decidable (a.toNat < b.toNat))
+-- EffLevel type and ordering instances are imported from Core.lean.
 
 /-- Helper to unfold LE for EffLevel in proofs. -/
 private theorem EffLevel.le_def (a b : EffLevel) : (a <= b) = (a.toNat <= b.toNat) := rfl

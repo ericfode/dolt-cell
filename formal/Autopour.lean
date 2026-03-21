@@ -19,9 +19,7 @@
   - Effect monotonicity: poured program ≤ parent effect level
 
   Effect taxonomy: Uses the CANONICAL taxonomy (Pure < Replayable < NonReplayable)
-  aligned with EffectEval.lean and TupleSpace.lean. Core.lean's EffectLevel
-  (pure/semantic/divergent) conflates effect level with lifecycle and is
-  deprecated for new code.
+  defined in Core.lean as EffLevel and shared by all modules.
 
   Author: Sussmind (2026-03-19, migrated to canonical effects 2026-03-20)
 -/
@@ -31,44 +29,11 @@ import Core
 namespace Autopour
 
 /-! ====================================================================
-    CANONICAL EFFECT LATTICE
+    EFFECT LATTICE (EffLevel imported from Core.lean)
     ==================================================================== -/
-
-/-- The canonical effect lattice, ordered by recovery cost.
-    Aligned with EffectEval.EffLevel and TupleSpace.Effect.
-    Replaces Core.EffectLevel (pure/semantic/divergent) which conflates
-    effect level with cell lifecycle. -/
-inductive EffLevel where
-  | pure          -- deterministic: literal, SQL query, arithmetic
-  | replayable    -- bounded nondeterminism: LLM oracle, auto-retry safe
-  | nonReplayable -- world-mutating: DML, external API, thaw, autopour
-  deriving Repr, DecidableEq, BEq
-
-/-- Numeric encoding for total order. -/
-def EffLevel.toNat : EffLevel → Nat
-  | .pure          => 0
-  | .replayable    => 1
-  | .nonReplayable => 2
-
-/-- LE instance via toNat. -/
-instance : LE EffLevel where
-  le a b := a.toNat ≤ b.toNat
-
-instance (a b : EffLevel) : Decidable (a ≤ b) :=
-  inferInstanceAs (Decidable (a.toNat ≤ b.toNat))
 
 /-- Bool version for decidable checks. -/
 def EffLevel.le (a b : EffLevel) : Bool := a.toNat ≤ b.toNat
-
-/-- Pure is the bottom of the lattice. -/
-theorem pure_le_all (e : EffLevel) : EffLevel.pure ≤ e := by
-  show EffLevel.pure.toNat ≤ e.toNat
-  simp [EffLevel.toNat]
-
-/-- NonReplayable is the top. -/
-theorem all_le_nonReplayable (e : EffLevel) : e ≤ EffLevel.nonReplayable := by
-  show e.toNat ≤ EffLevel.nonReplayable.toNat
-  cases e <;> simp [EffLevel.toNat]
 
 /-- Autopour is a NonReplayable operation (it mutates the tuple space). -/
 def autopourEffLevel : EffLevel := .nonReplayable

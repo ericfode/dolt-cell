@@ -65,14 +65,41 @@ instance : LawfulBEq FieldName where
   rfl {a} := beq_self_eq_true a.val
 
 /-! ====================================================================
-    EFFECT LEVELS (unified cell kind)
+    EFFECT LEVELS (canonical taxonomy: Pure < Replayable < NonReplayable)
     ==================================================================== -/
 
-inductive EffectLevel where
-  | pure       -- hard cells: deterministic, no LLM
-  | semantic   -- soft cells: LLM-evaluated, may vary
-  | divergent  -- stem cells: permanently soft, cycles
+inductive EffLevel where
+  | pure           -- deterministic, retryable (hard cells)
+  | replayable     -- bounded nondeterminism, retryable with oracle (soft cells)
+  | nonReplayable  -- world-mutating: DML, beads, autopour (NonReplayable cells)
   deriving Repr, DecidableEq, BEq
+
+def EffLevel.toNat : EffLevel → Nat
+  | .pure => 0
+  | .replayable => 1
+  | .nonReplayable => 2
+
+instance : LE EffLevel where
+  le a b := a.toNat ≤ b.toNat
+
+instance : LT EffLevel where
+  lt a b := a.toNat < b.toNat
+
+instance (a b : EffLevel) : Decidable (a ≤ b) :=
+  inferInstanceAs (Decidable (a.toNat ≤ b.toNat))
+
+instance (a b : EffLevel) : Decidable (a < b) :=
+  inferInstanceAs (Decidable (a.toNat < b.toNat))
+
+/-- Pure is the bottom of the effect lattice. -/
+theorem EffLevel.pure_le_all (e : EffLevel) : EffLevel.pure ≤ e := by
+  show EffLevel.pure.toNat ≤ e.toNat
+  simp [EffLevel.toNat]
+
+/-- NonReplayable is the top of the effect lattice. -/
+theorem EffLevel.all_le_nonReplayable (e : EffLevel) : e ≤ EffLevel.nonReplayable := by
+  show e.toNat ≤ EffLevel.nonReplayable.toNat
+  cases e <;> simp [EffLevel.toNat]
 
 /-! ====================================================================
     BODY TYPES (cell evaluation strategy)

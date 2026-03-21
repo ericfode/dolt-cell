@@ -67,19 +67,10 @@ inductive Continue where
 def CellBody (M : Type → Type) := Env → M (Env × Continue)
 
 /-! ====================================================================
-    EFFECT LATTICE (EffectLevel imported from Core)
+    EFFECT LATTICE (EffLevel imported from Core)
     ==================================================================== -/
 
--- The lattice ordering: pure <= everything, semantic <= semantic|divergent, etc.
-def EffectLevel.le : EffectLevel → EffectLevel → Bool
-  | .pure, _ => true
-  | .semantic, .semantic => true
-  | .semantic, .divergent => true
-  | .divergent, .divergent => true
-  | _, _ => false
-
-instance : LE EffectLevel where
-  le a b := EffectLevel.le a b = true
+-- LE, LT, Decidable instances for EffLevel are provided by Core.lean.
 
 /-! ====================================================================
     CELL DEFINITIONS (abstract, parameterized over M)
@@ -104,12 +95,12 @@ structure Dep where
 def Oracle := Env → Bool
 
 -- A complete cell definition, parameterized over the effect monad M.
--- There is ONE kind of cell. The effectLevel classifies it.
+-- There is ONE kind of cell. The effLevel classifies it.
 structure CellDef (M : Type → Type) where
   interface    : CellInterface
   deps         : List Dep
   body         : CellBody M
-  effectLevel  : EffectLevel
+  effLevel     : EffLevel
   oracles      : List Oracle
 
 /-! ====================================================================
@@ -127,14 +118,14 @@ def Program.depsWellFormed {M : Type → Type} (p : Program M) : Prop :=
     ∃ src ∈ p.cells, src.interface.name = d.sourceCell ∧
       d.sourceField ∈ src.interface.outputs
 
--- Well-formedness: no circular dependencies (among non-divergent cells)
--- For divergent (stem) cells, self-dependency is allowed (they read previous generation)
+-- Well-formedness: no circular dependencies (among non-nonReplayable cells)
+-- For nonReplayable (stem) cells, self-dependency is allowed (they read previous generation)
 def Program.acyclic {M : Type → Type} (p : Program M) : Prop :=
   ∃ order : List String,
     (∀ cd ∈ p.cells,
-      cd.effectLevel = .divergent ∨ cd.interface.name ∈ order) ∧
+      cd.effLevel = .nonReplayable ∨ cd.interface.name ∈ order) ∧
     (∀ cd ∈ p.cells, ∀ d ∈ cd.deps,
-      cd.effectLevel = .divergent ∨
+      cd.effLevel = .nonReplayable ∨
         (cd.interface.name ∈ order ∧ d.sourceCell ∈ order))
 
 /-! ====================================================================
@@ -200,7 +191,7 @@ def errorOutputs (outputFields : List FieldName) (msg : String) : Env :=
   Evaluation proceeds in topological order:
   1. Cells with no dependencies evaluate first
   2. Each cell reads from the already-evaluated cells
-  3. Stem cells (effectLevel = divergent) contribute frames repeatedly
+  3. Stem cells (effLevel = nonReplayable) contribute frames repeatedly
 
   We define this as a STEP function that takes a trace prefix
   and produces the next frame.
@@ -216,12 +207,12 @@ def cellReady {M : Type → Type} (trace : ExecTrace) (cd : CellDef M) : Bool :=
     d.optional || (latestFrame trace d.sourceCell).isSome)
 
 -- Find the next cell to evaluate in a program.
--- Divergent cells can always re-fire; others fire at most once.
+-- NonReplayable cells can always re-fire; others fire at most once.
 def nextCell {M : Type → Type} (p : Program M) (trace : ExecTrace) : Option (CellDef M) :=
   p.cells.find? (fun cd =>
     cellReady trace cd &&
-    match cd.effectLevel with
-    | .divergent => true   -- stem cells can always re-fire
+    match cd.effLevel with
+    | .nonReplayable => true   -- stem cells can always re-fire
     | _ => !(trace.any (fun f => f.cellName == cd.interface.name && f.oraclePass)))
 
 -- Evaluate one step (unified: one branch for all cell kinds).
@@ -323,7 +314,7 @@ private theorem evalN_length_le (p : Program Id) (n : Nat) :
 -- (The hypothesis hNoStem is the semantic precondition; the bound holds
 -- structurally because evalN adds at most one frame per step.)
 theorem nonStem_finite (p : Program Id)
-    (_hNoStem : ∀ cd ∈ p.cells, cd.effectLevel ≠ .divergent) :
+    (_hNoStem : ∀ cd ∈ p.cells, cd.effLevel ≠ .nonReplayable) :
     (evalN p p.cells.length).length ≤ p.cells.length :=
   evalN_length_le p p.cells.length
 
@@ -484,16 +475,16 @@ def MetaCell (M : Type → Type) := Env → Program M
     Continue ::= done | more
     CellBody M ::= Env -> M (Env x Continue)
 
-    EffectLevel ::= pure | semantic | divergent
-      pure <= semantic <= divergent     (total order / lattice)
+    EffLevel ::= pure | replayable | nonReplayable
+      pure <= replayable <= nonReplayable     (total order / lattice)
 
-    Cell M ::= (interface, deps, body : CellBody M, effectLevel, oracles)
+    Cell M ::= (interface, deps, body : CellBody M, effLevel, oracles)
     Program M ::= name x List (Cell M)
 
     [[Program]] ::= ExecTrace (List ExecFrame)
 
-    Evaluation: topological order, one frame per non-divergent cell,
-    multiple frames per divergent (stem) cells. Demand-driven for stems.
+    Evaluation: topological order, one frame per non-nonReplayable cell,
+    multiple frames per nonReplayable (stem) cells. Demand-driven for stems.
 
     Bottom propagation: if any non-optional input carries Val.error,
     the cell immediately produces error outputs without running the body.

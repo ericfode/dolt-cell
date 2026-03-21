@@ -263,6 +263,10 @@ func parseCellFileV2(text string) []parsedCell {
 					if colonIdx := strings.Index(fname, " : "); colonIdx >= 0 {
 						fname = strings.TrimSpace(fname[:colonIdx])
 					}
+					// strip [annotation] suffix if present (e.g., "evaluated [autopour]")
+					if bracketIdx := strings.Index(fname, " ["); bracketIdx >= 0 {
+						fname = strings.TrimSpace(fname[:bracketIdx])
+					}
 					cur.yields = append(cur.yields, parsedYield{
 						fieldName: fname,
 					})
@@ -459,8 +463,13 @@ func parseCellFileV1(text string) []parsedCell {
 					})
 					cur.bodyType = "hard"
 				} else {
+					fname := strings.TrimSpace(rest)
+					// strip [annotation] suffix if present
+					if bracketIdx := strings.Index(fname, " ["); bracketIdx >= 0 {
+						fname = strings.TrimSpace(fname[:bracketIdx])
+					}
 					cur.yields = append(cur.yields, parsedYield{
-						fieldName: strings.TrimSpace(rest),
+						fieldName: fname,
 					})
 				}
 				continue

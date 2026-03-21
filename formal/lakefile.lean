@@ -45,3 +45,6 @@ lean_lib BeadStore where
 
 lean_lib HealthPatrol where
   roots := #[`HealthPatrol]
+
+lean_lib Config where
+  roots := #[`Config]

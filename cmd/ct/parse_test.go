@@ -1317,3 +1317,33 @@ func TestParseRejectsInvalidNames(t *testing.T) {
 		})
 	}
 }
+
+func TestAutopourAnnotation(t *testing.T) {
+	// v2 syntax
+	cells, err := parseCellFile("cell evaluator\n  yield result [autopour]\n  ---\n  body\n  ---\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cells) != 1 {
+		t.Fatalf("expected 1 cell, got %d", len(cells))
+	}
+	if len(cells[0].yields) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(cells[0].yields))
+	}
+	y := cells[0].yields[0]
+	if y.fieldName != "result" {
+		t.Errorf("expected field name 'result', got %q", y.fieldName)
+	}
+	if !y.autopour {
+		t.Error("expected autopour=true")
+	}
+
+	// yield without autopour should have autopour=false
+	cells2, err := parseCellFile("cell plain\n  yield output\n  ---\n  body\n  ---\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cells2[0].yields[0].autopour {
+		t.Error("expected autopour=false for plain yield")
+	}
+}

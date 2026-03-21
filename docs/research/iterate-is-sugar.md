@@ -5,6 +5,12 @@
 
 ---
 
+> **Note (2026-03-21):** This research predates the Lua substrate design.
+> Code examples use the old cell syntax (guillemets, sql: bodies). The
+> analysis and conclusions remain valid — only the surface syntax has
+> changed. See `docs/plans/2026-03-21-lua-substrate-design.md` for
+> the current design.
+
 ## 1. The Question
 
 `village-sim.cell` uses `iterate day 5` — a keyword not in the v2 syntax

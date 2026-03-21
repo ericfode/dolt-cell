@@ -450,10 +450,25 @@ theorem createFrame_appendOnly (r : Retort) (cfd : CreateFrameData) :
 
 theorem bottom_appendOnly (r : Retort) (bd : BottomData) :
     appendOnly r (applyOp r (.bottom bd)) := by
-  -- Bottom adds yields (append), removes claims (filter),
-  -- cells/frames/bindings/givens unchanged.
-  -- Structurally identical to freeze without bindings.
-  sorry
+  unfold appendOnly applyOp
+  -- Match on frame lookup and cellDef lookup
+  simp only
+  split
+  · -- frame not found → state unchanged
+    exact ⟨fun x hx => hx, fun x hx => hx, fun x hx => hx,
+           fun x hx => hx, fun x hx => hx⟩
+  · -- frame found
+    split
+    · -- cellDef not found → state unchanged
+      exact ⟨fun x hx => hx, fun x hx => hx, fun x hx => hx,
+             fun x hx => hx, fun x hx => hx⟩
+    · -- cellDef found → yields appended, claims filtered
+      refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
+      · exact hx
+      · exact hx
+      · exact List.mem_append_left _ hx  -- yields grow
+      · exact hx                          -- bindings unchanged
+      · exact hx
 
 -- ALL operations preserve append-only
 theorem all_ops_appendOnly (r : Retort) (op : RetortOp) :
@@ -2040,9 +2055,15 @@ theorem lazyEvalCycle_appendOnly (r : Retort) (lec : LazyEvalCycle) :
   unfold applyLazyEvalCycle
   have h1 := all_ops_appendOnly r (.claim lec.claimOp)
   have h2 := all_ops_appendOnly (applyOp r (.claim lec.claimOp)) (.freeze lec.freezeOp)
+  have h12 := appendOnly_trans _ _ _ h1 h2
   -- Both branches (with or without createFrame) compose append-only operations.
-  -- The if-then-else branches both satisfy appendOnly_trans.
-  sorry
+  simp only
+  split
+  · -- demand exists → claim, freeze, createFrame
+    exact appendOnly_trans _ _ _ h12
+      (all_ops_appendOnly _ (.createFrame _))
+  · -- no demand → claim, freeze only
+    exact h12
 
 /-- When demandFromGivens is false, the lazy cycle produces no new frame.
     This is the key "no new data = no spawn" property. -/

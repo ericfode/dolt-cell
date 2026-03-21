@@ -32,43 +32,11 @@ namespace Autopour
 
 /-! ====================================================================
     CANONICAL EFFECT LATTICE
-    ==================================================================== -/
+    ====================================================================
 
-/-- The canonical effect lattice, ordered by recovery cost.
-    Aligned with EffectEval.EffLevel and TupleSpace.Effect.
-    Replaces Core.EffectLevel (pure/semantic/divergent) which conflates
-    effect level with cell lifecycle. -/
-inductive EffLevel where
-  | pure          -- deterministic: literal, SQL query, arithmetic
-  | replayable    -- bounded nondeterminism: LLM oracle, auto-retry safe
-  | nonReplayable -- world-mutating: DML, external API, thaw, autopour
-  deriving Repr, DecidableEq, BEq
-
-/-- Numeric encoding for total order. -/
-def EffLevel.toNat : EffLevel → Nat
-  | .pure          => 0
-  | .replayable    => 1
-  | .nonReplayable => 2
-
-/-- LE instance via toNat. -/
-instance : LE EffLevel where
-  le a b := a.toNat ≤ b.toNat
-
-instance (a b : EffLevel) : Decidable (a ≤ b) :=
-  inferInstanceAs (Decidable (a.toNat ≤ b.toNat))
-
-/-- Bool version for decidable checks. -/
-def EffLevel.le (a b : EffLevel) : Bool := a.toNat ≤ b.toNat
-
-/-- Pure is the bottom of the lattice. -/
-theorem pure_le_all (e : EffLevel) : EffLevel.pure ≤ e := by
-  show EffLevel.pure.toNat ≤ e.toNat
-  simp [EffLevel.toNat]
-
-/-- NonReplayable is the top. -/
-theorem all_le_nonReplayable (e : EffLevel) : e ≤ EffLevel.nonReplayable := by
-  show e.toNat ≤ EffLevel.nonReplayable.toNat
-  cases e <;> simp [EffLevel.toNat]
+    EffLevel (pure/replayable/nonReplayable) is now defined in Core.lean.
+    LE, Decidable instances, toNat, le, pure_le_all, all_le_nonReplayable
+    are all imported from Core. -/
 
 /-- Autopour is a NonReplayable operation (it mutates the tuple space). -/
 def autopourEffLevel : EffLevel := .nonReplayable

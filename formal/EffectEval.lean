@@ -109,99 +109,15 @@ def yieldsPreserved' (before after : RS) : Prop :=
 
 /-! ====================================================================
     SECTION 1: EFFECT LEVEL — Total Order and Join
-    ==================================================================== -/
+    ====================================================================
 
-/-- The three effect levels, ordered by recovery cost. -/
-inductive EffLevel where
-  | pure          -- deterministic: literal, SQL query
-  | replayable    -- bounded nondeterminism: LLM oracle, auto-retry
-  | nonReplayable -- world-mutating: SQL exec, spawn, thaw
-  deriving Repr, DecidableEq, BEq
+    EffLevel, its order infrastructure, and join algebra are all defined
+    in Core.lean. We open EffLevel to bring join_comm, pure_le_all, etc.
+    into scope so existing proof references resolve unchanged. -/
 
-/-- Numeric encoding for the total order. -/
-def EffLevel.toNat : EffLevel -> Nat
-  | .pure          => 0
-  | .replayable    => 1
-  | .nonReplayable => 2
-
-/-- LE instance via toNat. -/
-instance : LE EffLevel where
-  le a b := a.toNat <= b.toNat
-
-instance : LT EffLevel where
-  lt a b := a.toNat < b.toNat
-
-instance (a b : EffLevel) : Decidable (a <= b) :=
-  inferInstanceAs (Decidable (a.toNat <= b.toNat))
-
-instance (a b : EffLevel) : Decidable (a < b) :=
-  inferInstanceAs (Decidable (a.toNat < b.toNat))
-
-/-- Helper to unfold LE for EffLevel in proofs. -/
-private theorem EffLevel.le_def (a b : EffLevel) : (a <= b) = (a.toNat <= b.toNat) := rfl
-
-/-- Join = max of two effect levels. -/
-def EffLevel.join (a b : EffLevel) : EffLevel :=
-  if b.toNat <= a.toNat then a else b
-
-private theorem toNat_injective (a b : EffLevel) (h : a.toNat = b.toNat) : a = b := by
-  cases a <;> cases b <;> simp [EffLevel.toNat] at h <;> rfl
-
-/-! ### Join algebraic laws -/
-
-theorem join_comm (a b : EffLevel) : EffLevel.join a b = EffLevel.join b a := by
-  simp only [EffLevel.join]
-  split <;> split
-  · rename_i h1 h2
-    exact toNat_injective a b (Nat.le_antisymm h2 h1)
-  · rfl
-  · rfl
-  · rename_i h1 h2; omega
-
-theorem join_assoc (a b c : EffLevel) :
-    EffLevel.join (EffLevel.join a b) c = EffLevel.join a (EffLevel.join b c) := by
-  simp only [EffLevel.join]
-  cases a <;> cases b <;> cases c <;> simp [EffLevel.toNat]
-
-theorem join_idem (a : EffLevel) : EffLevel.join a a = a := by
-  simp only [EffLevel.join, EffLevel.toNat]
-  cases a <;> simp
-
-/-! ### Order interaction with join -/
-
-theorem join_le_left (a b : EffLevel) : a <= EffLevel.join a b := by
-  simp only [EffLevel.join]
-  show a.toNat <= (if b.toNat <= a.toNat then a else b).toNat
-  split
-  · exact Nat.le_refl a.toNat
-  · rename_i h; omega
-
-theorem join_le_right (a b : EffLevel) : b <= EffLevel.join a b := by
-  simp only [EffLevel.join]
-  show b.toNat <= (if b.toNat <= a.toNat then a else b).toNat
-  split
-  · rename_i h; exact h
-  · exact Nat.le_refl b.toNat
-
-theorem join_lub (a b c : EffLevel) (ha : a <= c) (hb : b <= c) :
-    EffLevel.join a b <= c := by
-  simp only [EffLevel.join, EffLevel.le_def]
-  split
-  · exact ha
-  · exact hb
-
-/-- Pure is the bottom of the lattice. -/
-theorem pure_le_all (e : EffLevel) : EffLevel.pure <= e := by
-  show EffLevel.pure.toNat <= e.toNat
-  simp [EffLevel.toNat]
-
-/-- Join with pure is identity. -/
-theorem join_pure_left (e : EffLevel) : EffLevel.join .pure e = e := by
-  simp only [EffLevel.join, EffLevel.toNat]
-  cases e <;> simp
-
-theorem join_pure_right (e : EffLevel) : EffLevel.join e .pure = e := by
-  rw [join_comm]; exact join_pure_left e
+open EffLevel (join_comm join_assoc join_idem join_le_left join_le_right
+               join_lub pure_le_all join_pure_left join_pure_right
+               join_mono_left join_mono_right)
 
 /-! ====================================================================
     SECTION 2: EFFECT CLASSIFICATION OF CELLS
@@ -467,16 +383,6 @@ theorem composite_extend (ops : List OpEffect) (op : OpEffect) (e : EffLevel)
   rw [List.foldl_append]
   simp only [List.foldl]
   exact join_lub (ops.foldl (fun a o => EffLevel.join a o.level) .pure) op.level e hOps hOp
-
-/-- Join is monotone in each argument. -/
-theorem join_mono_left (a b c : EffLevel) (h : a <= b) :
-    EffLevel.join a c <= EffLevel.join b c := by
-  cases a <;> cases b <;> cases c <;> simp_all [EffLevel.join, EffLevel.toNat, EffLevel.le_def]
-
-theorem join_mono_right (a b c : EffLevel) (h : b <= c) :
-    EffLevel.join a b <= EffLevel.join a c := by
-  rw [join_comm a b, join_comm a c]
-  exact join_mono_left b c a h
 
 /-! ====================================================================
     SECTION 7: EFFECT-AWARE EVAL CYCLE AND APPEND-ONLY

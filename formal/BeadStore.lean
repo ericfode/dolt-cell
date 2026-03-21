@@ -277,6 +277,25 @@ theorem create_preserves_beads (s : Store) (title : String) (bt : Option BeadTyp
     b ∈ (s.create title bt a f pid ls desc).1.beads := by
   simp [Store.create]; exact Or.inl hb
 
+/-- Created bead's ID is distinct from all existing beads (well-formedness
+    guarantees all existing IDs are below the counter). -/
+theorem create_unique_id (s : Store) (title : String) (bt : Option BeadType)
+    (a f : String) (pid : Option BeadId) (ls : List String) (desc : String)
+    (hwf : wellFormed s) (b : Bead) (hb : b ∈ s.beads) :
+    b.id ≠ (s.create title bt a f pid ls desc).2.id := by
+  obtain ⟨_, _, _, hctr⟩ := hwf
+  exact Nat.ne_of_lt (hctr b hb).2
+
+/-- Two consecutive creates produce beads with different IDs because
+    the counter increments. -/
+theorem create_ids_differ (s : Store) (t1 t2 : String) (bt1 bt2 : Option BeadType)
+    (a1 a2 f1 f2 : String) (pid1 pid2 : Option BeadId)
+    (ls1 ls2 : List String) (d1 d2 : String) :
+    let r1 := s.create t1 bt1 a1 f1 pid1 ls1 d1
+    let r2 := r1.1.create t2 bt2 a2 f2 pid2 ls2 d2
+    r1.2.id ≠ r2.2.id := by
+  simp [Store.create]
+
 /-! ====================================================================
     PROOFS: CLOSE
     ==================================================================== -/

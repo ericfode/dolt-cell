@@ -450,10 +450,18 @@ theorem createFrame_appendOnly (r : Retort) (cfd : CreateFrameData) :
 
 theorem bottom_appendOnly (r : Retort) (bd : BottomData) :
     appendOnly r (applyOp r (.bottom bd)) := by
-  -- Bottom adds yields (append), removes claims (filter),
-  -- cells/frames/bindings/givens unchanged.
-  -- Structurally identical to freeze without bindings.
-  sorry
+  unfold appendOnly cellsPreserved framesPreserved yieldsPreserved bindingsPreserved givensPreserved applyOp
+  simp only []
+  split
+  · -- frame not found → retort unchanged
+    exact ⟨fun _ hx => hx, fun _ hx => hx, fun _ hx => hx, fun _ hx => hx, fun _ hx => hx⟩
+  · split
+    · -- cellDef not found → retort unchanged
+      exact ⟨fun _ hx => hx, fun _ hx => hx, fun _ hx => hx, fun _ hx => hx, fun _ hx => hx⟩
+    · -- yields appended, claims filtered, cells/frames/bindings/givens unchanged
+      exact ⟨fun _ hx => hx, fun _ hx => hx,
+             fun _ hx => List.mem_append_left _ hx,
+             fun _ hx => hx, fun _ hx => hx⟩
 
 -- ALL operations preserve append-only
 theorem all_ops_appendOnly (r : Retort) (op : RetortOp) :

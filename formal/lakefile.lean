@@ -45,3 +45,7 @@ lean_lib BeadStore where
 
 lean_lib HealthPatrol where
   roots := #[`HealthPatrol]
+
+lean_lib Dispatch where
+  roots := #[`Dispatch]
+  extraDepTargets := #[`Core]

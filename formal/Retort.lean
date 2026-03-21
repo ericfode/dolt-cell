@@ -450,25 +450,18 @@ theorem createFrame_appendOnly (r : Retort) (cfd : CreateFrameData) :
 
 theorem bottom_appendOnly (r : Retort) (bd : BottomData) :
     appendOnly r (applyOp r (.bottom bd)) := by
-  unfold appendOnly applyOp
-  -- Match on frame lookup and cellDef lookup
-  simp only
+  unfold appendOnly cellsPreserved framesPreserved yieldsPreserved bindingsPreserved givensPreserved applyOp
+  simp only []
   split
-  · -- frame not found → state unchanged
-    exact ⟨fun x hx => hx, fun x hx => hx, fun x hx => hx,
-           fun x hx => hx, fun x hx => hx⟩
-  · -- frame found
-    split
-    · -- cellDef not found → state unchanged
-      exact ⟨fun x hx => hx, fun x hx => hx, fun x hx => hx,
-             fun x hx => hx, fun x hx => hx⟩
-    · -- cellDef found → yields appended, claims filtered
-      refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> intro x hx
-      · exact hx
-      · exact hx
-      · exact List.mem_append_left _ hx  -- yields grow
-      · exact hx                          -- bindings unchanged
-      · exact hx
+  · -- frame not found → retort unchanged
+    exact ⟨fun _ hx => hx, fun _ hx => hx, fun _ hx => hx, fun _ hx => hx, fun _ hx => hx⟩
+  · split
+    · -- cellDef not found → retort unchanged
+      exact ⟨fun _ hx => hx, fun _ hx => hx, fun _ hx => hx, fun _ hx => hx, fun _ hx => hx⟩
+    · -- yields appended, claims filtered, cells/frames/bindings/givens unchanged
+      exact ⟨fun _ hx => hx, fun _ hx => hx,
+             fun _ hx => List.mem_append_left _ hx,
+             fun _ hx => hx, fun _ hx => hx⟩
 
 -- ALL operations preserve append-only
 theorem all_ops_appendOnly (r : Retort) (op : RetortOp) :

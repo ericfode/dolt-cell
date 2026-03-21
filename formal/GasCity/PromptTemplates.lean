@@ -288,4 +288,68 @@ theorem pipeline_cases (ctx : PromptContext) (raw : String) (parsed : Option Tem
   | some t => left; exact ⟨renderTemplate ctx t, rfl⟩
   | none   => right; exact ⟨raw, rfl⟩
 
+/-! ====================================================================
+    TEMPLATE DISCOVERY / FALLBACK CHAIN
+    Multi-level template resolution: SDK → custom → defaults → error
+    ==================================================================== -/
+
+/-- Template source layers, ordered by priority. -/
+inductive TemplateSource where
+  | sdk       -- built-in SDK templates
+  | custom    -- user/rig-specific overrides
+  | defaults  -- system defaults
+  deriving Repr, DecidableEq, BEq
+
+/-- A template registry: maps template names to templates per source. -/
+abbrev TemplateRegistry := TemplateSource → String → Option Template
+
+/-- Resolve a template name through the fallback chain.
+    Tries custom first, then SDK, then defaults. -/
+def resolveTemplate (reg : TemplateRegistry) (name : String) : Option Template :=
+  match reg .custom name with
+  | some t => some t
+  | none => match reg .sdk name with
+    | some t => some t
+    | none => reg .defaults name
+
+/-- Custom templates override SDK templates. -/
+theorem custom_overrides_sdk (reg : TemplateRegistry) (name : String)
+    (t : Template) (h : reg .custom name = some t) :
+    resolveTemplate reg name = some t := by
+  simp [resolveTemplate, h]
+
+/-- SDK templates are used when no custom template exists. -/
+theorem sdk_fallback (reg : TemplateRegistry) (name : String)
+    (t : Template) (hno : reg .custom name = none) (hsdk : reg .sdk name = some t) :
+    resolveTemplate reg name = some t := by
+  simp [resolveTemplate, hno, hsdk]
+
+/-- Defaults are last resort when neither custom nor SDK have the template. -/
+theorem defaults_last_resort (reg : TemplateRegistry) (name : String)
+    (hno : reg .custom name = none) (hnosdk : reg .sdk name = none) :
+    resolveTemplate reg name = reg .defaults name := by
+  simp [resolveTemplate, hno, hnosdk]
+
+/-- Template syntax validation: a template is valid if it contains no
+    unresolved error references. -/
+def templateValid (ctx : PromptContext) (t : Template) : Bool :=
+  t.all fun seg => match seg with
+    | .ref f => match ctx.resolve f with
+      | .error _ => false
+      | _ => true
+    | _ => true
+
+/-- A fully literal template is always valid. -/
+theorem literal_template_valid (ctx : PromptContext) (segs : List Segment)
+    (h : ∀ s ∈ segs, ∃ t, s = .lit t) :
+    templateValid ctx segs = true := by
+  induction segs with
+  | nil => rfl
+  | cons s rest ih =>
+    unfold templateValid List.all
+    obtain ⟨t, ht⟩ := h s (List.Mem.head _)
+    rw [ht]
+    simp only [Bool.true_and]
+    exact ih (fun s' hs' => h s' (List.Mem.tail _ hs'))
+
 end PromptTemplates

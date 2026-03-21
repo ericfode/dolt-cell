@@ -372,6 +372,43 @@ theorem always_log_preserved (vt : ValidTrace) :
   exact record_preserves_log _ _ _ _ _ _ e he
 
 /-! ====================================================================
+    VISIBILITY (audit vs feed)
+    ==================================================================== -/
+
+/-- Event visibility: determines which consumers see the event. -/
+inductive Visibility where
+  | audit  -- internal: compliance, debugging, logging only
+  | feed   -- external: shown in user-facing event feeds
+  deriving Repr, DecidableEq, BEq
+
+/-- Default visibility for events. Most events are audit-only. -/
+def defaultVisibility : Visibility := .audit
+
+/-- Audit events are never shown in feeds. -/
+theorem audit_not_feed : Visibility.audit ≠ Visibility.feed := by decide
+
+/-! ====================================================================
+    CLOSE (provider shutdown)
+    ==================================================================== -/
+
+/-- A closed provider: no more events can be recorded. -/
+structure ClosedProvider where
+  finalLog : List Event
+  deriving Repr
+
+/-- Close a provider: snapshot the log, prevent further writes. -/
+def Provider.close (p : Provider) : ClosedProvider :=
+  { finalLog := p.log }
+
+/-- Closing preserves the full event history. -/
+theorem close_preserves_log (p : Provider) :
+    (p.close).finalLog = p.log := rfl
+
+/-- Closing an empty provider yields an empty log. -/
+theorem close_empty :
+    (Provider.empty.close).finalLog = [] := rfl
+
+/-! ====================================================================
     VERDICT
     ====================================================================
 

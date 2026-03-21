@@ -29,11 +29,11 @@
 -/
 
 import Core
-import Config
-import BeadStore
-import EventBus
-import AgentProtocol
-import PromptTemplates
+import GasCity.Config
+import GasCity.BeadStore
+import GasCity.EventBus
+import GasCity.AgentProtocol
+import GasCity.PromptTemplates
 
 namespace Layering
 

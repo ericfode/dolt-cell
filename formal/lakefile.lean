@@ -4,6 +4,7 @@ open Lake DSL
 package stemcell where
   leanOptions := #[⟨`autoImplicit, false⟩]
 
+-- Cell language formal model (root-level)
 @[default_target]
 lean_lib StemCell
 
@@ -30,36 +31,10 @@ lean_lib EffectEval where
 lean_lib Autopour where
   roots := #[`Autopour]
 
-lean_lib EventBus where
-  roots := #[`EventBus]
+-- Gas City formal model (GasCity/ module)
+lean_lib GasCity where
+  roots := #[`GasCity.AgentProtocol, `GasCity.BeadStore, `GasCity.Config,
+             `GasCity.Dispatch, `GasCity.EventBus, `GasCity.Formulas,
+             `GasCity.HealthPatrol, `GasCity.Layering, `GasCity.PromptTemplates,
+             `GasCity.PrimitiveTest]
   extraDepTargets := #[`Core]
-
-lean_lib AgentProtocol where
-  roots := #[`AgentProtocol]
-
-lean_lib PromptTemplates where
-  roots := #[`PromptTemplates]
-
-lean_lib BeadStore where
-  roots := #[`BeadStore]
-
-lean_lib HealthPatrol where
-  roots := #[`HealthPatrol]
-
-lean_lib Dispatch where
-  roots := #[`Dispatch]
-  extraDepTargets := #[`Core]
-
-lean_lib Config where
-  roots := #[`Config]
-
-lean_lib Layering where
-  roots := #[`Layering]
-  extraDepTargets := #[`Core, `Config, `BeadStore, `EventBus, `AgentProtocol, `PromptTemplates]
-
-lean_lib PrimitiveTest where
-  roots := #[`PrimitiveTest]
-  extraDepTargets := #[`Core]
-
-lean_lib Formulas where
-  roots := #[`GasCity.Formulas]

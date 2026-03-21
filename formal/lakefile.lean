@@ -30,6 +30,9 @@ lean_lib EffectEval where
 lean_lib Autopour where
   roots := #[`Autopour]
 
+lean_lib ZygoExpr where
+  roots := #[`ZygoExpr]
+
 lean_lib GasCity where
   roots := #[`GasCity.Basic, `GasCity.AgentProtocol, `GasCity.BeadStore,
              `GasCity.EventBus, `GasCity.Config, `GasCity.PromptTemplates,

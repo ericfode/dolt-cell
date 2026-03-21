@@ -115,11 +115,7 @@ space store.
 
 ### Hard literal
 
-```
-;; Before:
-;; cell topic
-;;   yield subject = "autumn rain on a temple roof"
-
+```clojure
 (defcell topic
   {:yield [:subject]}
   {:subject "autumn rain on a temple roof"})
@@ -127,15 +123,7 @@ space store.
 
 ### Soft cell (LLM-evaluated)
 
-```
-;; Before:
-;; cell compose
-;;   given topic.subject
-;;   yield poem
-;;   ---
-;;   Write a haiku about «subject». Follow 5-7-5 syllable structure.
-;;   ---
-
+```clojure
 (defcell compose
   {:given [topic/subject]
    :yield [:poem]
@@ -144,16 +132,9 @@ space store.
        ". Follow 5-7-5 syllable structure."))
 ```
 
-### Pure computed cell (replaces sql:)
+### Pure computed cell
 
-```
-;; Before:
-;; cell count-words
-;;   yield total
-;;   ---
-;;   sql: SELECT LENGTH(TRIM(p.value_text)) - LENGTH(REPLACE(...)) + 1 ...
-;;   ---
-
+```clojure
 (defcell count-words
   {:given [compose/poem]
    :yield [:total]
@@ -163,16 +144,7 @@ space store.
 
 ### Stem cell (perpetual)
 
-```
-;; Before:
-;; cell eval-one (stem)
-;;   yield cell_name
-;;   yield program_id
-;;   yield status
-;;   ---
-;;   Find one ready cell, evaluate it, submit results.
-;;   ---
-
+```clojure
 (defcell eval-one
   {:yield [:cell-name :program-id :status]
    :effect :non-replayable
@@ -187,14 +159,7 @@ space store.
 
 ### Guarded recursion
 
-```
-;; Before:
-;; cell reflect (stem)
-;;   given compose.poem
-;;   yield poem
-;;   yield settled
-;;   recur until settled = "SETTLED" (max 8)
-
+```clojure
 (defcell reflect
   {:given [compose/poem]
    :yield [:poem :settled]
@@ -206,12 +171,7 @@ space store.
 
 ### Autopour
 
-```
-;; Before:
-;; cell evaluator
-;;   given request.program_text
-;;   yield evaluated [autopour]
-
+```clojure
 (defcell evaluator
   {:given [request/program-text request/program-name]
    :yield [:evaluated :name]

@@ -43,11 +43,14 @@ inductive SExpr where
     ==================================================================== -/
 
 /-- Values produced by Zygo evaluation. Extends Autopour.Val with
-    numeric and list values needed for the Pure computation tier. -/
+    structured data needed for computation tiers.
+    Incorporates ZygoExpr.ZVal's bool and hash types. -/
 inductive ZVal where
   | str     : String → ZVal
   | num     : Int → ZVal
+  | bool    : Bool → ZVal               -- from ZygoExpr: truthiness support
   | vlist   : List ZVal → ZVal
+  | hash    : List (String × ZVal) → ZVal  -- from ZygoExpr: key-value maps
   | none    : ZVal
   | error   : String → ZVal
   | program : SExpr → ZVal              -- a program is a value (homoiconicity)
@@ -56,6 +59,37 @@ inductive ZVal where
 def ZVal.isError : ZVal → Bool
   | .error _ => true
   | _ => false
+
+/-- Truthiness: nil, false, and error are falsy; everything else is truthy.
+    From ZygoExpr. Used by conditionals. -/
+def ZVal.truthy : ZVal → Bool
+  | .none     => false
+  | .bool b   => b
+  | .error _  => false
+  | _         => true
+
+/-- Coerce a ZVal to a string for yield output. From ZygoExpr. -/
+def ZVal.toStr : ZVal → String
+  | .str s    => s
+  | .num n    => toString n
+  | .bool b   => toString b
+  | .none     => "nil"
+  | .vlist _  => "<list>"
+  | .hash _   => "<hash>"
+  | .error e  => s!"error: {e}"
+  | .program _ => "<program>"
+
+/-- Bridge: convert ZVal to cell-level Val (Autopour.Val).
+    Yields are strings in the tuple space; structured data serializes. -/
+def ZVal.toCellVal : ZVal → Autopour.Val
+  | .str s     => .str s
+  | .num n     => .str (toString n)
+  | .bool b    => .str (toString b)
+  | .vlist _   => .str "<list>"
+  | .hash _    => .str "<hash>"
+  | .none      => .none
+  | .error e   => .error e
+  | .program _ => .str "<program>"
 
 /-! ====================================================================
     ENVIRONMENT
@@ -87,12 +121,12 @@ inductive Builtin where
   | cons | car | cdr | listCtor | len
   -- Pure (control)
   | ifExpr | let_ | eq | lt | gt
-  -- Pure (quoting)
-  | quote | readString
-  -- Replayable (LLM)
-  | llmCall | llmJudge
-  -- NonReplayable (tuple space mutation)
-  | pour | claim | submit | observe
+  -- Pure (quoting — reification only, NOT reflection)
+  | quote
+  -- Replayable (LLM + read-only tuple space)
+  | llmCall | llmJudge | observe
+  -- NonReplayable (tuple space mutation + reflection)
+  | pour | claim | submit | readString
   -- NonReplayable (external)
   | httpGet | httpPost | sqlExec
   deriving Repr, DecidableEq, BEq
@@ -103,9 +137,9 @@ def Builtin.effLevel : Builtin → EffLevel
   | .concat | .strlen | .substr         => .pure
   | .cons | .car | .cdr | .listCtor | .len => .pure
   | .ifExpr | .let_ | .eq | .lt | .gt   => .pure
-  | .quote | .readString                => .pure
-  | .llmCall | .llmJudge                => .replayable
-  | .pour | .claim | .submit | .observe => .nonReplayable
+  | .quote                               => .pure
+  | .llmCall | .llmJudge | .observe     => .replayable
+  | .pour | .claim | .submit | .readString => .nonReplayable
   | .httpGet | .httpPost | .sqlExec     => .nonReplayable
 
 /-- Resolve a symbol name to a Builtin (if known). -/
@@ -153,6 +187,26 @@ def symbolAllowed (name : String) (tier : EffLevel) : Bool :=
   match resolveBuiltin name with
   | some b => EffLevel.le b.effLevel tier
   | none   => true
+
+/-- EffLevel.le is transitive: if a ≤ b and b ≤ c then a ≤ c (Bool version). -/
+private theorem effLevel_le_trans {a b c : EffLevel}
+    (hab : EffLevel.le a b = true) (hbc : b ≤ c) :
+    EffLevel.le a c = true := by
+  simp [EffLevel.le] at *
+  show a.toNat ≤ c.toNat
+  exact Nat.le_trans hab (by exact hbc)
+
+/-- symbolAllowed is monotone in tier: if allowed at t1 and t1 ≤ t2,
+    then allowed at t2. -/
+theorem symbolAllowed_mono (name : String) (t1 t2 : EffLevel) (h12 : t1 ≤ t2)
+    (h : symbolAllowed name t1 = true) :
+    symbolAllowed name t2 = true := by
+  unfold symbolAllowed at *
+  split
+  · rename_i b hb
+    rw [hb] at h
+    exact effLevel_le_trans h h12
+  · rfl
 
 /-- Walk the AST and check that every function symbol is allowed at the tier.
     Uses fuel to ensure termination over the recursive SExpr structure. -/
@@ -220,15 +274,16 @@ def eval (fuel : Nat) (env : ZEnv) (expr : SExpr) : EvalResult :=
     -- quote: return AST as program value
     | .slist [.sym "quote", arg] => EvalResult.pure (.program arg)
 
-    -- if: conditional
+    -- if: conditional (uses truthy semantics from ZygoExpr)
     | .slist [.sym "if", cond, thenBr, elseBr] =>
       let cr := eval fuel' env cond
       match cr.val with
       | .error e => { val := .error e, effects := cr.effects }
-      | .none    => let er := eval fuel' env elseBr
-                    { val := er.val, effects := cr.effects ++ er.effects }
-      | _        => let tr := eval fuel' env thenBr
-                    { val := tr.val, effects := cr.effects ++ tr.effects }
+      | v        => if v.truthy
+                    then let tr := eval fuel' env thenBr
+                         { val := tr.val, effects := cr.effects ++ tr.effects }
+                    else let er := eval fuel' env elseBr
+                         { val := er.val, effects := cr.effects ++ er.effects }
 
     -- let: variable binding
     | .slist [.sym "let", .sym name, valExpr, bodyExpr] =>
@@ -271,9 +326,10 @@ def eval (fuel : Nat) (env : ZEnv) (expr : SExpr) : EvalResult :=
       let eq := match ar.val, br.val with
         | .num x, .num y     => x == y
         | .str x, .str y     => x == y
+        | .bool x, .bool y   => x == y
         | .none, .none       => true
         | _, _               => false
-      { val := if eq then .num 1 else .none,
+      { val := if eq then .bool true else .bool false,
         effects := ar.effects ++ br.effects }
 
     -- string operations
@@ -408,10 +464,19 @@ theorem checkEffects_mono (fuel : Nat) (expr : SExpr) (t1 t2 : EffLevel)
     (h12 : t1 ≤ t2)
     (hCheck : checkEffects fuel expr t1 = true) :
     checkEffects fuel expr t2 = true := by
-  sorry
-  -- Follows from: symbolAllowed is monotone in tier (if EffLevel.le e t1
-  -- and t1 ≤ t2, then EffLevel.le e t2 by transitivity), and checkEffects
-  -- is a conjunction of symbolAllowed checks.
+  induction fuel generalizing expr with
+  | zero => simp [checkEffects] at hCheck
+  | succ n ih =>
+    match expr with
+    | .sym s =>
+      simp [checkEffects] at *
+      exact symbolAllowed_mono s t1 t2 h12 hCheck
+    | .str _ => simp [checkEffects]
+    | .num _ => simp [checkEffects]
+    | .slist [] => simp [checkEffects]
+    | .slist (head :: args) =>
+      simp only [checkEffects, Bool.and_eq_true, List.all_eq_true] at *
+      exact ⟨ih head hCheck.1, fun a ha => ih a (hCheck.2 a ha)⟩
 
 /-- Pure built-ins are classified as pure. -/
 theorem pure_builtins_pure :

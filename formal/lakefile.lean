@@ -30,8 +30,8 @@ lean_lib EffectEval where
 lean_lib Autopour where
   roots := #[`Autopour]
 
-lean_lib ZygoExpr where
-  roots := #[`ZygoExpr]
+lean_lib PureExprSemantics where
+  roots := #[`PureExprSemantics]
 
 lean_lib GasCity where
   roots := #[`GasCity.Basic, `GasCity.AgentProtocol, `GasCity.BeadStore,

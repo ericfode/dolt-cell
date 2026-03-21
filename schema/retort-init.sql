@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS yields (
     is_frozen   BOOLEAN NOT NULL DEFAULT FALSE,
     is_bottom   BOOLEAN NOT NULL DEFAULT FALSE,
     frozen_at   DATETIME,
+    annotation  VARCHAR(64) DEFAULT NULL,
     FOREIGN KEY (cell_id) REFERENCES cells(id),
     UNIQUE INDEX idx_cell_field (cell_id, field_name),
     INDEX idx_yields_frame (frame_id, field_name)

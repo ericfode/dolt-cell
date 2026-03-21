@@ -39,8 +39,9 @@ type parsedGiven struct {
 }
 
 type parsedYield struct {
-	fieldName string
-	prebound  string // non-empty for yield NAME ≡ VALUE
+	fieldName  string
+	prebound   string // non-empty for yield NAME ≡ VALUE
+	annotation string // e.g. "autopour" from yield NAME [autopour]
 }
 
 type parsedOracle struct {
@@ -83,6 +84,20 @@ func validateCellNames(cells []parsedCell) error {
 		}
 	}
 	return nil
+}
+
+// stripYieldAnnotation extracts a [bracket] annotation from a yield field name.
+// "evaluated [autopour]" → ("evaluated", "autopour")
+// "name" → ("name", "")
+func stripYieldAnnotation(s string) (string, string) {
+	if bracketIdx := strings.Index(s, " ["); bracketIdx >= 0 {
+		if closeIdx := strings.Index(s[bracketIdx:], "]"); closeIdx >= 0 {
+			name := strings.TrimSpace(s[:bracketIdx])
+			annot := s[bracketIdx+2 : bracketIdx+closeIdx]
+			return name, annot
+		}
+	}
+	return s, ""
 }
 
 // parseCellFileV2 parses v2 ASCII syntax: cell NAME, ---, given X.Y, check, recur, iterate.
@@ -240,19 +255,21 @@ func parseCellFileV2(text string) []parsedCell {
 				continue
 			}
 
-			// Yield: yield NAME = VALUE or yield NAME
+			// Yield: yield NAME [annot] = VALUE or yield NAME [annot]
 			if strings.HasPrefix(trimmed, "yield ") {
 				rest := strings.TrimPrefix(trimmed, "yield ")
 				if eqIdx := strings.Index(rest, " = "); eqIdx >= 0 {
 					name := strings.TrimSpace(rest[:eqIdx])
+					name, annot := stripYieldAnnotation(name)
 					value := strings.TrimSpace(rest[eqIdx+3:])
 					// Strip surrounding quotes if present
 					if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
 						value = value[1 : len(value)-1]
 					}
 					cur.yields = append(cur.yields, parsedYield{
-						fieldName: name,
-						prebound:  value,
+						fieldName:  name,
+						prebound:   value,
+						annotation: annot,
 					})
 					if cur.bodyType != "stem" {
 						cur.bodyType = "hard"
@@ -263,8 +280,10 @@ func parseCellFileV2(text string) []parsedCell {
 					if colonIdx := strings.Index(fname, " : "); colonIdx >= 0 {
 						fname = strings.TrimSpace(fname[:colonIdx])
 					}
+					fname, annot := stripYieldAnnotation(fname)
 					cur.yields = append(cur.yields, parsedYield{
-						fieldName: fname,
+						fieldName:  fname,
+						annotation: annot,
 					})
 				}
 				continue
@@ -447,20 +466,24 @@ func parseCellFileV1(text string) []parsedCell {
 				continue
 			}
 
-			// Yield: yield NAME ≡ VALUE or yield NAME
+			// Yield: yield NAME [annot] ≡ VALUE or yield NAME [annot]
 			if strings.HasPrefix(trimmed, "yield ") {
 				inBody = false
 				rest := strings.TrimPrefix(trimmed, "yield ")
 				if strings.Contains(rest, "≡") {
 					parts := strings.SplitN(rest, "≡", 2)
+					name, annot := stripYieldAnnotation(strings.TrimSpace(parts[0]))
 					cur.yields = append(cur.yields, parsedYield{
-						fieldName: strings.TrimSpace(parts[0]),
-						prebound:  strings.TrimSpace(parts[1]),
+						fieldName:  name,
+						prebound:   strings.TrimSpace(parts[1]),
+						annotation: annot,
 					})
 					cur.bodyType = "hard"
 				} else {
+					fname, annot := stripYieldAnnotation(strings.TrimSpace(rest))
 					cur.yields = append(cur.yields, parsedYield{
-						fieldName: strings.TrimSpace(rest),
+						fieldName:  fname,
+						annotation: annot,
 					})
 				}
 				continue
@@ -671,13 +694,25 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 		yID := safeID(fmt.Sprintf("y-%s-%s-%s", prefix, c.name, y.fieldName))
 		if allPrebound && len(c.yields) > 1 {
 			// Pre-freeze each yield with its value
-			sb.WriteString(fmt.Sprintf(
-				"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES ('%s', '%s', %s, '%s', '%s', TRUE, NOW());\n",
-				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.prebound)))
+			if y.annotation != "" {
+				sb.WriteString(fmt.Sprintf(
+					"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at, annotation) VALUES ('%s', '%s', %s, '%s', '%s', TRUE, NOW(), '%s');\n",
+					escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.prebound), escape(y.annotation)))
+			} else {
+				sb.WriteString(fmt.Sprintf(
+					"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES ('%s', '%s', %s, '%s', '%s', TRUE, NOW());\n",
+					escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.prebound)))
+			}
 		} else {
-			sb.WriteString(fmt.Sprintf(
-				"INSERT INTO yields (id, cell_id, frame_id, field_name) VALUES ('%s', '%s', %s, '%s');\n",
-				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName)))
+			if y.annotation != "" {
+				sb.WriteString(fmt.Sprintf(
+					"INSERT INTO yields (id, cell_id, frame_id, field_name, annotation) VALUES ('%s', '%s', %s, '%s', '%s');\n",
+					escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.annotation)))
+			} else {
+				sb.WriteString(fmt.Sprintf(
+					"INSERT INTO yields (id, cell_id, frame_id, field_name) VALUES ('%s', '%s', %s, '%s');\n",
+					escape(yID), escape(cellID), frameIDVal, escape(y.fieldName)))
+			}
 		}
 	}
 

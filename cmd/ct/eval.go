@@ -470,9 +470,17 @@ func cmdNext(db *sql.DB, progID string, wait bool, modelHint string) {
 // Core eval engine (used by ct next, ct submit, ct pour)
 // ===================================================================
 
+// Action constants for evalStepResult — mirrors EffectEval.lean EvalAction.
+const (
+	actionComplete  = "complete"
+	actionQuiescent = "quiescent"
+	actionEvaluated = "evaluated" // formal: execPure (hard cell evaluated inline)
+	actionDispatch  = "dispatch"  // formal: dispatchReplayable | dispatchNonReplayable
+)
+
 // evalStepResult holds the result of a Go-native eval step.
 type evalStepResult struct {
-	action   string // complete, quiescent, evaluated, dispatch
+	action   string // actionComplete | actionQuiescent | actionEvaluated | actionDispatch
 	progID   string // which program this cell belongs to
 	cellID   string
 	cellName string
@@ -493,6 +501,9 @@ func inferEffect(bodyType, body string) string {
 		if strings.HasPrefix(body, "literal:") {
 			return "pure"
 		}
+		if strings.HasPrefix(body, "dml:") {
+			return "nonreplayable"
+		}
 		if strings.HasPrefix(body, "sql:") {
 			sqlBody := strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(body, "sql:")))
 			for _, prefix := range []string{"INSERT", "UPDATE", "DELETE", "CALL", "DROP", "CREATE", "ALTER"} {
@@ -510,10 +521,12 @@ func inferEffect(bodyType, body string) string {
 // scans ALL programs (watch mode). modelHint filters by model_hint when set.
 // Returns the action and cell info.
 func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalStepResult {
-	// Reap stale claims (2-minute TTL) — prevents dead pistons from blocking the DAG forever.
+	// Reap stale claims (2-minute TTL) — delete claims first, then reset cells.
+	// Order matters: claims must be gone before cells flip to 'declared',
+	// otherwise another piston's INSERT IGNORE hits the stale claim row.
+	db.Exec(`DELETE FROM cell_claims WHERE claimed_at < NOW() - INTERVAL 2 MINUTE`)
 	db.Exec(`UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL
 		WHERE state = 'computing' AND computing_since < NOW() - INTERVAL 2 MINUTE`)
-	db.Exec(`DELETE FROM cell_claims WHERE claimed_at < NOW() - INTERVAL 2 MINUTE`)
 
 	// Single-program mode: check if that program is complete
 	// Stem cells are excluded: formal model says programComplete only checks non-stem cells
@@ -624,8 +637,18 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 					frameID, pistonID)
 				mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "cell: freeze hard cell "+rc.cellName)
 
-			} else if strings.HasPrefix(rc.body, "sql:") {
-				sqlQuery := strings.TrimSpace(strings.TrimPrefix(rc.body, "sql:"))
+			} else if strings.HasPrefix(rc.body, "sql:") || strings.HasPrefix(rc.body, "dml:") {
+				// dml: is sugar for sql: with NonReplayable classification.
+				// inferEffect already classifies DML statements as nonreplayable.
+				var sqlQuery string
+				var prefix string
+				if strings.HasPrefix(rc.body, "dml:") {
+					sqlQuery = strings.TrimSpace(strings.TrimPrefix(rc.body, "dml:"))
+					prefix = "DML"
+				} else {
+					sqlQuery = strings.TrimSpace(strings.TrimPrefix(rc.body, "sql:"))
+					prefix = "SQL"
+				}
 				yields := getYieldFields(db, pid, rc.cellName)
 				var result string
 				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
@@ -634,13 +657,13 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 					db.QueryRow("SELECT COUNT(*) FROM trace WHERE cell_id = ? AND event_type = 'released' AND detail LIKE '%failure%'",
 						rc.cellID).Scan(&failCount)
 					failCount++ // include this attempt
-					fmt.Printf("  ✗ %s SQL error (attempt %d/3): %v\n", rc.cellName, failCount, err)
+					fmt.Printf("  ✗ %s %s error (attempt %d/3): %v\n", rc.cellName, prefix, failCount, err)
 					if failCount >= 3 {
-						fmt.Printf("  ⊥ %s — bottomed after 3 SQL failures\n", rc.cellName)
+						fmt.Printf("  ⊥ %s — bottomed after 3 %s failures\n", rc.cellName, prefix)
 						bottomCell(db, pid, rc.cellName, rc.cellID,
-							fmt.Sprintf("hard SQL failed 3x: %v", err))
+							fmt.Sprintf("hard %s failed 3x: %v", prefix, err))
 						mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
-							fmt.Sprintf("cell: bottom hard SQL cell %s after 3 failures", rc.cellName))
+							fmt.Sprintf("cell: bottom hard %s cell %s after 3 failures", prefix, rc.cellName))
 					} else {
 						replRelease(db, rc.cellID, pistonID, "failure")
 					}
@@ -875,6 +898,9 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		}
 
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", fmt.Sprintf("cell: freeze %s.%s", cellName, fieldName))
+
+		// TODO: autopour — if annotation == "autopour", parse the frozen yield
+		// value as .cell text and pour it into the retort (Autopour.lean).
 
 		// Guard skip: if iteration cell with satisfied guard, mark remaining as bottom
 		checkGuardSkip(db, progID, cellName, cellID)

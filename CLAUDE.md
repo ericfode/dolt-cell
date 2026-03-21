@@ -114,23 +114,46 @@ ct watch <prog>               # Live cell status view
 ct yields <prog>              # Show frozen yields
 ```
 
-## Cell Syntax
+## Cell Syntax (Lua Substrate)
 
+Cell programs are Lua programs. Each cell is a table with effect level,
+dependencies (givens), outputs (yields), and a body.
+
+```lua
+-- Hard literal (pure value, no computation)
+hard({ subject = "autumn rain on a temple roof" })
+
+-- Soft cell (LLM-evaluated prompt)
+soft({"topic.subject"}, {"poem"}, function(env)
+  return "Write a haiku about " .. env.subject .. "."
+end)
+
+-- Pure compute (replaces sql: — deterministic Lua function)
+compute({"compose.poem"}, {"total"}, function(env)
+  local n = 0
+  for _ in env.poem:gmatch("%S+") do n = n + 1 end
+  return { total = tostring(n) }
+end)
+
+-- Stem cell (perpetual, via coroutine)
+stem_cell({"seed.world"}, {"world", "tick"}, function(env)
+  -- coroutine.yield(result, "more") = request next cycle
+  -- return result = final yield, cell freezes
+end)
+
+-- Autopour (eval = pour: cell yields a program)
+autopour_cell({"request.program_text"}, {"evaluated"}, function(env)
+  local fn = loadstring(env.program_text)  -- loadstring IS eval
+  setfenv(fn, make_sandbox(PURE))          -- setfenv IS sandboxing
+  return { evaluated = fn() }
+end, "evaluated")
 ```
-cell NAME [(stem)]
-  yield FIELD [= LITERAL]
-  yield FIELD [autopour]
-  given SOURCE.FIELD
-  given? SOURCE.FIELD           -- optional
-  given SOURCE[*].FIELD         -- gather all iterations
-  recur until GUARD (max N)     -- guarded recursion
-  ---
-  Body text. «field» references resolved givens.
-  sql: SELECT ... for hard computed cells.
-  ---
-  check DETERMINISTIC_CONDITION
-  check~ SEMANTIC_ASSERTION
-```
+
+Effect tiers: `PURE` (math/string/table only) < `REPLAYABLE` (+LLM, +observe)
+< `NON_REPLAYABLE` (+loadstring, +coroutine, +pour/claim/submit)
+
+See `examples/cell-zero.lua` for the full metacircular evaluator.
+Design doc: `docs/plans/2026-03-21-lua-substrate-design.md`
 
 ## Project Structure
 

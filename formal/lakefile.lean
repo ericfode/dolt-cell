@@ -29,3 +29,10 @@ lean_lib EffectEval where
 
 lean_lib Autopour where
   roots := #[`Autopour]
+
+lean_lib GasCity where
+  roots := #[`GasCity.Basic, `GasCity.AgentProtocol, `GasCity.BeadStore,
+             `GasCity.EventBus, `GasCity.Config, `GasCity.PromptTemplates,
+             `GasCity.Messaging, `GasCity.Formulas, `GasCity.Dispatch,
+             `GasCity.HealthPatrol, `GasCity.Layering, `GasCity.PrimitiveTest]
+  srcDir := "."

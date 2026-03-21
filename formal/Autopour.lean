@@ -259,6 +259,83 @@ theorem autopour_trace_monotonic
     trace.length ≤ (trace ++ newFrames).length := by
   simp [List.length_append]
 
+/-! ### Effect Monotonicity (Property 4a)
+
+    If a cell at effect level E autopours a program P, then
+    ∀ cell ∈ P.cells, cell.effLevel ≤ E.
+
+    The runtime's parseAndValidate function checks each cell in the
+    parsed program via Program.respectsEffectBoundB. autopourStep
+    returns parseFail if the check fails. Therefore on success, all
+    cells satisfy the bound.
+
+    We model this in two steps:
+    1. autopourStep_success_implies_validate: success ↔ parseAndValidate = true
+    2. effect_monotonicity: if parseAndValidate is backed by respectsEffectBoundB,
+       success implies all cells ≤ bound -/
+
+/-- autopourStep returns success only when val is a program,
+    ctx has fuel, and parseAndValidate returns true. -/
+theorem autopourStep_success_implies_validate
+    (parseAndValidate : ProgramText → EffLevel → Bool)
+    (ctx : AutopourCtx) (val : Val) (bound : EffLevel) (ctx' : AutopourCtx)
+    (h : autopourStep parseAndValidate ctx val bound = .success ctx') :
+    ∃ pt, val = .program pt ∧ parseAndValidate pt bound = true := by
+  unfold autopourStep at h
+  match val with
+  | .str _ => simp at h
+  | .none => simp at h
+  | .error _ => simp at h
+  | .program pt =>
+    simp at h
+    split at h
+    · contradiction
+    · rename_i hcan
+      simp at hcan
+      split at h
+      · exact ⟨pt, rfl, by assumption⟩
+      · contradiction
+
+/-- PROPERTY 4a — Effect Monotonicity.
+
+    Given a parse function that produces programs, if autopourStep succeeds
+    and the parseAndValidate function is implemented as respectsEffectBoundB
+    on the parsed program, then every cell in that program has effLevel ≤ bound. -/
+theorem effect_monotonicity {M : Type → Type}
+    (prog : Program M)
+    (bound : EffLevel)
+    (hValid : prog.respectsEffectBoundB bound = true) :
+    ∀ cd ∈ prog.cells, cd.effLevel ≤ bound := by
+  intro cd hcd
+  have hRespect := respectsEffectBound_of_B prog bound hValid
+  have hLe := hRespect cd hcd
+  simp [EffLevel.le] at hLe
+  exact hLe
+
+/-- Combined theorem: if autopourStep succeeds with a parseAndValidate
+    that delegates to parse + respectsEffectBoundB, then all cells in
+    the parsed program respect the effect bound.
+
+    This is the end-to-end statement: autopour success → effect monotonicity.
+    Uses autopourStep_success_implies_validate to extract the program text
+    and validation evidence from the success result. -/
+theorem autopour_success_effect_monotonicity {M : Type → Type}
+    (parse : ProgramText → Option (Program M))
+    (ctx : AutopourCtx) (val : Val) (bound : EffLevel) (ctx' : AutopourCtx)
+    (parseAndValidate : ProgramText → EffLevel → Bool)
+    (hImpl : ∀ pt b, parseAndValidate pt b = true →
+      ∃ prog, parse pt = some prog ∧ prog.respectsEffectBoundB b = true)
+    (hSuccess : autopourStep parseAndValidate ctx val bound = .success ctx') :
+    ∀ prog pt, parse pt = some prog → val = .program pt →
+      ∀ cd ∈ prog.cells, cd.effLevel ≤ bound := by
+  obtain ⟨pt₀, rfl, hPV⟩ := autopourStep_success_implies_validate parseAndValidate ctx val bound ctx' hSuccess
+  intro prog pt hProg hVal'
+  have hEq : pt₀ = pt := by cases hVal'; rfl
+  subst hEq
+  obtain ⟨prog', hProg', hBound'⟩ := hImpl pt₀ bound hPV
+  rw [hProg] at hProg'; cases hProg'
+  exact fun cd hcd => effect_monotonicity prog bound hBound' cd hcd
+
 /-! ====================================================================
     THE SELF-EVALUATION FIXED POINT
     ==================================================================== -/

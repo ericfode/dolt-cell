@@ -1,5 +1,11 @@
 # iterate is sugar — Design Rationale
 
+> **Note (2026-03-21):** This research predates the Zygo S-expression
+> substrate (dc-jo2). Code examples use the old cell syntax. The
+> analysis and conclusions remain valid — only the surface syntax has
+> changed. See `docs/plans/2026-03-21-zygo-substrate-design.md` for
+> the current syntax.
+
 ## Summary
 
 `iterate NAME N` is syntactic sugar for `cell NAME` + `recur (max N)`.

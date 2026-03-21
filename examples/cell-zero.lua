@@ -1,421 +1,446 @@
--- cell_zero.lua
--- The Metacircular Evaluator — a cell that receives Lua source as a string,
--- compiles it with loadstring(), executes it in a sandboxed environment,
--- and yields the result for autopour.
+-- cell-zero.lua — The Metacircular Evaluator in Lua
 --
--- This IS eval. eval = pour. A cell that yields a program IS an evaluator.
--- The runtime does the rest.
+-- This program proves the cell language can express its own evaluator
+-- using Lua as the computation substrate:
 --
--- Key Lua mechanism: loadstring(src) + setfenv(fn, sandbox)
---   loadstring compiles a string into a function (like Zygo's read-string)
---   setfenv replaces the function's global environment (sandbox enforcement)
+--   loadstring() IS eval
+--   setfenv()    IS sandboxing
+--   coroutines   ARE stem cells
+--   tables       ARE everything
 --
--- Run with: ~/go/bin/glua cell_zero.lua
-
-local rt = dofile("/home/nixos/gc/dolt-cell/eval-sandbox/lua/cell_runtime.lua")
+-- Run: ~/go/bin/glua examples/cell-zero.lua
+-- Design doc: docs/plans/2026-03-21-lua-substrate-design.md
+-- Bead: dc-ebk
 
 -- ============================================================
--- SANDBOX ENVIRONMENT
--- Only these symbols are visible to evaluated code.
--- This enforces the effect lattice at evaluation time:
--- code that tries to call io.write() or os.execute() fails.
+-- EFFECT TIER CONSTANTS
 -- ============================================================
-local function make_sandbox(extra)
-  local sb = {
-    -- Safe standard library subset
-    math    = math,
-    string  = string,
-    table   = table,
-    pairs   = pairs,
-    ipairs  = ipairs,
-    type    = type,
-    tostring = tostring,
-    tonumber = tonumber,
-    select  = select,
-    error   = error,
-    pcall   = pcall,
-    -- Default observe (no-op); overridable via extra
-    observe = function() return nil end,
-    -- No: io, os, dofile, loadstring, require, rawset, setfenv
-  }
-  -- Merge any extra capabilities (e.g., observe, loadstring for inner eval)
-  if extra then
-    for k, v in pairs(extra) do sb[k] = v end
-  end
-  return sb
-end
-
--- ============================================================
--- PART 1: The Universal Evaluator
---
--- request: a soft cell asking for program source to evaluate.
--- evaluator: receives source, compiles+runs it, yields result.
--- The "autopour" semantics: yielding a compiled cell program
--- causes the runtime to pour it into the retort.
--- ============================================================
-
--- Hard literal request: the program to evaluate
--- In real use, this comes from another agent or an external pour.
-local request = rt.hard({
-  program_name = "example-haiku-program",
-  program_text = [[
--- This is a cell program expressed as Lua source.
--- The evaluator will loadstring() this, run it in a sandbox,
--- and return its declared cells for pouring.
-local cells = {
-  {
-    name   = "inner-topic",
-    kind   = "hard",
-    effect = "pure",
-    yields = { subject = "recursive evaluation" }
-  },
-  {
-    name   = "inner-haiku",
-    kind   = "soft",
-    effect = "replayable",
-    givens = { "inner-topic.subject" },
-    yields = { "poem" },
-    body   = "Write a haiku about «subject». Five-seven-five."
-  }
+local PURE           = 1
+local REPLAYABLE     = 2
+local NON_REPLAYABLE = 3
+local EFFECT_NAME = {
+  [1] = "pure", [2] = "replayable", [3] = "non_replayable"
 }
-return cells
-]]
-})
 
 -- ============================================================
--- THE EVALUATOR CELL
--- This is the metacircular heart. It:
---   1. Receives program_text as a given
---   2. Calls loadstring() to compile it — THIS IS EVAL
---   3. Sets a sandboxed environment (no IO, no OS)
---   4. Executes the compiled function
---   5. Yields the result as "evaluated" (for autopour)
---
--- Effect: NonReplayable (executing arbitrary code has side effects)
+-- SANDBOX: Effect-tier enforcement via setfenv
 -- ============================================================
-local evaluator = rt.autopour(
-  { "request.program_text", "request.program_name" },
-  { "evaluated", "name", "cell_count", "error_msg" },
-  function(env)
-    local src  = tostring(env.program_text)
-    local name = tostring(env.program_name)
 
-    -- STEP 1: Compile the source string into a Lua function
-    -- loadstring is Lua 5.1's eval — takes source, returns fn
-    local compiled_fn, compile_err = loadstring(src, "@" .. name)
-    if not compiled_fn then
-      return {
-        evaluated  = "",
-        name       = name,
-        cell_count = 0,
-        error_msg  = "COMPILE ERROR: " .. tostring(compile_err)
-      }
-    end
-
-    -- STEP 2: Enforce the sandbox — replace the function's environment
-    -- setfenv prevents the evaluated code from touching IO/OS/filesystem
-    local sandbox = make_sandbox()
-    setfenv(compiled_fn, sandbox)
-
-    -- STEP 3: Execute in the sandboxed environment
-    local ok, result = pcall(compiled_fn)
-    if not ok then
-      return {
-        evaluated  = "",
-        name       = name,
-        cell_count = 0,
-        error_msg  = "RUNTIME ERROR: " .. tostring(result)
-      }
-    end
-
-    -- STEP 4: The result is a cell program (list of cell defs)
-    -- "evaluated" is the serialized program — autopour causes the
-    -- runtime to pour it.
-    local cell_count = type(result) == "table" and #result or 0
-    return {
-      evaluated  = result,    -- autopour field: runtime will pour this
-      name       = name,
-      cell_count = cell_count,
-      error_msg  = ""
-    }
-  end,
-  "evaluated"  -- pour_field: this field triggers autopour
-)
-
--- Status cell: observe the poured program's state
--- In real runtime, observe() reads from the tuple space.
--- Here, it's a pure compute that reads from our local yields.
-local status = rt.compute(
-  { "evaluator.name", "evaluator.cell_count", "evaluator.error_msg" },
-  { "state" },
-  function(env)
-    local err = tostring(env.error_msg or "")
-    local count = tonumber(env.cell_count) or 0
-    local state
-    if err ~= "" then
-      state = "error: " .. err
-    elseif count == 0 then
-      state = "not_found"
-    else
-      state = string.format("running (%d cells poured)", count)
-    end
-    return { state = state }
+local function make_sandbox(tier, extras)
+  local env = {
+    math = math, string = string, table = table,
+    pairs = pairs, ipairs = ipairs, type = type,
+    tostring = tostring, tonumber = tonumber,
+    select = select, unpack = unpack, next = next,
+    pcall = pcall, error = error,
+  }
+  if tier >= REPLAYABLE then
+    env.print = print
+    env.io = { write = io.write }
   end
-)
-
--- ============================================================
--- PART 2: Demonstrate load() sandbox enforcement
--- Show what happens when evaluated code tries to escape the sandbox
--- ============================================================
-
-local function demo_sandbox()
-  io.write("=== SANDBOX ENFORCEMENT DEMO ===\n")
-
-  -- Test 1: Safe code works
-  local safe_src = [[
-    local result = {}
-    for i = 1, 3 do
-      table.insert(result, math.sqrt(i * 16))
-    end
-    return result
-  ]]
-  local f1 = loadstring(safe_src)
-  setfenv(f1, make_sandbox())
-  local ok1, r1 = pcall(f1)
-  io.write("Safe code (math.sqrt): " ..
-    (ok1 and "OK → " .. tostring(r1[1]) .. "," .. r1[2] .. "," .. r1[3] or "FAIL") .. "\n")
-
-  -- Test 2: Code trying to call io.write() — blocked by sandbox
-  local escape_src = [[io.write("ESCAPED!\n") return "bad"]]
-  local f2 = loadstring(escape_src)
-  setfenv(f2, make_sandbox())
-  local ok2, r2 = pcall(f2)
-  io.write("IO escape attempt: " ..
-    (ok2 and "DANGER: escaped!" or "BLOCKED → " .. tostring(r2)) .. "\n")
-
-  -- Test 3: Code trying to use os.execute() — blocked
-  local os_src = [[os.execute("rm -rf /") return "bad"]]
-  local f3 = loadstring(os_src)
-  setfenv(f3, make_sandbox())
-  local ok3, r3 = pcall(f3)
-  io.write("OS escape attempt: " ..
-    (ok3 and "DANGER: escaped!" or "BLOCKED → " .. tostring(r3)) .. "\n")
-
-  -- Test 4: String operations work fine
-  local str_src = [[
-    local s = "Hello from inside the sandbox"
-    return string.upper(s:sub(1,5)) .. " world, " .. string.len(s) .. " chars"
-  ]]
-  local f4 = loadstring(str_src)
-  setfenv(f4, make_sandbox())
-  local ok4, r4 = pcall(f4)
-  io.write("String ops: " .. (ok4 and r4 or "FAIL") .. "\n")
-
-  -- Test 5: Closure captures work across the sandbox boundary
-  -- The sandbox can be extended with specific capabilities
-  local closure_src = [[
-    local result = observe("retort", "cell_count")
-    return "observed: " .. tostring(result)
-  ]]
-  local f5 = loadstring(closure_src)
-  local extended_sb = make_sandbox({
-    observe = function(prog, field) return 42 end
-  })
-  setfenv(f5, extended_sb)
-  local ok5, r5 = pcall(f5)
-  io.write("Observe capability injection: " .. (ok5 and r5 or "FAIL") .. "\n")
-
-  io.write("\n")
+  if tier >= NON_REPLAYABLE then
+    env.loadstring = loadstring
+    env.setfenv = setfenv
+    env.getfenv = getfenv
+    env.coroutine = coroutine
+  end
+  for k, v in pairs(extras or {}) do env[k] = v end
+  return env
 end
 
 -- ============================================================
--- PART 3: Self-evaluation — can this evaluator evaluate itself?
--- Feed cell_zero's own source to the evaluator.
+-- CELL CONSTRUCTORS
 -- ============================================================
 
-local function demo_self_eval()
-  io.write("=== SELF-EVALUATION DEMO ===\n")
+local function hard(fields)
+  return { effect = PURE, body = fields, kind = "hard" }
+end
 
-  -- The evaluator receives a miniature version of itself as input.
-  -- In real cell-zero: if request.program_text = this file's source,
-  -- the evaluator compiles and runs it, producing another evaluator.
-  -- The copy's request cell has no program_text → inert. No divergence.
+local function soft(givens, yields, body_fn, checks)
+  return {
+    effect = REPLAYABLE, givens = givens, yields = yields,
+    body = body_fn, kind = "soft", checks = checks or {}
+  }
+end
 
-  local mini_cell_zero_src = [[
-    -- A miniature evaluator (the copy)
-    local function mini_eval(src)
-      local f = loadstring(src)
-      if not f then return nil, "compile error" end
-      return pcall(f)
-    end
-    return {
-      name = "mini-cell-zero",
-      kind = "autopour",
-      eval = mini_eval
-    }
-  ]]
+local function compute(givens, yields, body_fn)
+  return {
+    effect = PURE, givens = givens, yields = yields,
+    body = body_fn, kind = "compute"
+  }
+end
 
-  -- The outer evaluator runs the mini evaluator
-  -- We give the mini evaluator a "safe_compile" wrapper, not raw loadstring.
-  -- This mirrors the real runtime: read-string is NonReplayable and effect-gated.
-  -- The sandbox receives a capability, not the full stdlib.
-  local function safe_compile(src)
-    local f, err = loadstring(src)
-    if not f then return nil, err end
-    -- Run in a minimal sandbox (no IO/OS)
-    setfenv(f, make_sandbox())
-    return f, nil
-  end
+local function stem_cell(givens, yields, factory_fn)
+  return {
+    effect = NON_REPLAYABLE, givens = givens, yields = yields,
+    body = factory_fn, kind = "stem"
+  }
+end
 
-  local outer_compiled = loadstring(mini_cell_zero_src)
-  setfenv(outer_compiled, make_sandbox({
-    -- Inject safe_compile as the only "eval" capability
-    -- (mirrors NonReplayable gate on read-string in real runtime)
-    loadstring = safe_compile,
-    pcall = pcall,
-    print = io.write,  -- allow debug output from inner code
-  }))
-
-  local ok, mini_module = pcall(outer_compiled)
-  if ok and type(mini_module) == "table" then
-    io.write("Outer eval produced: name=" .. tostring(mini_module.name) ..
-      ", kind=" .. tostring(mini_module.kind) .. "\n")
-
-    -- Now run the mini evaluator with a trivial expression
-    if mini_module.eval then
-      local ok2, result2 = mini_module.eval("return 6 * 7")
-      io.write("Mini eval('return 6*7'): " .. (ok2 and tostring(result2) or "fail") .. "\n")
-    end
-
-    io.write("Self-eval terminates naturally: the copy has no program_text\n")
-    io.write("(Its request cell is unsatisfied → inert, no divergence)\n")
-  else
-    io.write("Self-eval setup failed: " .. tostring(mini_module) .. "\n")
-  end
-  io.write("\n")
+local function autopour_cell(givens, yields, body_fn, pour_field)
+  return {
+    effect = NON_REPLAYABLE, givens = givens, yields = yields,
+    body = body_fn, kind = "autopour", pour_field = pour_field
+  }
 end
 
 -- ============================================================
--- PART 4: Perpetual evaluator — stem cell version
--- A coroutine that continuously polls for work and evaluates it.
+-- RETORT: DAG EVALUATOR
 -- ============================================================
 
-local perpetual_evaluator = rt.stem(
-  {},  -- no givens — polls the tuple space directly
-  { "poured", "status" },
-  function(env)
-    -- Simulated work queue
-    local queue = {
-      { name="prog-a", src="return {answer=42}" },
-      { name="prog-b", src="return {msg=string.upper('hello')}" },
-      { name="prog-c", src="return math.pi * 2" },
-      -- Deliberately bad program to show error handling
-      { name="prog-d", src="io.write('escape attempt')" },
-    }
-    local idx = 0
+local Retort = {}
+Retort.__index = Retort
 
-    while true do
-      idx = idx + 1
-      if idx > #queue then
-        -- No more work — quiesce
-        coroutine.yield({ poured = "", status = "quiescent" }, "more")
-      else
-        local item = queue[idx]
-        -- Compile + sandbox + execute
-        local f, err = loadstring(item.src, "@" .. item.name)
-        local result_str, status_str
-        if not f then
-          result_str = ""
-          status_str = "error: " .. tostring(err)
-        else
-          setfenv(f, make_sandbox())
-          local ok, val = pcall(f)
-          if ok then
-            result_str = tostring(type(val) == "table" and val.answer or val)
-            status_str = "evaluated"
-          else
-            result_str = ""
-            status_str = "error: " .. tostring(val)
-          end
+function Retort.new(opts)
+  return setmetatable({
+    cells = {},
+    yields = {},
+    state = {},
+    order = {},
+    _cos = {},
+    llm_sim = opts and opts.llm_sim or nil,
+  }, Retort)
+end
+
+function Retort:pour(name, cell_def)
+  self.cells[name] = cell_def
+  self.state[name] = "pending"
+  table.insert(self.order, name)
+end
+
+function Retort:build_env(name)
+  local cell = self.cells[name]
+  local env = {}
+  for _, given in ipairs(cell.givens or {}) do
+    local src, field = given:match("^([^.]+)%.(.+)$")
+    if src and field and self.yields[src] then
+      env[field] = self.yields[src][field]
+    end
+  end
+  return env
+end
+
+function Retort:givens_ready(name)
+  local cell = self.cells[name]
+  for _, given in ipairs(cell.givens or {}) do
+    local src = given:match("^([^.]+)%.")
+    if src and self.state[src] ~= "frozen" then return false end
+  end
+  return true
+end
+
+function Retort:check_oracles(name, result)
+  local cell = self.cells[name]
+  for _, chk in ipairs(cell.checks or {}) do
+    if type(chk) == "function" then
+      if not chk(result) then return false, "oracle failed" end
+    end
+  end
+  return true
+end
+
+function Retort:eval_cell(name)
+  local cell = self.cells[name]
+  local env = self:build_env(name)
+
+  -- Bottom propagation
+  for _, given in ipairs(cell.givens or {}) do
+    local src = given:match("^([^.]+)%.")
+    if src and self.state[src] == "bottom" then return "bottom" end
+  end
+
+  if cell.kind == "hard" then
+    self.yields[name] = {}
+    for k, v in pairs(cell.body) do self.yields[name][k] = v end
+    return "frozen"
+
+  elseif cell.kind == "compute" then
+    local ok, result = pcall(cell.body, env)
+    if ok and type(result) == "table" then
+      local oracle_ok = self:check_oracles(name, result)
+      if not oracle_ok then return "bottom" end
+      self.yields[name] = result
+      return "frozen"
+    end
+    return "bottom"
+
+  elseif cell.kind == "soft" then
+    local ok, prompt = pcall(cell.body, env)
+    if not ok then return "bottom" end
+    io.write("  [soft] " .. name .. ": " ..
+      prompt:sub(1, 90) .. (prompt:len() > 90 and "..." or "") .. "\n")
+    if self.llm_sim then
+      local result = self.llm_sim(name, prompt, cell.yields, env)
+      if result then self.yields[name] = result; return "frozen" end
+    end
+    self.yields[name] = {}
+    for _, f in ipairs(cell.yields or {}) do
+      self.yields[name][f] = "[LLM:" .. name .. "/" .. f .. "]"
+    end
+    return "frozen"
+
+  elseif cell.kind == "stem" then
+    if not self._cos[name] then
+      self._cos[name] = coroutine.create(cell.body)
+    end
+    local ok, result, signal = coroutine.resume(self._cos[name], env)
+    if ok and result then
+      self.yields[name] = result
+      if signal == "more" then return "running" end
+      return "frozen"
+    end
+    return "bottom"
+
+  elseif cell.kind == "autopour" then
+    local ok, result = pcall(cell.body, env)
+    if ok and type(result) == "table" then
+      self.yields[name] = result
+      local pf = cell.pour_field
+      if pf and result[pf] and result[pf] ~= "" then
+        io.write("  [autopour] " .. name .. " pours program\n")
+      end
+      return "frozen"
+    end
+    return "bottom"
+  end
+  return "bottom"
+end
+
+function Retort:run(max_iters)
+  max_iters = max_iters or 30
+  io.write("\n--- Retort: " .. #self.order .. " cells ---\n")
+  for _ = 1, max_iters do
+    local progress, all_done = false, true
+    for _, name in ipairs(self.order) do
+      local is_stem = self.cells[name].kind == "stem"
+      local needs_eval = self.state[name] == "pending"
+        or (is_stem and self.state[name] == "running")
+      if needs_eval then
+        all_done = false
+        if self:givens_ready(name) or (is_stem and self._cos[name]) then
+          io.write("  eval [" .. name .. "] (" ..
+            EFFECT_NAME[self.cells[name].effect] .. ")\n")
+          local s = self:eval_cell(name)
+          self.state[name] = s
+          if s ~= "pending" then progress = true end
         end
-        coroutine.yield(
-          { poured = result_str, status = status_str .. " [" .. item.name .. "]" },
-          "more"
-        )
       end
     end
+    if all_done then break end
+    if not progress then io.write("  [stalled]\n"); break end
   end
-)
+  io.write("--- done ---\n")
+end
+
+function Retort:summary()
+  io.write("\n=== YIELDS ===\n")
+  for _, name in ipairs(self.order) do
+    local st = self.state[name]
+    io.write(name .. " [" .. st .. "]")
+    if st == "frozen" and self.yields[name] then
+      for k, v in pairs(self.yields[name]) do
+        local vs = tostring(v)
+        if vs:len() > 80 then vs = vs:sub(1, 77) .. "..." end
+        io.write("\n  ." .. k .. " = " .. vs)
+      end
+    end
+    io.write("\n")
+  end
+end
 
 -- ============================================================
--- POUR AND RUN
+-- PART 1: HAIKU PIPELINE — all cell types
 -- ============================================================
-io.write("=== CELL ZERO: THE METACIRCULAR EVALUATOR ===\n\n")
 
--- First: run the sandbox demo
-demo_sandbox()
+io.write("========================================\n")
+io.write("PART 1: Haiku Pipeline\n")
+io.write("========================================\n")
 
--- Then: run the self-evaluation demo
-demo_self_eval()
+local r1 = Retort.new()
 
--- Then: pour and run the evaluator program
-io.write("=== RUNNING EVALUATOR PROGRAM ===\n\n")
-local retort = rt.Retort.new()
-retort:pour("request",   request)
-retort:pour("evaluator", evaluator)
-retort:pour("status",    status)
-retort:run()
-retort:dump()
+r1:pour("topic", hard({ subject = "autumn rain on a temple roof" }))
+
+r1:pour("compose", soft(
+  {"topic.subject"}, {"poem"},
+  function(env)
+    return "Write a haiku about " .. env.subject ..
+           ". Follow 5-7-5 syllable structure."
+  end,
+  { function(y) return y.poem ~= nil and y.poem ~= "" end }
+))
+
+r1:pour("word_count", compute(
+  {"compose.poem"}, {"total"},
+  function(env)
+    local n = 0
+    for _ in env.poem:gmatch("%S+") do n = n + 1 end
+    return { total = tostring(n) }
+  end
+))
+
+r1:run()
+r1:summary()
 
 -- ============================================================
--- Show what was poured (autopour result)
+-- PART 2: METACIRCULAR EVAL — loadstring + setfenv
 -- ============================================================
-io.write("\n=== AUTOPOUR RESULT ===\n")
-local eval_yields = retort.yields["evaluator"]
-if eval_yields then
-  io.write("program_name: " .. tostring(eval_yields.name) .. "\n")
-  io.write("cell_count:   " .. tostring(eval_yields.cell_count) .. "\n")
-  io.write("error_msg:    '" .. tostring(eval_yields.error_msg) .. "'\n")
-  if type(eval_yields.evaluated) == "table" then
-    io.write("Poured cells:\n")
-    for _, cell_def in ipairs(eval_yields.evaluated) do
-      io.write(string.format("  - %s (kind=%s, effect=%s)\n",
-        cell_def.name, cell_def.kind, cell_def.effect))
+
+io.write("\n========================================\n")
+io.write("PART 2: Metacircular Eval (loadstring)\n")
+io.write("========================================\n")
+
+local child_src = [[
+return {
+  cells = {
+    greeting = { kind = "hard", body = { message = "hello from poured program" } },
+    shout = {
+      kind = "compute", givens = {"greeting.message"},
+      body = function(env) return { loud = string.upper(env.message) } end,
+    },
+  },
+  order = {"greeting", "shout"},
+}
+]]
+
+local r2 = Retort.new()
+
+r2:pour("request", hard({
+  program_text = child_src,
+  program_name = "child",
+}))
+
+r2:pour("evaluator", autopour_cell(
+  {"request.program_text", "request.program_name"},
+  {"evaluated", "name"},
+  function(env)
+    local fn, err = loadstring(env.program_text)
+    if not fn then
+      return { evaluated = "error: " .. tostring(err), name = env.program_name }
+    end
+    setfenv(fn, make_sandbox(PURE))
+    local ok, program = pcall(fn)
+    if not ok then
+      return { evaluated = "error: " .. tostring(program), name = env.program_name }
+    end
+    return { evaluated = program, name = env.program_name }
+  end,
+  "evaluated"
+))
+
+r2:run()
+
+-- Evaluate the poured program
+local poured = r2.yields["evaluator"] and r2.yields["evaluator"].evaluated
+if type(poured) == "table" and poured.cells then
+  io.write("\n  Poured program has " .. #poured.order .. " cells. Evaluating...\n")
+  local rc = Retort.new()
+  for _, name in ipairs(poured.order) do
+    local c = poured.cells[name]
+    if c.kind == "hard" then rc:pour(name, hard(c.body))
+    elseif c.kind == "compute" then
+      rc:pour(name, compute(c.givens or {}, {}, c.body))
     end
   end
+  rc:run()
+  rc:summary()
 end
 
 -- ============================================================
--- Perpetual evaluator: run a few ticks
+-- PART 3: SANDBOX ENFORCEMENT
 -- ============================================================
-io.write("\n=== PERPETUAL EVALUATOR (STEM) — 5 ticks ===\n")
-local pco = coroutine.create(perpetual_evaluator.body)
-for tick = 1, 5 do
-  local ok, result, signal = coroutine.resume(pco, {})
-  if ok and type(result) == "table" then
-    io.write(string.format("  tick %d [%s]: poured=%s  status=%s\n",
-      tick, signal or "final",
-      tostring(result.poured):sub(1,30),
-      tostring(result.status)))
-  else
-    io.write("  tick " .. tick .. ": " .. tostring(result) .. "\n")
-    break
+
+io.write("\n========================================\n")
+io.write("PART 3: Sandbox Enforcement\n")
+io.write("========================================\n")
+
+-- Pure tier blocks io
+local fn1 = loadstring([[return io.write("ESCAPED!")]])
+setfenv(fn1, make_sandbox(PURE))
+local ok1 = pcall(fn1)
+io.write("  Pure blocks io.write: " .. (ok1 and "FAIL" or "PASS") .. "\n")
+
+-- Pure tier blocks loadstring
+local fn2 = loadstring([[return loadstring("return 1")]])
+setfenv(fn2, make_sandbox(PURE))
+local ok2 = pcall(fn2)
+io.write("  Pure blocks loadstring: " .. (ok2 and "FAIL" or "PASS") .. "\n")
+
+-- Replayable allows print
+local fn3 = loadstring([[print("hello from replayable"); return "ok"]])
+setfenv(fn3, make_sandbox(REPLAYABLE))
+local ok3 = pcall(fn3)
+io.write("  Replayable allows print: " .. (ok3 and "PASS" or "FAIL") .. "\n")
+
+-- Replayable blocks loadstring
+local fn4 = loadstring([[return loadstring("return 1")]])
+setfenv(fn4, make_sandbox(REPLAYABLE))
+local ok4 = pcall(fn4)
+io.write("  Replayable blocks loadstring: " .. (ok4 and "FAIL" or "PASS") .. "\n")
+
+-- NonReplayable allows loadstring
+local fn5 = loadstring([[local f = loadstring("return 42"); return f()]])
+setfenv(fn5, make_sandbox(NON_REPLAYABLE))
+local ok5, val5 = pcall(fn5)
+io.write("  NonReplayable allows loadstring: " .. (ok5 and "PASS ("..tostring(val5)..")" or "FAIL") .. "\n")
+
+-- ============================================================
+-- PART 4: COROUTINE STEM CELL
+-- ============================================================
+
+io.write("\n========================================\n")
+io.write("PART 4: Coroutine Stem Cell\n")
+io.write("========================================\n")
+
+local r4 = Retort.new()
+r4:pour("seed", hard({ world = "empty field" }))
+
+r4:pour("evolve", stem_cell(
+  {"seed.world"}, {"world", "tick"},
+  function(env)
+    local world = env.world or "void"
+    local tick = 0
+    while tick < 3 do
+      tick = tick + 1
+      world = world .. " + day " .. tick
+      coroutine.yield({ world = world, tick = tostring(tick) }, "more")
+    end
+    return { world = world .. " [settled]", tick = tostring(tick) }
   end
-end
+))
+
+r4:run(5)
+r4:summary()
 
 -- ============================================================
--- ANATOMY: What makes this metacircular
+-- PART 5: SELF-EVALUATION ANALYSIS
 -- ============================================================
+
+io.write("\n========================================\n")
+io.write("PART 5: Self-Evaluation\n")
+io.write("========================================\n")
+
 io.write([[
+  cell-zero applied to itself terminates naturally:
+  1. evaluator receives its own source as program_text
+  2. loadstring() compiles it
+  3. The poured copy needs request.program_text — nobody provides it
+  4. The copy is INERT. DAG deps = natural termination.
+  Fuel only needed for chained autopour (A pours B pours C...).
+]])
+io.write("\n")
 
-=== WHY THIS IS METACIRCULAR ===
-  loadstring(src)       — compiles a string into a Lua function (read-string)
-  setfenv(fn, sandbox)  — enforces the effect lattice (no IO/OS in pure tier)
-  pcall(fn)             — executes safely, catches errors (bottom propagation)
-  coroutine.yield(v,"more") — stem cell requests another cycle
-  autopour field        — yielded program gets poured by the runtime
+-- ============================================================
+-- SUMMARY
+-- ============================================================
 
-  eval = pour. A cell that yields a program IS an evaluator.
-  The DAG acts as natural termination: unsatisfied givens → inert copy.
-  No fuel needed for self-evaluation. Fuel only for chained autopour.
+io.write("\n========================================\n")
+io.write("SUMMARY\n")
+io.write("========================================\n")
+io.write([[
+  1. loadstring + setfenv = sandboxed eval
+  2. Effect tiers enforced by environment restriction
+  3. Coroutines = stem cells (yield "more" = next cycle)
+  4. Tables = cell definitions, environments, yields
+  5. Pure compute functions replace sql: bodies
+  6. The cell language CAN reinvent its own backend in Lua
 ]])

@@ -23,7 +23,6 @@ Usage:
   ct watch <program-id>                               Live dashboard for one program
   ct pour <name> <file.cell>                          Load a program
   ct eval <name> <file.cell>                          Submit .cell to cell-zero-eval for parsing + evaluation
-  ct run <program-id>                                 Eval loop: hard cells inline, soft cells print prompt
   ct submit <program-id> <cell> <field> <value>       Submit a soft cell result
   ct status <program-id>                              Show program state
   ct frames <program-id>                              Show frames (generation, status)
@@ -122,9 +121,6 @@ func main() {
 	case "eval":
 		need(args, 2, "ct eval <name> <file.cell>")
 		cmdEval(db, args[0], args[1])
-	case "run":
-		need(args, 1, "ct run <program-id>")
-		cmdRun(db, args[0])
 	case "submit":
 		need(args, 4, "ct submit <program-id> <cell> <field> <value>")
 		cmdSubmit(db, args[0], args[1], args[2], args[3])

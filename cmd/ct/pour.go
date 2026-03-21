@@ -26,17 +26,10 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 		fatal("program %q already has %d cells — pour is additive, not destructive.\n  To overwrite, first run: ct reset %s", name, existing, name)
 	}
 
-	// Phase B: deterministic parser (instant, no LLM)
-	// Lua files use the GopherLua bridge; .cell files use the old parser
-	var cells []parsedCell
-	var parseErr error
-	if strings.HasSuffix(cellFile, ".lua") {
-		cells, parseErr = LoadLuaProgram(cellFile)
-	} else {
-		cells, parseErr = parseCellFile(string(data))
-	}
+	// Load program via Lua
+	cells, parseErr := LoadLuaProgram(cellFile)
 	if parseErr != nil {
-		fatal("parse %s: %v", cellFile, parseErr)
+		fatal("load %s: %v", cellFile, parseErr)
 	}
 	if cells != nil {
 		sqlText := cellsToSQL(name, cells)
@@ -51,12 +44,11 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 		var n int
 		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&n)
 		ensureFrames(db, name)
-		fmt.Printf("✓ %s: %d cells (Phase B parser)\n", name, n)
+		fmt.Printf("✓ %s: %d cells\n", name, n)
 		return
 	}
 
-	// Phase A: stem cell parser (LLM piston)
-	pourViaPiston(db, name, cellFile, data)
+	fatal("no cells found in %s", cellFile)
 }
 
 // pourViaPiston creates a content-addressed 2-cell pour-program in Retort.

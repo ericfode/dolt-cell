@@ -3,10 +3,20 @@ package main
 import (
 	"database/sql"
 	"os"
+	"path/filepath"
 	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
 )
+
+func writeTempLua(t *testing.T, src string) string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "test.lua")
+	if err := os.WriteFile(f, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
 
 // TestE2E_HardCellProgram tests the full pour → eval → freeze loop
 // using a hard-cell-only program (no LLM needed).
@@ -27,25 +37,32 @@ func TestE2E_HardCellProgram(t *testing.T) {
 
 	progID := "e2e-hard-test"
 
-	// Setup: parse and pour a hard-cell-only program
-	cellText := `cell input
-  yield value = "42"
-
-cell double
-  given input.value
-  yield result
-  ---
-  sql: SELECT CAST(y.value_text AS UNSIGNED) * 2 FROM yields y JOIN cells c ON y.cell_id = c.id WHERE c.program_id = 'e2e-hard-test' AND c.name = 'input' AND y.field_name = 'value' AND y.is_frozen = 1
-  ---
+	// Setup: load and pour a hard-cell-only program
+	luaSrc := `
+return {
+  cells = {
+    input = { kind = "hard", body = { value = "42" } },
+    double = {
+      kind = "compute",
+      givens = { "input.value" },
+      yields = { "result" },
+    },
+  },
+  order = { "input", "double" },
+}
 `
 
 	// Clean up from previous runs
 	resetProgram(db, progID)
 
-	// Parse
-	cells := mustParse(t,cellText)
+	// Load
+	tmpFile := writeTempLua(t, luaSrc)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cells == nil {
-		t.Fatal("parseCellFile returned nil")
+		t.Fatal("LoadLuaProgram returned nil")
 	}
 	if len(cells) != 2 {
 		t.Fatalf("expected 2 cells, got %d", len(cells))
@@ -147,24 +164,32 @@ func TestE2E_GuardSkip(t *testing.T) {
 	progID := "e2e-guard-test"
 
 	// A program with recur and a hard literal that satisfies the guard immediately
-	cellText := `cell seed
-  yield text = "DONE"
-  yield settled = "SETTLED"
-
-cell refine (stem)
-  given seed.text
-  yield text
-  yield settled
-  recur until settled = "SETTLED" (max 3)
-  ---
-  Return text unchanged.
-  ---
+	luaSrc := `
+return {
+  cells = {
+    seed = {
+      kind = "hard",
+      body = { text = "DONE", settled = "SETTLED" },
+    },
+    refine = {
+      kind = "stem",
+      givens = { "seed.text" },
+      yields = { "text", "settled" },
+      recur = { max = 3, until = "settled" },
+    },
+  },
+  order = { "seed", "refine" },
+}
 `
 
 	resetProgram(db, progID)
-	cells := mustParse(t,cellText)
+	tmpFile := writeTempLua(t, luaSrc)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cells == nil {
-		t.Fatal("parseCellFile returned nil")
+		t.Fatal("LoadLuaProgram returned nil")
 	}
 
 	sqlText := cellsToSQL(progID, cells)
@@ -225,23 +250,30 @@ func TestLazyStemSpawn(t *testing.T) {
 	// Program: a hard source cell and a stem cell that depends on it.
 	// The stem cell is soft (dispatched to piston), so the test manually
 	// submits yields for it.
-	cellText := `cell source
-  yield value = "hello"
-
-cell processor (stem)
-  given source.value
-  yield result
-  ---
-  Process the input value.
-  ---
+	luaSrc := `
+return {
+  cells = {
+    source = { kind = "hard", body = { value = "hello" } },
+    processor = {
+      kind = "stem",
+      givens = { "source.value" },
+      yields = { "result" },
+    },
+  },
+  order = { "source", "processor" },
+}
 `
 
 	resetProgram(db, progID)
 
-	// Parse and pour
-	cells := mustParse(t, cellText)
+	// Load and pour
+	tmpFile := writeTempLua(t, luaSrc)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cells == nil {
-		t.Fatal("parseCellFile returned nil")
+		t.Fatal("LoadLuaProgram returned nil")
 	}
 	if len(cells) != 2 {
 		t.Fatalf("expected 2 cells, got %d", len(cells))
@@ -387,24 +419,35 @@ func TestThawCascading(t *testing.T) {
 	progID := "e2e-thaw-test"
 
 	// 3-cell chain: A -> B -> C
-	// A is a hard literal, B depends on A, C depends on B.
-	cellText := `cell A
-  yield value = "alpha"
-
-cell B
-  given A.value
-  yield value = "bravo"
-
-cell C
-  given B.value
-  yield value = "charlie"
+	// A is a hard literal, B depends on A (hard with literal), C depends on B (hard with literal).
+	luaSrc := `
+return {
+  cells = {
+    A = { kind = "hard", body = { value = "alpha" } },
+    B = {
+      kind = "hard",
+      givens = { "A.value" },
+      body = { value = "bravo" },
+    },
+    C = {
+      kind = "hard",
+      givens = { "B.value" },
+      body = { value = "charlie" },
+    },
+  },
+  order = { "A", "B", "C" },
+}
 `
 
 	// Clean up from previous runs
 	resetProgram(db, progID)
 
-	// Parse and pour
-	cells := mustParse(t, cellText)
+	// Load and pour
+	tmpFile := writeTempLua(t, luaSrc)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(cells) != 3 {
 		t.Fatalf("expected 3 cells, got %d", len(cells))
 	}

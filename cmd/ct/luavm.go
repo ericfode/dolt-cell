@@ -55,6 +55,7 @@ func NewCellVM(db *sql.DB) *CellVM {
 
 	vm := &CellVM{L: L, db: db}
 	vm.registerDBFunctions()
+	vm.registerEventFunctions()
 
 	return vm
 }
@@ -223,6 +224,44 @@ func (vm *CellVM) registerDBFunctions() {
 		}
 		L.Push(lua.LString(result.String))
 		return 1
+	}))
+}
+
+// registerEventFunctions registers Gas City event emission into Lua.
+// Lua code calls emit_event("cell.needs_piston", "prog/cell", "message")
+// which shells out to `gc event emit`.
+func (vm *CellVM) registerEventFunctions() {
+	// emit_event(type, subject, message) → emits via gc event emit
+	vm.L.SetGlobal("emit_event", vm.L.NewFunction(func(L *lua.LState) int {
+		eventType := L.CheckString(1)
+		subject := L.CheckString(2)
+		message := L.OptString(3, "")
+		emitCellEvent(eventType, subject, "", message, nil)
+		return 0
+	}))
+
+	// emit_needs_piston(program, cell) → shorthand for cell.needs_piston
+	vm.L.SetGlobal("emit_needs_piston", vm.L.NewFunction(func(L *lua.LState) int {
+		program := L.CheckString(1)
+		cell := L.CheckString(2)
+		emitNeedsPiston(program, cell, "soft")
+		return 0
+	}))
+
+	// emit_yield_frozen(program, cell, field) → shorthand for cell.yield_frozen
+	vm.L.SetGlobal("emit_yield_frozen", vm.L.NewFunction(func(L *lua.LState) int {
+		program := L.CheckString(1)
+		cell := L.CheckString(2)
+		field := L.CheckString(3)
+		emitYieldFrozen(program, cell, field)
+		return 0
+	}))
+
+	// emit_program_complete(program) → shorthand for cell.program_complete
+	vm.L.SetGlobal("emit_program_complete", vm.L.NewFunction(func(L *lua.LState) int {
+		program := L.CheckString(1)
+		emitProgramComplete(program)
+		return 0
 	}))
 }
 

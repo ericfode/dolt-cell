@@ -119,6 +119,13 @@ def Store.listByLabel (s : Store) (label : String) : List Bead :=
 def Store.listByAssignee (s : Store) (assignee : String) (status : BeadStatus) : List Bead :=
   s.beads.filter (fun b => b.assignee == assignee && b.status == status)
 
+/-- Look up a metadata key on a bead. -/
+def Bead.getMetadata (b : Bead) (key : String) : Option String :=
+  (b.metadata.find? (fun p => p.1 == key)).map Prod.snd
+
+/-- Ping: no-op touch on a bead. Modeled as identity on the store. -/
+def Store.ping (s : Store) (_id : BeadId) : Store := s
+
 /-! ====================================================================
     TRANSITIONS
     ==================================================================== -/
@@ -547,5 +554,109 @@ theorem setMetadata_preserves_count (s : Store) (id : BeadId) (k v : String)
     (h : s.beads.any (fun b => b.id == id) = true) :
     (s.setMetadata id k v).1.beads.length = s.beads.length := by
   simp only [Store.setMetadata, h, ↓reduceIte, List.length_map]
+
+/-- SetMetadata/GetMetadata roundtrip: setting key k to value v then
+    reading k back yields v. -/
+theorem setMetadata_getMetadata_roundtrip (b : Bead) (k v : String) :
+    let md' := (b.metadata.filter (fun p => p.1 != k)) ++ [(k, v)]
+    let b' : Bead := { b with metadata := md' }
+    b'.getMetadata k = some v := by
+  simp only [Bead.getMetadata]
+  suffices h : List.find? (fun p => p.1 == k) ((b.metadata.filter (fun p => p.1 != k)) ++ [(k, v)])
+      = some (k, v) by simp [h]
+  rw [List.find?_append]
+  have hfilt : List.find? (fun p => p.1 == k) (b.metadata.filter (fun p => p.1 != k)) = none := by
+    rw [List.find?_eq_none]
+    intro p hp
+    simp only [List.mem_filter, bne_iff_ne, ne_eq] at hp
+    simp only [beq_iff_eq]
+    exact hp.2
+  simp [hfilt]
+
+/-- SetMetadata only changes the metadata field — status is preserved. -/
+theorem setMetadata_preserves_status_bead (b : Bead) (k v : String) :
+    ({ b with metadata := (b.metadata.filter (fun p => p.1 != k)) ++ [(k, v)] } : Bead).status
+    = b.status := rfl
+
+/-- SetMetadata only changes the metadata field — assignee is preserved. -/
+theorem setMetadata_preserves_assignee_bead (b : Bead) (k v : String) :
+    ({ b with metadata := (b.metadata.filter (fun p => p.1 != k)) ++ [(k, v)] } : Bead).assignee
+    = b.assignee := rfl
+
+/-- SetMetadata only changes the metadata field — labels are preserved. -/
+theorem setMetadata_preserves_labels_bead (b : Bead) (k v : String) :
+    ({ b with metadata := (b.metadata.filter (fun p => p.1 != k)) ++ [(k, v)] } : Bead).labels
+    = b.labels := rfl
+
+/-- Helper: the per-bead operation in setMetadata preserves status. -/
+private theorem setMetadata_map_preserves_status (b : Bead) (id : BeadId) (k v : String) :
+    (if b.id = id then { b with metadata := (b.metadata.filter (fun p => p.1 != k)) ++ [(k, v)] }
+     else b).status = b.status := by
+  split <;> rfl
+
+/-- SetMetadata does not change the status of any bead. -/
+theorem setMetadata_preserves_status (s : Store) (id : BeadId) (k v : String)
+    (h : s.beads.any (fun b => b.id == id) = true)
+    (b : Bead) (hb : b ∈ (s.setMetadata id k v).1.beads) :
+    ∃ b₀ ∈ s.beads, b.status = b₀.status ∧ b.id = b₀.id := by
+  simp only [Store.setMetadata, h, ↓reduceIte, List.mem_map] at hb
+  obtain ⟨b₀, hb₀mem, hb₀⟩ := hb
+  exact ⟨b₀, hb₀mem, by rw [← hb₀]; exact ⟨setMetadata_map_preserves_status b₀ id k v, by split <;> rfl⟩⟩
+
+/-- Helper: the per-bead operation in setMetadata preserves labels. -/
+private theorem setMetadata_map_preserves_labels (b : Bead) (id : BeadId) (k v : String) :
+    (if b.id = id then { b with metadata := (b.metadata.filter (fun p => p.1 != k)) ++ [(k, v)] }
+     else b).labels = b.labels := by
+  split <;> rfl
+
+/-- SetMetadata does not change the labels of any bead. -/
+theorem setMetadata_preserves_labels (s : Store) (id : BeadId) (k v : String)
+    (h : s.beads.any (fun b => b.id == id) = true)
+    (b : Bead) (hb : b ∈ (s.setMetadata id k v).1.beads) :
+    ∃ b₀ ∈ s.beads, b.labels = b₀.labels ∧ b.id = b₀.id := by
+  simp only [Store.setMetadata, h, ↓reduceIte, List.mem_map] at hb
+  obtain ⟨b₀, hb₀mem, hb₀⟩ := hb
+  exact ⟨b₀, hb₀mem, by rw [← hb₀]; exact ⟨setMetadata_map_preserves_labels b₀ id k v, by split <;> rfl⟩⟩
+
+/-- Helper: the per-bead operation in setMetadata preserves assignee. -/
+private theorem setMetadata_map_preserves_assignee (b : Bead) (id : BeadId) (k v : String) :
+    (if b.id = id then { b with metadata := (b.metadata.filter (fun p => p.1 != k)) ++ [(k, v)] }
+     else b).assignee = b.assignee := by
+  split <;> rfl
+
+/-- SetMetadata does not change the assignee of any bead. -/
+theorem setMetadata_preserves_assignee (s : Store) (id : BeadId) (k v : String)
+    (h : s.beads.any (fun b => b.id == id) = true)
+    (b : Bead) (hb : b ∈ (s.setMetadata id k v).1.beads) :
+    ∃ b₀ ∈ s.beads, b.assignee = b₀.assignee ∧ b.id = b₀.id := by
+  simp only [Store.setMetadata, h, ↓reduceIte, List.mem_map] at hb
+  obtain ⟨b₀, hb₀mem, hb₀⟩ := hb
+  exact ⟨b₀, hb₀mem, by rw [← hb₀]; exact ⟨setMetadata_map_preserves_assignee b₀ id k v, by split <;> rfl⟩⟩
+
+/-! ====================================================================
+    PROOFS: PING
+    ==================================================================== -/
+
+/-- Ping is identity on the store. -/
+theorem ping_noop (s : Store) (id : BeadId) : s.ping id = s := rfl
+
+/-! ====================================================================
+    PROOFS: LISTBYASSIGNEE
+    ==================================================================== -/
+
+/-- ListByAssignee returns only beads with the given assignee and status. -/
+theorem listByAssignee_exact (s : Store) (assignee : String) (status : BeadStatus)
+    (b : Bead) (hb : b ∈ s.listByAssignee assignee status) :
+    b.assignee = assignee ∧ b.status = status := by
+  simp only [Store.listByAssignee, List.mem_filter, Bool.and_eq_true,
+             beq_iff_eq] at hb
+  exact ⟨hb.2.1, hb.2.2⟩
+
+/-- ListByAssignee is a subset of all beads. -/
+theorem listByAssignee_subset (s : Store) (assignee : String) (status : BeadStatus)
+    (b : Bead) (hb : b ∈ s.listByAssignee assignee status) :
+    b ∈ s.beads := by
+  simp only [Store.listByAssignee, List.mem_filter] at hb
+  exact hb.1
 
 end BeadStore

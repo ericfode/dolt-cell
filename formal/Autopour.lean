@@ -18,12 +18,17 @@
   - Parse failure = bottom
   - Effect monotonicity: poured program ≤ parent effect level
 
+  Zygo substrate (dc-jo2): ProgramText now holds S-expression source.
+  The parsed form is ZygoSemantics.SExpr. Static effect checking
+  (ZygoSemantics.checkEffects) replaces runtime body-type classification.
+
   Effect taxonomy: Uses the CANONICAL taxonomy (Pure < Replayable < NonReplayable)
   aligned with EffectEval.lean and TupleSpace.lean. Core.lean's EffectLevel
   (pure/semantic/divergent) conflates effect level with lifecycle and is
   deprecated for new code.
 
   Author: Sussmind (2026-03-19, migrated to canonical effects 2026-03-20)
+  Updated: Glassblower (2026-03-21, Zygo S-expression substrate dc-rgt)
 -/
 
 import Core
@@ -77,17 +82,27 @@ def autopourEffLevel : EffLevel := .nonReplayable
     EXTENDED VALUE DOMAIN
     ==================================================================== -/
 
-/-- ProgramText is opaque — the runtime parses it. -/
+/-- ProgramText holds Zygo S-expression source text.
+    The runtime parses this into ZygoSemantics.SExpr for evaluation.
+    Programs are data (homoiconicity): the source IS the AST serialized
+    as an S-expression string.
+
+    Previous design: opaque string (could be anything).
+    Zygo design (dc-jo2): source is always a valid S-expression.
+    The parsed form is ZygoSemantics.SExpr (defined in ZygoSemantics.lean). -/
 structure ProgramText where
-  source : String
+  source : String    -- S-expression source text
   deriving Repr, DecidableEq, BEq
 
-/-- Values in the Cell language, extended with program values. -/
+/-- Values in the Cell language, extended with program values.
+    The .program variant carries S-expression source (ProgramText).
+    See ZygoSemantics.ZVal for the extended value domain with
+    numbers, lists, and the parsed SExpr program representation. -/
 inductive Val where
   | str     : String → Val
   | none    : Val
   | error   : String → Val
-  | program : ProgramText → Val    -- NEW: a program is a value
+  | program : ProgramText → Val    -- a program is a value (S-expression)
   deriving Repr, DecidableEq, BEq
 
 /-- Check whether a Val is a program. -/

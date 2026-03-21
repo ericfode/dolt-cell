@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS yields (
     value_json  JSON,
     is_frozen   BOOLEAN NOT NULL DEFAULT FALSE,
     is_bottom   BOOLEAN NOT NULL DEFAULT FALSE,
+    is_autopour BOOLEAN NOT NULL DEFAULT FALSE
+        COMMENT 'When TRUE, runtime pours the yielded value as a .cell program after freeze',
     frozen_at   DATETIME,
     FOREIGN KEY (cell_id) REFERENCES cells(id),
     UNIQUE INDEX idx_cell_field (cell_id, field_name),

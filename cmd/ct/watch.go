@@ -468,7 +468,7 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, 
 			}
 			counts := programs[prog.String]
 			counts[0]++
-			if state.String == "frozen" {
+			if state.String == "frozen" || state.String == "bottom" {
 				counts[1]++
 			}
 			programs[prog.String] = counts

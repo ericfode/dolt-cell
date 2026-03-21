@@ -30,9 +30,36 @@ lean_lib EffectEval where
 lean_lib Autopour where
   roots := #[`Autopour]
 
-lean_lib GasCity where
-  roots := #[`GasCity.Basic, `GasCity.AgentProtocol, `GasCity.BeadStore,
-             `GasCity.EventBus, `GasCity.Config, `GasCity.PromptTemplates,
-             `GasCity.Messaging, `GasCity.Formulas, `GasCity.Dispatch,
-             `GasCity.HealthPatrol, `GasCity.Layering, `GasCity.PrimitiveTest]
-  srcDir := "."
+lean_lib EventBus where
+  roots := #[`EventBus]
+  extraDepTargets := #[`Core]
+
+lean_lib AgentProtocol where
+  roots := #[`AgentProtocol]
+
+lean_lib PromptTemplates where
+  roots := #[`PromptTemplates]
+
+lean_lib BeadStore where
+  roots := #[`BeadStore]
+
+lean_lib HealthPatrol where
+  roots := #[`HealthPatrol]
+
+lean_lib Dispatch where
+  roots := #[`Dispatch]
+  extraDepTargets := #[`Core]
+
+lean_lib Config where
+  roots := #[`Config]
+
+lean_lib Layering where
+  roots := #[`Layering]
+  extraDepTargets := #[`Core, `Config, `BeadStore, `EventBus, `AgentProtocol, `PromptTemplates]
+
+lean_lib PrimitiveTest where
+  roots := #[`PrimitiveTest]
+  extraDepTargets := #[`Core]
+
+lean_lib Formulas where
+  roots := #[`GasCity.Formulas]

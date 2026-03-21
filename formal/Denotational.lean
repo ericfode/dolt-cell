@@ -343,7 +343,7 @@ theorem nonStem_finite (p : Program Id)
   - Enable schema-level compatibility checking between cells
 
   Type inference: given a cell's body and input types, infer output types.
-  For hard cells this is straightforward (SQL types).
+  For hard cells this is straightforward (Pure tier types).
   For soft cells, the type is declared (the yield spec).
 -/
 
@@ -423,7 +423,7 @@ def collectValues (trace : ExecTrace) (cellPattern : String → Bool) (field : F
 /-! ## Missing Feature 4: Dynamic Spawn (First-Class Programs)
 
   A cell can't create new cells at runtime. cell-zero-eval works
-  around this by operating at the SQL level (inserting into the
+  around this by operating at the store level (inserting into the
   cells table directly). But this breaks the abstraction.
 
   In a proper language, a cell should be able to:
@@ -454,7 +454,7 @@ def MetaCell (M : Type → Type) := Env → Program M
 /-! ## Missing Feature 6: Cell References (Quoting)
 
   A cell can't reference another cell's DEFINITION (body, deps, etc.)
-  Pour-one does this via SQL: `SELECT body FROM cells WHERE name = ?`
+  Pour-one does this via the store: `SELECT body FROM cells WHERE name = ?`
   But this is outside the Cell language.
 
   A `quote` operator would let cells inspect definitions:

@@ -3,6 +3,12 @@
 *Sussmind position paper for dc-rv8 consensus review*
 *2026-03-19*
 
+> **Note (2026-03-21):** This research predates the Zygo S-expression
+> substrate (dc-jo2). Code examples use the old cell syntax. The
+> analysis and conclusions remain valid — only the surface syntax has
+> changed. See `docs/plans/2026-03-21-zygo-substrate-design.md` for
+> the current syntax.
+
 ---
 
 ## The Question

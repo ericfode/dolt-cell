@@ -42,11 +42,15 @@ func openTestDBs(t *testing.T) (setupDB, evalDB *sql.DB) {
 	return setupDB, evalDB
 }
 
-// pourTestProgram resets and pours a program, returning parsed cells.
-func pourTestProgram(t *testing.T, setupDB *sql.DB, progID, cellText string) []parsedCell {
+// pourTestProgram resets and pours a program from a Lua source string.
+func pourTestProgram(t *testing.T, setupDB *sql.DB, progID, luaSrc string) []parsedCell {
 	t.Helper()
 	resetProgram(setupDB, progID)
-	cells := mustParse(t, cellText)
+	tmpFile := writeTempLua(t, luaSrc)
+	cells, err := LoadLuaProgram(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadLuaProgram: %v", err)
+	}
 	sqlText := cellsToSQL(progID, cells)
 	if _, err := setupDB.Exec(sqlText); err != nil {
 		if !contains(err.Error(), "nothing to commit") {
@@ -64,8 +68,13 @@ func TestConcurrency_ExactlyOnePistonClaimsCell(t *testing.T) {
 	setupDB, db := openTestDBs(t)
 	progID := "conc-claim-test"
 
-	pourTestProgram(t, setupDB, progID, `cell target
-  yield value = "claimed"
+	pourTestProgram(t, setupDB, progID, `
+return {
+  cells = {
+    target = { kind = "hard", body = { value = "claimed" } },
+  },
+  order = { "target" },
+}
 `)
 
 	// Verify cell is ready before the race.
@@ -148,14 +157,15 @@ func TestConcurrency_MultipleCellsDistributed(t *testing.T) {
 	setupDB, db := openTestDBs(t)
 	progID := "conc-multi-test"
 
-	pourTestProgram(t, setupDB, progID, `cell alpha
-  yield value = "a"
-
-cell beta
-  yield value = "b"
-
-cell gamma
-  yield value = "c"
+	pourTestProgram(t, setupDB, progID, `
+return {
+  cells = {
+    alpha = { kind = "hard", body = { value = "a" } },
+    beta  = { kind = "hard", body = { value = "b" } },
+    gamma = { kind = "hard", body = { value = "c" } },
+  },
+  order = { "alpha", "beta", "gamma" },
+}
 `)
 
 	// Run 4 pistons concurrently, each looping until complete/quiescent.

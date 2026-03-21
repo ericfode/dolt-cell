@@ -1210,8 +1210,22 @@ func autopourYields(db *sql.DB, progID, cellID string) {
 			continue
 		}
 
-		// Parse the yielded text as a .cell program
-		cells, parseErr := parseCellFile(valueText)
+		// Write the yielded Lua text to a temp file and parse it
+		tmpFile, tmpErr := os.CreateTemp("", "autopour-*.lua")
+		if tmpErr != nil {
+			log.Printf("autopour: %s.%s: create temp: %v", cellID, fieldName, tmpErr)
+			continue
+		}
+		tmpPath := tmpFile.Name()
+		_, writeErr := tmpFile.WriteString(valueText)
+		tmpFile.Close()
+		if writeErr != nil {
+			os.Remove(tmpPath)
+			log.Printf("autopour: %s.%s: write temp: %v", cellID, fieldName, writeErr)
+			continue
+		}
+		cells, parseErr := LoadLuaProgram(tmpPath)
+		os.Remove(tmpPath)
 		if parseErr != nil || cells == nil {
 			log.Printf("autopour: %s.%s: parse failed: %v", cellID, fieldName, parseErr)
 			continue

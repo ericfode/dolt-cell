@@ -140,12 +140,5 @@ func lintCells(cells []parsedCell) []string {
 		}
 	}
 
-	// Check: stem cells missing body
-	for _, c := range cells {
-		if c.bodyType == "stem" && c.body == "" {
-			errs = append(errs, fmt.Sprintf("cell %q: stem cell with no body", c.name))
-		}
-	}
-
 	return errs
 }

@@ -464,4 +464,146 @@ theorem crystallization_sound (c : CrystalCandidate) :
     remain in the trace (at their generation), and the thawed cell
     produces new yields at a higher generation. History is preserved. -/
 
+/-! ====================================================================
+    DAG PRESERVATION (Property 4d)
+    ====================================================================
+
+    Autopour preserves DAG acyclicity. A poured cell's dependencies
+    either point within the poured program (intra-program DAG, acyclic
+    by construction from the parser) or to already-frozen cells in the
+    parent program (which have no outgoing deps to new cells).
+    Therefore no cycles are introduced.
+
+    We formalize acyclicity via ranking functions: if every dependency
+    edge goes from higher rank to lower rank, the graph is acyclic.
+
+    See docs/research/autopour-denotational-semantics.md Section 4d. -/
+
+/-- The set of cell names in a program. -/
+def Program.cellNames {M : Type → Type} (p : Program M) : List String :=
+  p.cells.map (fun cd => cd.interface.name)
+
+/-- A ranking witnesses acyclicity: every dep edge goes from a cell
+    to a dependency with strictly lower rank. -/
+def hasRanking {M : Type → Type}
+    (cells : List (CellDef M)) (rank : String → Nat) : Prop :=
+  ∀ cd ∈ cells, ∀ d ∈ cd.deps, rank d.sourceCell < rank cd.interface.name
+
+/-- The autopour DAG precondition (from spec Section 4d):
+    every dependency of a poured cell either points within the
+    poured program or to a cell in the existing (frozen) set. -/
+def autopourDepsValid {M : Type → Type}
+    (pouredCells : List (CellDef M))
+    (existingCellNames : List String) : Prop :=
+  ∀ cd ∈ pouredCells, ∀ d ∈ cd.deps,
+    d.sourceCell ∈ (pouredCells.map (fun c => c.interface.name)) ∨
+    d.sourceCell ∈ existingCellNames
+
+/-- The freshness precondition: poured cell names are disjoint from
+    existing cell names. This is enforced by the parser. -/
+def namesDisjoint {M : Type → Type}
+    (pouredCells : List (CellDef M))
+    (existingCellNames : List String) : Prop :=
+  ∀ cd ∈ pouredCells, cd.interface.name ∉ existingCellNames
+
+/-- Combined ranking: shift poured cell ranks above existing cell ranks.
+    Existing cells keep their rank. Poured cells get their rank + offset. -/
+def combinedRank
+    (existingRank : String → Nat) (pouredRank : String → Nat)
+    (pouredNames : List String) (offset : Nat)
+    (name : String) : Nat :=
+  if name ∈ pouredNames then pouredRank name + offset
+  else existingRank name
+
+/-- Existing cells' deps don't reference poured cells' names (temporal causality:
+    existing cells were defined before the pour happened). -/
+def existingDepsPredate {M : Type → Type}
+    (existing : List (CellDef M))
+    (pouredNames : List String) : Prop :=
+  ∀ cd ∈ existing, ∀ d ∈ cd.deps, d.sourceCell ∉ pouredNames
+
+/-- Helper: an existing cell's name is not in the poured names list.
+    Follows from freshness by contrapositive. -/
+theorem existing_name_not_poured {M : Type → Type}
+    (existing poured : List (CellDef M))
+    (hFresh : namesDisjoint poured (existing.map (fun c => c.interface.name)))
+    (cd : CellDef M) (hcd : cd ∈ existing) :
+    cd.interface.name ∉ (poured.map (fun c => c.interface.name)) := by
+  intro hmem
+  rw [List.mem_map] at hmem
+  obtain ⟨pc, hpc, hname⟩ := hmem
+  have := hFresh pc hpc
+  rw [hname] at this
+  exact this ((List.mem_map.mpr ⟨cd, hcd, rfl⟩))
+
+/-- KEY THEOREM (Property 4d): DAG preservation under autopour.
+
+    If the existing cells have a ranking (acyclic), and the poured
+    cells have a ranking (internally acyclic), and the poured cells'
+    deps only point within the poured program or to existing cells
+    (the autopour precondition), names are disjoint, and existing
+    cells don't reference poured names (temporal causality), then
+    the combined ranking witnesses acyclicity of the merged DAG. -/
+theorem autopour_preserves_dag {M : Type → Type}
+    (existing : List (CellDef M))
+    (poured : List (CellDef M))
+    (existingRank : String → Nat)
+    (pouredRank : String → Nat)
+    (maxExistingRank : Nat)
+    (hExisting : hasRanking existing existingRank)
+    (hPoured : hasRanking poured pouredRank)
+    (hDepsValid : autopourDepsValid poured (existing.map (fun c => c.interface.name)))
+    (hFresh : namesDisjoint poured (existing.map (fun c => c.interface.name)))
+    (hPredate : existingDepsPredate existing (poured.map (fun c => c.interface.name)))
+    (hMaxRank : ∀ cd ∈ existing, existingRank cd.interface.name ≤ maxExistingRank) :
+    hasRanking (existing ++ poured)
+      (combinedRank existingRank pouredRank
+        (poured.map (fun c => c.interface.name)) (maxExistingRank + 1)) := by
+  intro cd hcd d hd
+  simp only [combinedRank]
+  rw [List.mem_append] at hcd
+  cases hcd with
+  | inl hOld =>
+    -- cd is an existing cell. Its name is not in poured names.
+    have hCdNotPoured := existing_name_not_poured existing poured hFresh cd hOld
+    -- Its dep is also not in poured names (temporal causality).
+    have hDepNotPoured := hPredate cd hOld d hd
+    -- Both if-conditions are false, so combinedRank reduces to existingRank.
+    simp [hCdNotPoured, hDepNotPoured]
+    exact hExisting cd hOld d hd
+  | inr hNew =>
+    -- cd is a poured cell. Its name IS in poured names.
+    have hCdInPoured : cd.interface.name ∈ (poured.map (fun c => c.interface.name)) := by
+      simp only [List.mem_map]; exact ⟨cd, hNew, rfl⟩
+    -- Its deps point within poured or to existing cells.
+    have hValid := hDepsValid cd hNew d hd
+    cases hValid with
+    | inl hDepInPoured =>
+      -- Intra-program dep: both are poured, use pouredRank.
+      simp [hDepInPoured, hCdInPoured]
+      exact hPoured cd hNew d hd
+    | inr hDepInExisting =>
+      -- Cross-program dep: dep is existing (not poured), cd is poured.
+      -- dep's name is not in poured names (it's an existing cell name,
+      -- and names are disjoint).
+      have hDepNotPoured : d.sourceCell ∉ (poured.map (fun c => c.interface.name)) := by
+        intro hmem
+        rw [List.mem_map] at hmem
+        obtain ⟨pc, hpc, hname⟩ := hmem
+        have := hFresh pc hpc
+        rw [hname] at this
+        exact this hDepInExisting
+      simp [hDepNotPoured, hCdInPoured]
+      -- Now: existingRank d.sourceCell < pouredRank cd.interface.name + (maxExistingRank + 1)
+      -- We know existingRank d.sourceCell ≤ maxExistingRank (from hMaxRankDeps via hDepInExisting)
+      -- So existingRank d.sourceCell ≤ maxExistingRank < maxExistingRank + 1 ≤ pouredRank ... + maxExistingRank + 1
+      -- But we need to extract the concrete dep info from hDepInExisting.
+      -- hDepInExisting says d.sourceCell ∈ existing.map name, so there exists
+      -- an existing cell with that name.
+      rw [List.mem_map] at hDepInExisting
+      obtain ⟨ec, hec, hename⟩ := hDepInExisting
+      have hBound := hMaxRank ec hec
+      rw [hename] at hBound
+      omega
+
 end Autopour

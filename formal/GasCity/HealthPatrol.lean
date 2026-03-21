@@ -98,7 +98,13 @@ theorem quarantine_auto_expires (h : CrashHistory) (cfg : PatrolConfig)
     (hq : isQuarantined h now cfg = true)
     (hfuture : ∀ ts ∈ h.restarts, futureNow - ts ≥ cfg.restartWindow) :
     isQuarantined h futureNow cfg = false := by
-  sorry
+  simp only [isQuarantined, prune]
+  have hmem : ∀ ts ∈ h.restarts, ¬(futureNow - ts < cfg.restartWindow) :=
+    fun ts hts => Nat.not_lt.mpr (hfuture ts hts)
+  have : (h.restarts.filter (fun ts => decide (futureNow - ts < cfg.restartWindow))) = [] := by
+    simp only [List.filter_eq_nil_iff, decide_eq_true_eq]
+    exact hmem
+  simp [this]
 
 /-- One-for-one restart: applying agent A's reconcile action
     does not change the session state for agent B. -/

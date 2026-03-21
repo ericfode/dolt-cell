@@ -112,11 +112,40 @@ def activationLevel (sections : List ConfigSection) : Fin 9 :=
   else if .agent ∈ sections ∧ .workspace ∈ sections then ⟨1, by omega⟩
   else ⟨0, by omega⟩
 
+private theorem Fin.val_ite {n : Nat} (c : Prop) [Decidable c] (a b : Fin n) :
+    (if c then a else b).val = if c then a.val else b.val := by
+  split <;> rfl
+
+/-- Split remaining s2 if-branches (up to 8 deep) and close with omega. -/
+local macro "split_s2_omega" : tactic =>
+  `(tactic| ((try split) <;> (try split) <;> (try split) <;> (try split) <;>
+    (try split) <;> (try split) <;> (try split) <;> (try split) <;> omega))
+
 /-- Progressive activation is monotonic: adding sections never
     decreases the level. -/
 theorem activation_monotonic (s1 s2 : List ConfigSection)
     (hsub : ∀ x ∈ s1, x ∈ s2) :
     (activationLevel s1).val ≤ (activationLevel s2).val := by
-  sorry
+  unfold activationLevel; simp only [Fin.val_ite]
+  split
+  · have := hsub _ ‹_›; simp only [*, ite_true]; split_s2_omega
+  · split
+    · have := hsub _ ‹_›; simp only [*, ite_true]; split_s2_omega
+    · split
+      · have := hsub _ ‹_›; simp only [*, ite_true]; split_s2_omega
+      · split
+        · have := hsub _ ‹_›; simp only [*, ite_true]; split_s2_omega
+        · split
+          · have := hsub _ ‹_›; simp only [*, ite_true]; split_s2_omega
+          · split
+            · have := hsub _ ‹_›; simp only [*, ite_true]; split_s2_omega
+            · split
+              · have := hsub _ ‹_›; simp only [*, ite_true]; split_s2_omega
+              · split
+                · obtain ⟨ha, hw⟩ := ‹_ ∧ _›
+                  have := hsub _ ha; have := hsub _ hw
+                  simp only [*, ite_true, and_self]; split_s2_omega
+                · -- level 0: 0 ≤ anything
+                  split_s2_omega
 
 end GasCity.Layering

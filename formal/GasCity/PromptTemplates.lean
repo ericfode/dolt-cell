@@ -48,10 +48,10 @@ def mergeEnv (ctx : PromptContext) : List (String × String) :=
 inductive RenderResult where
   | success : String → RenderResult
   | fallback : String → RenderResult  -- raw template text on error
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, Nonempty
 
 /-- Render always produces some output (either success or fallback). -/
-opaque render (template : String) (ctx : PromptContext) : RenderResult
+noncomputable opaque render (template : String) (ctx : PromptContext) : RenderResult
 
 -- ═══════════════════════════════════════════════════════════════
 -- Theorems
@@ -63,7 +63,11 @@ theorem sdk_override (ctx : PromptContext) (k v : String)
     (henv : (k, v) ∈ ctx.env)
     (hsdk : k ∈ (sdkFields ctx).map (·.1)) :
     ∀ p ∈ mergeEnv ctx, p.1 = k → p ∈ sdkFields ctx := by
-  sorry
+  intro p hp hpk
+  simp [mergeEnv] at hp
+  obtain ⟨hp1, hp2⟩ | hp := hp
+  · exact absurd hpk (by simp_all)
+  · exact hp
 
 /-- Rendering never crashes: it always produces RenderResult. -/
 theorem render_total (t : String) (ctx : PromptContext) :

@@ -29,3 +29,7 @@ lean_lib EffectEval where
 
 lean_lib Autopour where
   roots := #[`Autopour]
+
+lean_lib EventBus where
+  roots := #[`EventBus]
+  extraDepTargets := #[`Core]

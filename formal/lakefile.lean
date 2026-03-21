@@ -33,3 +33,6 @@ lean_lib Autopour where
 lean_lib EventBus where
   roots := #[`EventBus]
   extraDepTargets := #[`Core]
+
+lean_lib AgentProtocol where
+  roots := #[`AgentProtocol]

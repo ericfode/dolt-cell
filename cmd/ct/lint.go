@@ -12,13 +12,19 @@ func cmdLint(filename string) {
 		fatal("read %s: %v", filename, err)
 	}
 
-	cells, parseErr := parseCellFile(string(data))
+	var cells []parsedCell
+	var parseErr error
+	if strings.HasSuffix(filename, ".lua") {
+		cells, parseErr = LoadLuaProgram(filename)
+	} else {
+		cells, parseErr = parseCellFile(string(data))
+	}
 	if parseErr != nil {
 		fmt.Printf("✗ %s: %v\n", filename, parseErr)
 		os.Exit(1)
 	}
 	if cells == nil {
-		fmt.Printf("✗ %s: parse failed (not valid v1 or v2 syntax)\n", filename)
+		fmt.Printf("✗ %s: parse failed (not valid syntax)\n", filename)
 		os.Exit(1)
 	}
 

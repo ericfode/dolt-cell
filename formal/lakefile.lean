@@ -42,3 +42,6 @@ lean_lib PromptTemplates where
 
 lean_lib BeadStore where
   roots := #[`BeadStore]
+
+lean_lib HealthPatrol where
+  roots := #[`HealthPatrol]

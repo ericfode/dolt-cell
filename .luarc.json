@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.1",
+  "diagnostics.globals": [
+    "loadstring",
+    "setfenv",
+    "getfenv",
+    "unpack"
+  ],
+  "workspace.library": [],
+  "workspace.checkThirdParty": false,
+  "telemetry.enable": false
+}

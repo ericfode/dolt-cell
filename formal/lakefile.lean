@@ -49,3 +49,6 @@ lean_lib HealthPatrol where
 lean_lib Dispatch where
   roots := #[`Dispatch]
   extraDepTargets := #[`Core]
+
+lean_lib Config where
+  roots := #[`Config]

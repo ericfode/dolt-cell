@@ -28,7 +28,7 @@ type watchCell struct {
 
 type watchDataMsg struct {
 	cells    []watchCell
-	programs map[string][2]int
+	programs map[string][3]int // [total, frozen, bottom]
 	err      error
 }
 
@@ -51,7 +51,7 @@ type watchModel struct {
 	db        *sql.DB
 	progID    string
 	cells     []watchCell
-	programs  map[string][2]int
+	programs  map[string][3]int // [total, frozen, bottom]
 	progOrder []string
 	err       error
 	width     int
@@ -417,7 +417,7 @@ func (m watchModel) cursorLine() int {
 	return line
 }
 
-func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, error) {
+func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][3]int, error) {
 	var rows *sql.Rows
 	var err error
 	q := `SELECT c.id, c.program_id, c.name, c.state, c.body_type, c.body,
@@ -441,7 +441,7 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, 
 
 	var cells []watchCell
 	var cur *watchCell
-	programs := make(map[string][2]int)
+	programs := make(map[string][3]int) // [total, frozen, bottom]
 
 	for rows.Next() {
 		var cellID, prog, name, state, bodyType, body, piston sql.NullString
@@ -470,6 +470,8 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][2]int, 
 			counts[0]++
 			if state.String == "frozen" {
 				counts[1]++
+			} else if state.String == "bottom" {
+				counts[2]++
 			}
 			programs[prog.String] = counts
 		}
@@ -571,19 +573,19 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					seen[c.prog] = true
 				}
 			}
-			// Monotonicity check: alert if non-frozen count increased
-			var total, frozen int
+			// Monotonicity check: alert if pending count increased
+			var total, resolved int
 			for _, counts := range m.programs {
 				total += counts[0]
-				frozen += counts[1]
+				resolved += counts[1] + counts[2] // frozen + bottom
 			}
-			nonFrozen := total - frozen
-			if m.prevNonFrozen > 0 && nonFrozen > m.prevNonFrozen {
+			pending := total - resolved
+			if m.prevNonFrozen > 0 && pending > m.prevNonFrozen {
 				m.nonFrozenAlert = true
 			} else {
 				m.nonFrozenAlert = false
 			}
-			m.prevNonFrozen = nonFrozen
+			m.prevNonFrozen = pending
 		}
 		m.clampCursor()
 		if m.ready {
@@ -874,7 +876,8 @@ func (m watchModel) renderContent() string {
 		switch item.kind {
 		case navProgram:
 			counts := m.programs[item.prog]
-			done, total := counts[1], counts[0]
+			frozen, bottom, total := counts[1], counts[2], counts[0]
+			done := frozen + bottom
 			// Count computing cells for this program
 			progComputing := 0
 			for _, c := range m.cells {
@@ -886,6 +889,9 @@ func (m watchModel) renderContent() string {
 			barStr := barDoneStyle.Render(strings.Repeat("█", filled)) +
 				barTodoStyle.Render(strings.Repeat("░", 8-filled))
 			status := fmt.Sprintf("%s %d/%d", barStr, done, total)
+			if bottom > 0 {
+				status += bottomValStyle.Render(fmt.Sprintf(" ⊥%d", bottom))
+			}
 			if progComputing > 0 {
 				status += pendValStyle.Render(fmt.Sprintf(" ⚡%d", progComputing))
 			}
@@ -1071,20 +1077,25 @@ func (m watchModel) View() tea.View {
 		spin = " " + m.spinner.View()
 	}
 	// Count aggregate cell states
-	var totalCells, frozenCells, computingCells int
+	var totalCells, frozenCells, bottomCells, computingCells int
 	for _, counts := range m.programs {
 		totalCells += counts[0]
 		frozenCells += counts[1]
+		bottomCells += counts[2]
 	}
 	for _, c := range m.cells {
 		if c.state == "computing" {
 			computingCells++
 		}
 	}
-	nonFrozenCells := totalCells - frozenCells
-	statsStr := fmt.Sprintf("%d/%d", frozenCells, totalCells)
-	if nonFrozenCells > 0 {
-		nfStr := fmt.Sprintf(" %d pending", nonFrozenCells)
+	resolvedCells := frozenCells + bottomCells
+	pendingCells := totalCells - resolvedCells
+	statsStr := fmt.Sprintf("%d/%d", resolvedCells, totalCells)
+	if bottomCells > 0 {
+		statsStr += bottomValStyle.Render(fmt.Sprintf(" ⊥%d", bottomCells))
+	}
+	if pendingCells > 0 {
+		nfStr := fmt.Sprintf(" %d pending", pendingCells)
 		if m.nonFrozenAlert {
 			statsStr += errStyle.Render(nfStr + " ▲")
 		} else {

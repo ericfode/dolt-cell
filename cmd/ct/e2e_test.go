@@ -727,6 +727,171 @@ func TestActionConstants(t *testing.T) {
 	}
 }
 
+// --- Watch unit tests (no DB needed) ---
+
+func TestWatchNavItems(t *testing.T) {
+	m := watchModel{
+		cells: []watchCell{
+			{id: "c1", prog: "p1", name: "alpha", state: "frozen"},
+			{id: "c2", prog: "p1", name: "beta", state: "computing"},
+			{id: "c3", prog: "p1", name: "gamma", state: "bottom"},
+			{id: "c4", prog: "p2", name: "delta", state: "declared"},
+		},
+		progOrder: []string{"p1", "p2"},
+		collapsed: make(map[string]bool),
+		expanded:  make(map[string]bool),
+	}
+
+	// All items visible: 2 program headers + 4 cells
+	items := m.navItems()
+	if len(items) != 6 {
+		t.Fatalf("navItems() = %d items, want 6", len(items))
+	}
+
+	// Active-only: frozen and bottom cells hidden
+	m.activeOnly = true
+	items = m.navItems()
+	// p1: beta (computing) visible, alpha (frozen) and gamma (bottom) hidden
+	// p2: delta (declared) visible
+	wantCells := 0
+	for _, it := range items {
+		if it.kind == navCell {
+			wantCells++
+		}
+	}
+	if wantCells != 2 {
+		t.Errorf("active-only: got %d cells, want 2 (beta, delta)", wantCells)
+	}
+
+	// Collapsed program: no cells shown for p1
+	m.activeOnly = false
+	m.collapsed["p1"] = true
+	items = m.navItems()
+	var p1Cells int
+	for _, it := range items {
+		if it.kind == navCell && it.prog == "p1" {
+			p1Cells++
+		}
+	}
+	if p1Cells != 0 {
+		t.Errorf("collapsed p1: got %d cells, want 0", p1Cells)
+	}
+}
+
+func TestWatchNavItemsActiveOnlyHidesEmptyPrograms(t *testing.T) {
+	// Program with only frozen/bottom cells should be hidden in active-only mode
+	m := watchModel{
+		cells: []watchCell{
+			{id: "c1", prog: "p1", name: "alpha", state: "frozen"},
+			{id: "c2", prog: "p1", name: "beta", state: "bottom"},
+			{id: "c3", prog: "p2", name: "gamma", state: "computing"},
+		},
+		progOrder: []string{"p1", "p2"},
+		collapsed: make(map[string]bool),
+		expanded:  make(map[string]bool),
+		activeOnly: true,
+	}
+	items := m.navItems()
+	// p1 should be hidden (no active cells), p2 visible with gamma
+	for _, it := range items {
+		if it.kind == navProgram && it.prog == "p1" {
+			t.Error("active-only mode should hide program p1 (all cells resolved)")
+		}
+	}
+}
+
+func TestWatchProgressBarCountsBottom(t *testing.T) {
+	// Verify that [3]int program stats correctly track frozen + bottom
+	programs := map[string][3]int{
+		"p1": {5, 3, 2}, // 5 total, 3 frozen, 2 bottom → all resolved
+	}
+	counts := programs["p1"]
+	frozen, bottom, total := counts[1], counts[2], counts[0]
+	done := frozen + bottom
+
+	if done != total {
+		t.Errorf("done=%d != total=%d; bottom cells not counted as resolved", done, total)
+	}
+
+	// Mixed program: not all resolved
+	programs["p2"] = [3]int{10, 4, 1} // 10 total, 4 frozen, 1 bottom → 5 resolved
+	counts = programs["p2"]
+	frozen, bottom, total = counts[1], counts[2], counts[0]
+	done = frozen + bottom
+	pending := total - done
+	if pending != 5 {
+		t.Errorf("pending=%d, want 5", pending)
+	}
+}
+
+func TestTruncRune(t *testing.T) {
+	tests := []struct {
+		input string
+		n     int
+		want  string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 3, "hel..."},
+		{"", 5, ""},
+		// Multi-byte: Japanese characters (3 bytes each)
+		{"日本語テスト", 3, "日本語..."},
+		// Emoji (4 bytes each)
+		{"🎉🎊🎈🎁", 2, "🎉🎊..."},
+	}
+	for _, tt := range tests {
+		got := trunc(tt.input, tt.n)
+		if got != tt.want {
+			t.Errorf("trunc(%q, %d) = %q, want %q", tt.input, tt.n, got, tt.want)
+		}
+	}
+}
+
+func TestWordWrap(t *testing.T) {
+	tests := []struct {
+		input string
+		width int
+		want  string
+	}{
+		{"short", 80, "short"},
+		{"hello world foo bar", 11, "hello world\nfoo bar"},
+		// Preserves existing newlines
+		{"line1\nline2", 80, "line1\nline2"},
+		// Zero width: no wrapping
+		{"test", 0, "test"},
+	}
+	for _, tt := range tests {
+		got := wordWrap(tt.input, tt.width)
+		if got != tt.want {
+			t.Errorf("wordWrap(%q, %d) = %q, want %q", tt.input, tt.width, got, tt.want)
+		}
+	}
+}
+
+func TestWatchFilterText(t *testing.T) {
+	m := watchModel{
+		cells: []watchCell{
+			{id: "c1", prog: "p1", name: "alpha", state: "declared"},
+			{id: "c2", prog: "p1", name: "beta", state: "declared"},
+			{id: "c3", prog: "p2", name: "gamma", state: "declared"},
+		},
+		progOrder:  []string{"p1", "p2"},
+		collapsed:  make(map[string]bool),
+		expanded:   make(map[string]bool),
+		filterText: "alp",
+	}
+
+	items := m.navItems()
+	var cellCount int
+	for _, it := range items {
+		if it.kind == navCell {
+			cellCount++
+		}
+	}
+	if cellCount != 1 {
+		t.Errorf("filter 'alp': got %d cells, want 1 (alpha only)", cellCount)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }

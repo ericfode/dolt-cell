@@ -978,7 +978,9 @@ func checkAutopour(db *sql.DB, progID, cellName, cellID, fieldName string) {
 	// Derive program name: {source_program}-autopour-{cell}-{field}
 	newProgID := fmt.Sprintf("%s-autopour-%s-%s", progID, cellName, fieldName)
 
-	// Generate and execute pour SQL
+	// Generate and execute pour SQL, then ensure gen-0 frames exist.
+	// Mirrors cmdPour: cellsToSQL generates the INSERTs, ensureFrames
+	// creates frames so the cells become ready (visible to ready_cells view).
 	sqlText := cellsToSQL(newProgID, cells)
 	if _, err := db.Exec(sqlText); err != nil {
 		if !strings.Contains(err.Error(), "nothing to commit") {
@@ -989,6 +991,7 @@ func checkAutopour(db *sql.DB, progID, cellName, cellID, fieldName string) {
 			return
 		}
 	}
+	ensureFrames(db, newProgID)
 
 	log.Printf("INFO: autopour %s/%s.%s → poured %s (%d cells)", progID, cellName, fieldName, newProgID, len(cells))
 	mustExecDB(db,

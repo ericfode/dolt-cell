@@ -61,6 +61,7 @@ theorem archive_is_close (s : BeadStore.StoreState) (id : BeadId) :
     archive s id = BeadStore.close s id := by
   rfl
 
+-- TODO: formalize derivation claim as a real theorem
 /-- Messaging requires no infrastructure beyond P1 + P2. -/
 theorem no_new_infrastructure :
     -- sendMail calls BeadStore.create (P2)

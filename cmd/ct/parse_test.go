@@ -1347,3 +1347,52 @@ func TestAutopourAnnotation(t *testing.T) {
 		t.Error("expected autopour=false for plain yield")
 	}
 }
+
+func TestAutopourCellsToSQL(t *testing.T) {
+	// autopour yield should emit is_autopour=TRUE in SQL
+	cells := []parsedCell{{
+		name:     "eval",
+		bodyType: "soft",
+		yields:   []parsedYield{{fieldName: "result", autopour: true}},
+	}}
+	sql := cellsToSQL("test-prog", cells)
+	if !strings.Contains(sql, "is_autopour") {
+		t.Error("expected is_autopour in generated SQL for autopour yield")
+	}
+	if !strings.Contains(sql, "TRUE") {
+		t.Error("expected TRUE value for autopour yield")
+	}
+
+	// non-autopour yield should emit is_autopour=FALSE
+	cells2 := []parsedCell{{
+		name:     "plain",
+		bodyType: "soft",
+		yields:   []parsedYield{{fieldName: "output"}},
+	}}
+	sql2 := cellsToSQL("test-prog2", cells2)
+	if !strings.Contains(sql2, "is_autopour") {
+		t.Error("expected is_autopour in generated SQL even for non-autopour yield")
+	}
+}
+
+func TestAutopourCellZeroParsesClean(t *testing.T) {
+	data, err := os.ReadFile("../../examples/cell-zero-autopour.cell")
+	if err != nil {
+		t.Skip("cell-zero-autopour.cell not found")
+	}
+	cells, err := parseCellFile(string(data))
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	found := false
+	for _, c := range cells {
+		for _, y := range c.yields {
+			if y.autopour {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("no autopour yield found in cell-zero-autopour.cell")
+	}
+}

@@ -684,15 +684,19 @@ func writeCell(sb *strings.Builder, programID, prefix string, c parsedCell) {
 	frameIDVal := fmt.Sprintf("'%s'", escape("f-"+cellID+"-0"))
 	for _, y := range c.yields {
 		yID := safeID(fmt.Sprintf("y-%s-%s-%s", prefix, c.name, y.fieldName))
+		autopourVal := "FALSE"
+		if y.autopour {
+			autopourVal = "TRUE"
+		}
 		if allPrebound && len(c.yields) > 1 {
 			// Pre-freeze each yield with its value
 			sb.WriteString(fmt.Sprintf(
-				"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES ('%s', '%s', %s, '%s', '%s', TRUE, NOW());\n",
-				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.prebound)))
+				"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, is_autopour, frozen_at) VALUES ('%s', '%s', %s, '%s', '%s', TRUE, %s, NOW());\n",
+				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), escape(y.prebound), autopourVal))
 		} else {
 			sb.WriteString(fmt.Sprintf(
-				"INSERT INTO yields (id, cell_id, frame_id, field_name) VALUES ('%s', '%s', %s, '%s');\n",
-				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName)))
+				"INSERT INTO yields (id, cell_id, frame_id, field_name, is_autopour) VALUES ('%s', '%s', %s, '%s', %s);\n",
+				escape(yID), escape(cellID), frameIDVal, escape(y.fieldName), autopourVal))
 		}
 	}
 

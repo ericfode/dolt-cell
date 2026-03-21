@@ -51,18 +51,11 @@ inductive RenderResult where
   deriving DecidableEq, Repr
 
 /-- Render always produces some output (either success or fallback). -/
-def render (template : String) (ctx : PromptContext) : RenderResult :=
-  -- Abstract: real implementation uses Go text/template
-  sorry
+opaque render (template : String) (ctx : PromptContext) : RenderResult
 
 -- ═══════════════════════════════════════════════════════════════
 -- Theorems
 -- ═══════════════════════════════════════════════════════════════
-
-/-- Rendering is deterministic: same template + context → same result. -/
-theorem render_deterministic (t : String) (ctx : PromptContext) :
-    render t ctx = render t ctx := by
-  rfl
 
 /-- SDK fields override env: for any key K present in both SDK fields
     and env, the merged result contains the SDK value. -/
@@ -76,12 +69,5 @@ theorem sdk_override (ctx : PromptContext) (k v : String)
 theorem render_total (t : String) (ctx : PromptContext) :
     ∃ r, render t ctx = r := by
   exact ⟨render t ctx, rfl⟩
-
-/-- No role names appear in SDK code.
-    This is a meta-property: the PromptContext carries agentName
-    but the SDK never pattern-matches on it. -/
-theorem no_hardcoded_roles :
-    ∀ ctx : PromptContext, mergeEnv ctx = mergeEnv ctx := by
-  intro; rfl
 
 end GasCity.PromptTemplates

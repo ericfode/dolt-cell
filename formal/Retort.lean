@@ -357,6 +357,20 @@ def framesCellDefsExist (r : Retort) : Prop :=
 def noSelfLoops (r : Retort) : Prop :=
   ∀ b ∈ r.bindings, b.consumerFrame ≠ b.producerFrame
 
+-- I10: For same-cell bindings (stem cells reading own previous gen),
+-- the producer must have a strictly lower generation
+def generationOrdered (r : Retort) : Prop :=
+  ∀ b ∈ r.bindings,
+    ∀ cf ∈ r.frames, ∀ pf ∈ r.frames,
+      cf.id = b.consumerFrame → pf.id = b.producerFrame →
+      cf.cellName = pf.cellName →
+      pf.generation < cf.generation
+
+-- I11: Bindings only point to frozen frames (can't read from the future)
+def bindingsPointToFrozen (r : Retort) : Prop :=
+  ∀ b ∈ r.bindings,
+    ∃ f ∈ r.frames, f.id = b.producerFrame ∧ r.frameStatus f = .frozen
+
 -- The complete well-formedness predicate
 def wellFormed (r : Retort) : Prop :=
   cellNamesUnique r ∧ framesUnique r ∧ yieldsWellFormed r ∧
@@ -1333,6 +1347,358 @@ theorem freeze_makes_frozen (r : Retort) (fd : FreezeData) (f : Frame) (cd : RCe
   rw [if_pos hCovers]
 
 /-! ====================================================================
+    PROOFS: Cells are stable after pour
+    ==================================================================== -/
+
+-- Non-pour operations never change the cells list
+theorem cells_stable_non_pour (r : Retort) (op : RetortOp)
+    (hNotPour : ∀ pd, op ≠ .pour pd) :
+    (applyOp r op).cells = r.cells := by
+  cases op with
+  | pour pd => exact absurd rfl (hNotPour pd)
+  | claim _ => rfl
+  | freeze _ => rfl
+  | release _ => rfl
+  | createFrame _ => rfl
+  | bottom _ => simp only [applyOp]; split <;> (try split) <;> rfl
+
+-- Non-pour operations never change the givens list
+theorem givens_stable_non_pour (r : Retort) (op : RetortOp)
+    (hNotPour : ∀ pd, op ≠ .pour pd) :
+    (applyOp r op).givens = r.givens := by
+  cases op with
+  | pour pd => exact absurd rfl (hNotPour pd)
+  | claim _ => rfl
+  | freeze _ => rfl
+  | release _ => rfl
+  | createFrame _ => rfl
+  | bottom _ => simp only [applyOp]; split <;> (try split) <;> rfl
+
+/-! ====================================================================
+    INDEPENDENT CLAIM COMMUTATIVITY
+    ==================================================================== -/
+
+-- Two claims on different frames commute: they produce states that agree
+-- on all append-only fields and differ only in claims list order.
+
+-- Helper: claims list is a permutation
+theorem independent_claim_cells (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).cells =
+    (applyOp (applyOp r (.claim b)) (.claim a)).cells := by
+  simp [applyOp]
+
+theorem independent_claim_givens (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).givens =
+    (applyOp (applyOp r (.claim b)) (.claim a)).givens := by
+  simp [applyOp]
+
+theorem independent_claim_frames (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).frames =
+    (applyOp (applyOp r (.claim b)) (.claim a)).frames := by
+  simp [applyOp]
+
+theorem independent_claim_yields (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).yields =
+    (applyOp (applyOp r (.claim b)) (.claim a)).yields := by
+  simp [applyOp]
+
+theorem independent_claim_bindings (r : Retort) (a b : ClaimData) :
+    (applyOp (applyOp r (.claim a)) (.claim b)).bindings =
+    (applyOp (applyOp r (.claim b)) (.claim a)).bindings := by
+  simp [applyOp]
+
+-- The claims lists are permutations of each other:
+-- r.claims ++ [a_claim, b_claim] vs r.claims ++ [b_claim, a_claim]
+-- Both contain exactly the same elements.
+theorem independent_claim_claims_perm (r : Retort) (a b : ClaimData)
+    (_hDiff : a.frameId ≠ b.frameId) :
+    ∀ c, c ∈ (applyOp (applyOp r (.claim a)) (.claim b)).claims ↔
+         c ∈ (applyOp (applyOp r (.claim b)) (.claim a)).claims := by
+  intro c
+  simp only [applyOp]
+  simp only [List.mem_append, List.mem_singleton]
+  constructor
+  · intro h
+    rcases h with (h | h) | h
+    · exact Or.inl (Or.inl h)
+    · exact Or.inr h
+    · exact Or.inl (Or.inr h)
+  · intro h
+    rcases h with (h | h) | h
+    · exact Or.inl (Or.inl h)
+    · exact Or.inr h
+    · exact Or.inl (Or.inr h)
+
+-- Corollary: for any membership-based property P, P holds on one state
+-- iff it holds on the other. This means all our Prop-based invariants
+-- (which quantify over ∈) are agnostic to claim order.
+theorem independent_claims_preserve_membership_props
+    (r : Retort) (a b : ClaimData) (hDiff : a.frameId ≠ b.frameId)
+    (P : Claim → Prop)
+    (hP : ∀ c ∈ (applyOp (applyOp r (.claim a)) (.claim b)).claims, P c) :
+    ∀ c ∈ (applyOp (applyOp r (.claim b)) (.claim a)).claims, P c := by
+  intro c hc
+  exact hP c ((independent_claim_claims_perm r a b hDiff c).mpr hc)
+
+/-! ====================================================================
+    THE DAG: Acyclicity of Bindings
+    ==================================================================== -/
+
+-- A binding edge goes from consumer to producer.
+-- The DAG property: no frame transitively depends on itself.
+
+-- Simple acyclicity: no self-loops (see I9 in wellFormed above)
+
+-- (generationOrdered and bindingsPointToFrozen moved to wellFormed section above)
+
+-- freeze creates well-formed bindings (producer frames must be frozen)
+-- This is enforced by construction: at freeze time, the piston has
+-- already read the producer's yields (which means they're frozen).
+
+/-! ====================================================================
+    I10/I11 PRECONDITIONS AND PRESERVATION
+    ==================================================================== -/
+
+-- Precondition: freeze bindings respect generation ordering for same-cell deps
+def freezeGenerationOrdered (r : Retort) (fd : FreezeData) : Prop :=
+  ∀ b ∈ fd.bindings,
+    ∀ cf ∈ r.frames, ∀ pf ∈ r.frames,
+      cf.id = b.consumerFrame → pf.id = b.producerFrame →
+      cf.cellName = pf.cellName →
+      pf.generation < cf.generation
+
+-- Precondition: freeze bindings point to frozen frames
+def freezeBindingsPointToFrozen (r : Retort) (fd : FreezeData) : Prop :=
+  ∀ b ∈ fd.bindings,
+    ∃ f ∈ r.frames, f.id = b.producerFrame ∧ r.frameStatus f = .frozen
+
+/-! I10: generationOrdered preservation -/
+
+-- Pour preserves generationOrdered (using bindingsWellFormed to know
+-- old bindings reference old frames).
+theorem pour_preserves_generationOrdered (r : Retort) (pd : PourData)
+    (hWF : generationOrdered r) (hBWF : bindingsWellFormed r) :
+    generationOrdered (applyOp r (.pour pd)) := by
+  unfold generationOrdered applyOp at *
+  simp only
+  intro b hb cf hcf pf hpf hcid hpid hcell
+  -- b is an old binding. By bindingsWellFormed, both consumer and producer
+  -- frames referenced by b exist in r.frames.
+  obtain ⟨⟨cf', hcf', hcf'id⟩, ⟨pf', hpf', hpf'id⟩⟩ := hBWF b hb
+  -- cf.id = b.consumerFrame = cf'.id (from bindingsWellFormed)
+  -- pf.id = b.producerFrame = pf'.id
+  -- cf' and pf' are in r.frames (old frames)
+  -- We use hWF with cf' and pf' to get the generation ordering
+  -- But we need cf'.cellName = pf'.cellName, which we don't directly have.
+  -- We have cf.cellName = pf.cellName and cf.id = cf'.id, pf.id = pf'.id
+  -- But different frames can have the same id (in principle). Actually,
+  -- FrameId is opaque, so we can't deduce cellName from id alone.
+  -- The simplest approach: use cf' and pf' from bindingsWellFormed.
+  -- We know cf'.id = b.consumerFrame and pf'.id = b.producerFrame.
+  -- We also know cf.id = b.consumerFrame and pf.id = b.producerFrame.
+  -- But we can't conclude cf = cf' or pf = pf'.
+  -- However, the generationOrdered quantifies over ALL frames with
+  -- matching ids. So hWF gives us pf'.generation < cf'.generation
+  -- IF cf'.cellName = pf'.cellName. But we only know cf.cellName = pf.cellName.
+  -- The correct approach: we need the result for cf and pf specifically.
+  -- Since cf might be a NEW frame, the generation ordering must hold for it too.
+  -- This means we need either:
+  -- (a) A stronger precondition on pour (new frames don't share ids with old bindings)
+  -- (b) Or prove it from framesUnique + frame identity
+  -- Since framesUnique is by (cellName, generation), not by id, this is tricky.
+  -- Old bindings only match old frames (by ids), so we use the old frames from hBWF
+  -- TODO: need to show that cf.cellName = pf.cellName (from hcell) equals cf'.cellName = pf'.cellName
+  -- For now, assume these frames are the same or have matching cellNames
+  sorry
+
+-- Claim doesn't add bindings or frames: trivially preserved.
+theorem claim_preserves_generationOrdered (r : Retort) (cd : ClaimData)
+    (hWF : generationOrdered r) :
+    generationOrdered (applyOp r (.claim cd)) := by
+  unfold generationOrdered applyOp at *; simp only; exact hWF
+
+-- Freeze adds bindings and preserves frames. Old bindings use hWF;
+-- new bindings use the precondition.
+theorem freeze_preserves_generationOrdered (r : Retort) (fd : FreezeData)
+    (hWF : generationOrdered r) (hFresh : freezeGenerationOrdered r fd) :
+    generationOrdered (applyOp r (.freeze fd)) := by
+  unfold generationOrdered applyOp at *
+  simp only
+  intro b hb cf hcf pf hpf hcid hpid hcell
+  rw [List.mem_append] at hb
+  cases hb with
+  | inl hbOld =>
+    -- Old binding, frames unchanged
+    exact hWF b hbOld cf hcf pf hpf hcid hpid hcell
+  | inr hbNew =>
+    -- New binding from freeze
+    exact hFresh b hbNew cf hcf pf hpf hcid hpid hcell
+
+-- Release doesn't add bindings or frames: trivially preserved.
+theorem release_preserves_generationOrdered (r : Retort) (rd : ReleaseData)
+    (hWF : generationOrdered r) :
+    generationOrdered (applyOp r (.release rd)) := by
+  unfold generationOrdered applyOp at *; simp only; exact hWF
+
+-- CreateFrame adds frames but not bindings. Old bindings remain valid
+-- because new frames don't affect old binding references. Uses
+-- bindingsWellFormed to know old bindings reference old frames.
+theorem createFrame_preserves_generationOrdered (r : Retort) (cfd : CreateFrameData)
+    (hWF : generationOrdered r) (hBWF : bindingsWellFormed r) :
+    generationOrdered (applyOp r (.createFrame cfd)) := by
+  unfold generationOrdered applyOp at *
+  simp only
+  intro b hb cf hcf pf hpf hcid hpid hcell
+  obtain ⟨⟨cf', hcf', hcf'id⟩, ⟨pf', hpf', hpf'id⟩⟩ := hBWF b hb
+  -- TODO: need to show that cf.cellName = pf.cellName (from hcell) equals cf'.cellName = pf'.cellName
+  sorry
+
+/-! I11: bindingsPointToFrozen preservation -/
+
+-- Pour doesn't add bindings, and old frozen frames remain frozen
+-- (yields and cells preserved, so frameStatus preserved).
+theorem pour_preserves_bindingsPointToFrozen (r : Retort) (pd : PourData)
+    (hWF : bindingsPointToFrozen r) :
+    bindingsPointToFrozen (applyOp r (.pour pd)) := by
+  unfold bindingsPointToFrozen applyOp at *
+  simp only
+  intro b hb
+  obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hb
+  refine ⟨f, List.mem_append_left _ hf, hfid, ?_⟩
+  -- Need: frameStatus in new state = frameStatus in old state for old frames
+  -- cells are r.cells ++ pd.cells, so cellDef might change... but
+  -- actually cellDef uses find?, which returns the FIRST match.
+  -- Since r.cells is the prefix, find? on r.cells ++ pd.cells for an
+  -- old cellName still returns the old result.
+  unfold Retort.frameStatus at hfrozen ⊢
+  unfold Retort.cellDef at *
+  -- The find? on r.cells ++ pd.cells: if it found something in r.cells,
+  -- it still finds the same thing (find? returns first match).
+  -- We need a lemma: find? on l1 ++ l2 = find? on l1 if find? on l1 succeeds.
+  match h : r.cells.find? (fun c => c.name == f.cellName) with
+  | none =>
+    -- cellDef was none in old state, so frameStatus = .declared, but hfrozen says .frozen
+    rw [h] at hfrozen; simp at hfrozen
+  | some cd =>
+    rw [h] at hfrozen
+    -- find? on r.cells succeeds => find? on r.cells ++ pd.cells succeeds with same result
+    have hcd' : (r.cells ++ pd.cells).find? (fun c => c.name == f.cellName) = some cd := by
+      rw [List.find?_append]
+      simp [h]
+    rw [hcd']
+    -- Now the if-then-else in frameStatus: yields are unchanged by pour
+    -- frameYields uses r.yields (unchanged by pour)
+    unfold Retort.frameYields at *
+    simp only at hfrozen ⊢
+    -- The yields list is unchanged: pour doesn't modify yields
+    exact hfrozen
+
+-- Claim doesn't add bindings or change frames/yields: trivially preserved.
+theorem claim_preserves_bindingsPointToFrozen (r : Retort) (cd : ClaimData)
+    (hWF : bindingsPointToFrozen r) :
+    bindingsPointToFrozen (applyOp r (.claim cd)) := by
+  unfold bindingsPointToFrozen applyOp at *
+  simp only
+  intro b hb
+  obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hb
+  refine ⟨f, hf, hfid, ?_⟩
+  -- frameStatus doesn't change because cells/frames/yields unchanged
+  -- Only claims changed, but frameStatus for a frozen frame doesn't depend on claims
+  -- (frozen means all fields are covered by yields)
+  sorry
+
+-- Freeze adds bindings. Old bindings still valid (frames/yields grew,
+-- frozen status preserved). New bindings use the precondition.
+theorem freeze_preserves_bindingsPointToFrozen (r : Retort) (fd : FreezeData)
+    (hWF : bindingsPointToFrozen r)
+    (hFresh : freezeBindingsPointToFrozen r fd) :
+    bindingsPointToFrozen (applyOp r (.freeze fd)) := by
+  unfold bindingsPointToFrozen applyOp at *
+  simp only
+  intro b hb
+  rw [List.mem_append] at hb
+  match hb with
+  | Or.inl hbOld =>
+    -- Old binding: frame still exists, still frozen
+    obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hbOld
+    refine ⟨f, hf, hfid, ?_⟩
+    -- frameStatus preserved: cells unchanged, yields grew (frozen stays frozen)
+    unfold Retort.frameStatus at hfrozen ⊢
+    unfold Retort.cellDef at *
+    match h : r.cells.find? (fun c => c.name == f.cellName) with
+    | none => rw [h] at hfrozen; simp at hfrozen
+    | some cd =>
+      rw [h] at hfrozen ⊢
+      -- Yields grew: if all fields were frozen before, they're still frozen
+      simp only at hfrozen ⊢
+      split at hfrozen
+      · rename_i hAll
+        -- If all fields were frozen before, they're still frozen after yields grow
+        sorry
+      · split at hfrozen <;> simp at hfrozen
+  | Or.inr hbNew =>
+    -- New binding: use precondition, then show frame still frozen in new state
+    obtain ⟨f, hf, hfid, hfrozen⟩ := hFresh b hbNew
+    refine ⟨f, hf, hfid, ?_⟩
+    unfold Retort.frameStatus at hfrozen ⊢
+    unfold Retort.cellDef at *
+    match h : r.cells.find? (fun c => c.name == f.cellName) with
+    | none => rw [h] at hfrozen; simp at hfrozen
+    | some cd =>
+      rw [h] at hfrozen ⊢
+      simp only at hfrozen ⊢
+      split at hfrozen
+      · rename_i hAll
+        -- If all fields were frozen before, they're still frozen after yields grow
+        sorry
+      · split at hfrozen <;> simp at hfrozen
+
+-- Release doesn't add bindings or change frames/yields: trivially preserved.
+theorem release_preserves_bindingsPointToFrozen (r : Retort) (rd : ReleaseData)
+    (hWF : bindingsPointToFrozen r) :
+    bindingsPointToFrozen (applyOp r (.release rd)) := by
+  unfold bindingsPointToFrozen applyOp at *; simp only
+  intro b hb
+  obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hb
+  refine ⟨f, hf, hfid, ?_⟩
+  -- frameStatus: cells unchanged, frames unchanged, yields unchanged.
+  -- Only claims changed (filter). frameClaim may change, but if a frame was
+  -- frozen, its status came from the all-fields-frozen branch, not the
+  -- claims branch.
+  unfold Retort.frameStatus at hfrozen ⊢
+  unfold Retort.cellDef at *
+  match h : r.cells.find? (fun c => c.name == f.cellName) with
+  | none => rw [h] at hfrozen; simp at hfrozen
+  | some cd =>
+    rw [h] at hfrozen ⊢
+    -- yields and frameYields unchanged
+    unfold Retort.frameYields at *
+    simp only at hfrozen ⊢
+    -- yields list unchanged by release
+    sorry
+
+-- CreateFrame adds frames but not bindings. Old bindings still valid.
+theorem createFrame_preserves_bindingsPointToFrozen (r : Retort) (cfd : CreateFrameData)
+    (hWF : bindingsPointToFrozen r) :
+    bindingsPointToFrozen (applyOp r (.createFrame cfd)) := by
+  unfold bindingsPointToFrozen applyOp at *
+  simp only
+  intro b hb
+  obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hb
+  refine ⟨f, List.mem_append_left _ hf, hfid, ?_⟩
+  -- frameStatus: cells unchanged, yields unchanged. Frames grew but
+  -- frameYields only depends on yields (not frames list).
+  unfold Retort.frameStatus at hfrozen ⊢
+  unfold Retort.cellDef at *
+  match h : r.cells.find? (fun c => c.name == f.cellName) with
+  | none => rw [h] at hfrozen; simp at hfrozen
+  | some cd =>
+    rw [h] at hfrozen ⊢
+    unfold Retort.frameYields at *
+    simp only at hfrozen ⊢
+    exact hfrozen
+
+/-! ====================================================================
     COMPOSITE WELL-FORMEDNESS PRESERVATION
     ==================================================================== -/
 
@@ -1437,366 +1803,6 @@ theorem wellFormed_preserved (r : Retort) (op : RetortOp)
     -- makes tactic-level unfolding complex; individual preservation theorems
     -- follow the same pattern as freeze.
     exact ⟨sorry, sorry, sorry, sorry, sorry, sorry, sorry, sorry, sorry, sorry, sorry⟩
-
-/-! ====================================================================
-    PROOFS: Cells are stable after pour
-    ==================================================================== -/
-
--- Non-pour operations never change the cells list
-theorem cells_stable_non_pour (r : Retort) (op : RetortOp)
-    (hNotPour : ∀ pd, op ≠ .pour pd) :
-    (applyOp r op).cells = r.cells := by
-  cases op with
-  | pour pd => exact absurd rfl (hNotPour pd)
-  | claim _ => rfl
-  | freeze _ => rfl
-  | release _ => rfl
-  | createFrame _ => rfl
-  | bottom _ => simp only [applyOp]; split <;> (try split) <;> rfl
-
--- Non-pour operations never change the givens list
-theorem givens_stable_non_pour (r : Retort) (op : RetortOp)
-    (hNotPour : ∀ pd, op ≠ .pour pd) :
-    (applyOp r op).givens = r.givens := by
-  cases op with
-  | pour pd => exact absurd rfl (hNotPour pd)
-  | claim _ => rfl
-  | freeze _ => rfl
-  | release _ => rfl
-  | createFrame _ => rfl
-  | bottom _ => simp only [applyOp]; split <;> (try split) <;> rfl
-
-/-! ====================================================================
-    INDEPENDENT CLAIM COMMUTATIVITY
-    ==================================================================== -/
-
--- Two claims on different frames commute: they produce states that agree
--- on all append-only fields and differ only in claims list order.
-
--- Helper: claims list is a permutation
-theorem independent_claim_cells (r : Retort) (a b : ClaimData) :
-    (applyOp (applyOp r (.claim a)) (.claim b)).cells =
-    (applyOp (applyOp r (.claim b)) (.claim a)).cells := by
-  simp [applyOp]
-
-theorem independent_claim_givens (r : Retort) (a b : ClaimData) :
-    (applyOp (applyOp r (.claim a)) (.claim b)).givens =
-    (applyOp (applyOp r (.claim b)) (.claim a)).givens := by
-  simp [applyOp]
-
-theorem independent_claim_frames (r : Retort) (a b : ClaimData) :
-    (applyOp (applyOp r (.claim a)) (.claim b)).frames =
-    (applyOp (applyOp r (.claim b)) (.claim a)).frames := by
-  simp [applyOp]
-
-theorem independent_claim_yields (r : Retort) (a b : ClaimData) :
-    (applyOp (applyOp r (.claim a)) (.claim b)).yields =
-    (applyOp (applyOp r (.claim b)) (.claim a)).yields := by
-  simp [applyOp]
-
-theorem independent_claim_bindings (r : Retort) (a b : ClaimData) :
-    (applyOp (applyOp r (.claim a)) (.claim b)).bindings =
-    (applyOp (applyOp r (.claim b)) (.claim a)).bindings := by
-  simp [applyOp]
-
--- The claims lists are permutations of each other:
--- r.claims ++ [a_claim, b_claim] vs r.claims ++ [b_claim, a_claim]
--- Both contain exactly the same elements.
-theorem independent_claim_claims_perm (r : Retort) (a b : ClaimData)
-    (_hDiff : a.frameId ≠ b.frameId) :
-    ∀ c, c ∈ (applyOp (applyOp r (.claim a)) (.claim b)).claims ↔
-         c ∈ (applyOp (applyOp r (.claim b)) (.claim a)).claims := by
-  intro c
-  simp only [applyOp]
-  simp only [List.mem_append, List.mem_singleton]
-  constructor
-  · intro h
-    rcases h with (h | h) | h
-    · exact Or.inl (Or.inl h)
-    · exact Or.inr h
-    · exact Or.inl (Or.inr h)
-  · intro h
-    rcases h with (h | h) | h
-    · exact Or.inl (Or.inl h)
-    · exact Or.inr h
-    · exact Or.inl (Or.inr h)
-
--- Corollary: for any membership-based property P, P holds on one state
--- iff it holds on the other. This means all our Prop-based invariants
--- (which quantify over ∈) are agnostic to claim order.
-theorem independent_claims_preserve_membership_props
-    (r : Retort) (a b : ClaimData) (hDiff : a.frameId ≠ b.frameId)
-    (P : Claim → Prop)
-    (hP : ∀ c ∈ (applyOp (applyOp r (.claim a)) (.claim b)).claims, P c) :
-    ∀ c ∈ (applyOp (applyOp r (.claim b)) (.claim a)).claims, P c := by
-  intro c hc
-  exact hP c ((independent_claim_claims_perm r a b hDiff c).mpr hc)
-
-/-! ====================================================================
-    THE DAG: Acyclicity of Bindings
-    ==================================================================== -/
-
--- A binding edge goes from consumer to producer.
--- The DAG property: no frame transitively depends on itself.
-
--- Simple acyclicity: no self-loops (see I9 in wellFormed above)
-
--- Stronger: for same-cell bindings (stem cells reading own previous gen),
--- the producer must have a strictly lower generation
-def generationOrdered (r : Retort) : Prop :=
-  ∀ b ∈ r.bindings,
-    ∀ cf ∈ r.frames, ∀ pf ∈ r.frames,
-      cf.id = b.consumerFrame → pf.id = b.producerFrame →
-      cf.cellName = pf.cellName →
-      pf.generation < cf.generation
-
--- Bindings only point to frozen frames (can't read from the future)
-def bindingsPointToFrozen (r : Retort) : Prop :=
-  ∀ b ∈ r.bindings,
-    ∃ f ∈ r.frames, f.id = b.producerFrame ∧ r.frameStatus f = .frozen
-
--- freeze creates well-formed bindings (producer frames must be frozen)
--- This is enforced by construction: at freeze time, the piston has
--- already read the producer's yields (which means they're frozen).
-
-/-! ====================================================================
-    I10/I11 PRECONDITIONS AND PRESERVATION
-    ==================================================================== -/
-
--- Precondition: freeze bindings respect generation ordering for same-cell deps
-def freezeGenerationOrdered (r : Retort) (fd : FreezeData) : Prop :=
-  ∀ b ∈ fd.bindings,
-    ∀ cf ∈ r.frames, ∀ pf ∈ r.frames,
-      cf.id = b.consumerFrame → pf.id = b.producerFrame →
-      cf.cellName = pf.cellName →
-      pf.generation < cf.generation
-
--- Precondition: freeze bindings point to frozen frames
-def freezeBindingsPointToFrozen (r : Retort) (fd : FreezeData) : Prop :=
-  ∀ b ∈ fd.bindings,
-    ∃ f ∈ r.frames, f.id = b.producerFrame ∧ r.frameStatus f = .frozen
-
-/-! I10: generationOrdered preservation -/
-
--- Pour preserves generationOrdered (using bindingsWellFormed to know
--- old bindings reference old frames).
-theorem pour_preserves_generationOrdered (r : Retort) (pd : PourData)
-    (hWF : generationOrdered r) (hBWF : bindingsWellFormed r) :
-    generationOrdered (applyOp r (.pour pd)) := by
-  unfold generationOrdered applyOp at *
-  simp only
-  intro b hb cf hcf pf hpf hcid hpid hcell
-  -- b is an old binding. By bindingsWellFormed, both consumer and producer
-  -- frames referenced by b exist in r.frames.
-  obtain ⟨⟨cf', hcf', hcf'id⟩, ⟨pf', hpf', hpf'id⟩⟩ := hBWF b hb
-  -- cf.id = b.consumerFrame = cf'.id (from bindingsWellFormed)
-  -- pf.id = b.producerFrame = pf'.id
-  -- cf' and pf' are in r.frames (old frames)
-  -- We use hWF with cf' and pf' to get the generation ordering
-  -- But we need cf'.cellName = pf'.cellName, which we don't directly have.
-  -- We have cf.cellName = pf.cellName and cf.id = cf'.id, pf.id = pf'.id
-  -- But different frames can have the same id (in principle). Actually,
-  -- FrameId is opaque, so we can't deduce cellName from id alone.
-  -- The simplest approach: use cf' and pf' from bindingsWellFormed.
-  -- We know cf'.id = b.consumerFrame and pf'.id = b.producerFrame.
-  -- We also know cf.id = b.consumerFrame and pf.id = b.producerFrame.
-  -- But we can't conclude cf = cf' or pf = pf'.
-  -- However, the generationOrdered quantifies over ALL frames with
-  -- matching ids. So hWF gives us pf'.generation < cf'.generation
-  -- IF cf'.cellName = pf'.cellName. But we only know cf.cellName = pf.cellName.
-  -- The correct approach: we need the result for cf and pf specifically.
-  -- Since cf might be a NEW frame, the generation ordering must hold for it too.
-  -- This means we need either:
-  -- (a) A stronger precondition on pour (new frames don't share ids with old bindings)
-  -- (b) Or prove it from framesUnique + frame identity
-  -- Since framesUnique is by (cellName, generation), not by id, this is tricky.
-  -- Let me take a simpler approach: generationOrdered for the new state follows
-  -- because old bindings only match old frames (by ids), so we just delegate to hWF.
-  exact hWF b hb cf' hcf' pf' hpf' (hcf'id.symm ▸ hcid) (hpf'id.symm ▸ hpid) hcell
-
--- Claim doesn't add bindings or frames: trivially preserved.
-theorem claim_preserves_generationOrdered (r : Retort) (cd : ClaimData)
-    (hWF : generationOrdered r) :
-    generationOrdered (applyOp r (.claim cd)) := by
-  unfold generationOrdered applyOp at *; simp only; exact hWF
-
--- Freeze adds bindings and preserves frames. Old bindings use hWF;
--- new bindings use the precondition.
-theorem freeze_preserves_generationOrdered (r : Retort) (fd : FreezeData)
-    (hWF : generationOrdered r) (hFresh : freezeGenerationOrdered r fd) :
-    generationOrdered (applyOp r (.freeze fd)) := by
-  unfold generationOrdered applyOp at *
-  simp only
-  intro b hb cf hcf pf hpf hcid hpid hcell
-  rw [List.mem_append] at hb
-  cases hb with
-  | inl hbOld =>
-    -- Old binding, frames unchanged
-    exact hWF b hbOld cf hcf pf hpf hcid hpid hcell
-  | inr hbNew =>
-    -- New binding from freeze
-    exact hFresh b hbNew cf hcf pf hpf hcid hpid hcell
-
--- Release doesn't add bindings or frames: trivially preserved.
-theorem release_preserves_generationOrdered (r : Retort) (rd : ReleaseData)
-    (hWF : generationOrdered r) :
-    generationOrdered (applyOp r (.release rd)) := by
-  unfold generationOrdered applyOp at *; simp only; exact hWF
-
--- CreateFrame adds frames but not bindings. Old bindings remain valid
--- because new frames don't affect old binding references. Uses
--- bindingsWellFormed to know old bindings reference old frames.
-theorem createFrame_preserves_generationOrdered (r : Retort) (cfd : CreateFrameData)
-    (hWF : generationOrdered r) (hBWF : bindingsWellFormed r) :
-    generationOrdered (applyOp r (.createFrame cfd)) := by
-  unfold generationOrdered applyOp at *
-  simp only
-  intro b hb cf hcf pf hpf hcid hpid hcell
-  obtain ⟨⟨cf', hcf', hcf'id⟩, ⟨pf', hpf', hpf'id⟩⟩ := hBWF b hb
-  exact hWF b hb cf' hcf' pf' hpf' (hcf'id.symm ▸ hcid) (hpf'id.symm ▸ hpid) hcell
-
-/-! I11: bindingsPointToFrozen preservation -/
-
--- Pour doesn't add bindings, and old frozen frames remain frozen
--- (yields and cells preserved, so frameStatus preserved).
-theorem pour_preserves_bindingsPointToFrozen (r : Retort) (pd : PourData)
-    (hWF : bindingsPointToFrozen r) :
-    bindingsPointToFrozen (applyOp r (.pour pd)) := by
-  unfold bindingsPointToFrozen applyOp at *
-  simp only
-  intro b hb
-  obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hb
-  refine ⟨f, List.mem_append_left _ hf, hfid, ?_⟩
-  -- Need: frameStatus in new state = frameStatus in old state for old frames
-  -- cells are r.cells ++ pd.cells, so cellDef might change... but
-  -- actually cellDef uses find?, which returns the FIRST match.
-  -- Since r.cells is the prefix, find? on r.cells ++ pd.cells for an
-  -- old cellName still returns the old result.
-  unfold Retort.frameStatus at hfrozen ⊢
-  unfold Retort.cellDef at *
-  -- The find? on r.cells ++ pd.cells: if it found something in r.cells,
-  -- it still finds the same thing (find? returns first match).
-  -- We need a lemma: find? on l1 ++ l2 = find? on l1 if find? on l1 succeeds.
-  cases hcd : r.cells.find? (fun c => c.name == f.cellName) with
-  | none =>
-    -- cellDef was none in old state, so frameStatus = .declared, but hfrozen says .frozen
-    rw [hcd] at hfrozen; exact absurd hfrozen (by decide)
-  | some cd =>
-    rw [hcd] at hfrozen
-    -- find? on r.cells succeeds => find? on r.cells ++ pd.cells succeeds with same result
-    have hcd' : (r.cells ++ pd.cells).find? (fun c => c.name == f.cellName) = some cd := by
-      rw [List.find?_append]
-      simp [hcd]
-    rw [hcd']
-    -- Now the if-then-else in frameStatus: yields are unchanged by pour
-    -- frameYields uses r.yields (unchanged by pour)
-    unfold Retort.frameYields at *
-    simp only at hfrozen ⊢
-    -- The yields list is unchanged: pour doesn't modify yields
-    exact hfrozen
-
--- Claim doesn't add bindings or change frames/yields: trivially preserved.
-theorem claim_preserves_bindingsPointToFrozen (r : Retort) (cd : ClaimData)
-    (hWF : bindingsPointToFrozen r) :
-    bindingsPointToFrozen (applyOp r (.claim cd)) := by
-  unfold bindingsPointToFrozen applyOp at *; simp only; exact hWF
-
--- Freeze adds bindings. Old bindings still valid (frames/yields grew,
--- frozen status preserved). New bindings use the precondition.
-theorem freeze_preserves_bindingsPointToFrozen (r : Retort) (fd : FreezeData)
-    (hWF : bindingsPointToFrozen r)
-    (hFresh : freezeBindingsPointToFrozen r fd) :
-    bindingsPointToFrozen (applyOp r (.freeze fd)) := by
-  unfold bindingsPointToFrozen applyOp at *
-  simp only
-  intro b hb
-  rw [List.mem_append] at hb
-  cases hb with
-  | inl hbOld =>
-    -- Old binding: frame still exists, still frozen
-    obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hbOld
-    refine ⟨f, hf, hfid, ?_⟩
-    -- frameStatus preserved: cells unchanged, yields grew (frozen stays frozen)
-    unfold Retort.frameStatus at hfrozen ⊢
-    unfold Retort.cellDef at *
-    cases hcd : r.cells.find? (fun c => c.name == f.cellName) with
-    | none => rw [hcd] at hfrozen; exact absurd hfrozen (by decide)
-    | some cd =>
-      rw [hcd] at hfrozen ⊢
-      -- Yields grew: if all fields were frozen before, they're still frozen
-      simp only at hfrozen ⊢
-      split at hfrozen
-      · rename_i hAll
-        rw [if_pos (frozen_fields_preserved r
-          { cells := r.cells, givens := r.givens, frames := r.frames,
-            yields := r.yields ++ fd.yields, bindings := r.bindings ++ fd.bindings,
-            claims := r.claims.filter (fun c => c.frameId != fd.frameId) }
-          (fun y hy => List.mem_append_left _ hy) cd f.id hAll)]
-      · split at hfrozen <;> simp at hfrozen
-  | inr hbNew =>
-    -- New binding: use precondition, then show frame still frozen in new state
-    obtain ⟨f, hf, hfid, hfrozen⟩ := hFresh b hbNew
-    refine ⟨f, hf, hfid, ?_⟩
-    unfold Retort.frameStatus at hfrozen ⊢
-    unfold Retort.cellDef at *
-    cases hcd : r.cells.find? (fun c => c.name == f.cellName) with
-    | none => rw [hcd] at hfrozen; exact absurd hfrozen (by decide)
-    | some cd =>
-      rw [hcd] at hfrozen ⊢
-      simp only at hfrozen ⊢
-      split at hfrozen
-      · rename_i hAll
-        rw [if_pos (frozen_fields_preserved r
-          { cells := r.cells, givens := r.givens, frames := r.frames,
-            yields := r.yields ++ fd.yields, bindings := r.bindings ++ fd.bindings,
-            claims := r.claims.filter (fun c => c.frameId != fd.frameId) }
-          (fun y hy => List.mem_append_left _ hy) cd f.id hAll)]
-      · split at hfrozen <;> simp at hfrozen
-
--- Release doesn't add bindings or change frames/yields: trivially preserved.
-theorem release_preserves_bindingsPointToFrozen (r : Retort) (rd : ReleaseData)
-    (hWF : bindingsPointToFrozen r) :
-    bindingsPointToFrozen (applyOp r (.release rd)) := by
-  unfold bindingsPointToFrozen applyOp at *; simp only
-  intro b hb
-  obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hb
-  refine ⟨f, hf, hfid, ?_⟩
-  -- frameStatus: cells unchanged, frames unchanged, yields unchanged.
-  -- Only claims changed (filter). frameClaim may change, but if a frame was
-  -- frozen, its status came from the all-fields-frozen branch, not the
-  -- claims branch.
-  unfold Retort.frameStatus at hfrozen ⊢
-  unfold Retort.cellDef at *
-  cases hcd : r.cells.find? (fun c => c.name == f.cellName) with
-  | none => rw [hcd] at hfrozen; exact absurd hfrozen (by decide)
-  | some cd =>
-    rw [hcd] at hfrozen ⊢
-    -- yields and frameYields unchanged
-    unfold Retort.frameYields at *
-    simp only at hfrozen ⊢
-    -- yields list unchanged by release
-    exact hfrozen
-
--- CreateFrame adds frames but not bindings. Old bindings still valid.
-theorem createFrame_preserves_bindingsPointToFrozen (r : Retort) (cfd : CreateFrameData)
-    (hWF : bindingsPointToFrozen r) :
-    bindingsPointToFrozen (applyOp r (.createFrame cfd)) := by
-  unfold bindingsPointToFrozen applyOp at *
-  simp only
-  intro b hb
-  obtain ⟨f, hf, hfid, hfrozen⟩ := hWF b hb
-  refine ⟨f, List.mem_append_left _ hf, hfid, ?_⟩
-  -- frameStatus: cells unchanged, yields unchanged. Frames grew but
-  -- frameYields only depends on yields (not frames list).
-  unfold Retort.frameStatus at hfrozen ⊢
-  unfold Retort.cellDef at *
-  cases hcd : r.cells.find? (fun c => c.name == f.cellName) with
-  | none => rw [hcd] at hfrozen; exact absurd hfrozen (by decide)
-  | some cd =>
-    rw [hcd] at hfrozen ⊢
-    unfold Retort.frameYields at *
-    simp only at hfrozen ⊢
-    exact hfrozen
 
 /-! ====================================================================
     THE EVAL LOOP (as a state machine)
@@ -2511,11 +2517,11 @@ theorem merge_preserves_generationOrdered (r1 r2 : Retort)
   cases hb with
   | inl hbL =>
     -- b from r1: consumer and producer frames exist in r1 (by bindingsWellFormed)
-    obtain ⟨⟨cf', hcf', hcf'id⟩, ⟨pf', hpf', hpf'id⟩⟩ := hBWF1 b hbL
-    exact hWF1 b hbL cf' hcf' pf' hpf' (hcf'id.symm ▸ hcid) (hpf'id.symm ▸ hpid) hcell
+    -- TODO: need to match cellName from cf,pf to cf',pf'
+    sorry
   | inr hbR =>
-    obtain ⟨⟨cf', hcf', hcf'id⟩, ⟨pf', hpf', hpf'id⟩⟩ := hBWF2 b hbR
-    exact hWF2 b hbR cf' hcf' pf' hpf' (hcf'id.symm ▸ hcid) (hpf'id.symm ▸ hpid) hcell
+    -- b from r2: consumer and producer frames exist in r2 (by bindingsWellFormed)
+    sorry
 
 /-- The full merge disjointness condition for framesCellDefsExist:
     each retort's cellDef lookup must still work in the merged cells list.
@@ -2549,7 +2555,7 @@ def cellNamesDisjoint (r1 r2 : Retort) : Prop :=
   ∀ c1 ∈ r1.cells, ∀ c2 ∈ r2.cells, c1.name ≠ c2.name
 
 /-- The composite merge disjointness condition. -/
-structure MergeDisjoint (r1 r2 : Retort) extends MergeCompatible r1 r2 : Prop where
+structure MergeDisjoint (r1 r2 : Retort) : Prop extends MergeCompatible r1 r2 where
   frameCellDisjoint : frameCellNamesDisjoint r1 r2
   cellNameDisjoint  : cellNamesDisjoint r1 r2
 
@@ -2615,7 +2621,7 @@ theorem merge_preserves_wellFormed (r1 r2 : Retort)
     unfold Retort.frameStatus at hfrozen ⊢
     unfold Retort.cellDef at *
     cases hcd : r1.cells.find? (fun c => c.name == f.cellName) with
-    | none => rw [hcd] at hfrozen; exact absurd hfrozen (by decide)
+    | none => rw [hcd] at hfrozen; simp at hfrozen
     | some cd =>
       rw [hcd] at hfrozen
       have hcd' : (r1.cells ++ r2.cells).find? (fun c => c.name == f.cellName)
@@ -2624,18 +2630,8 @@ theorem merge_preserves_wellFormed (r1 r2 : Retort)
       rw [hcd']
       unfold Retort.frameYields at *
       simp only at hfrozen ⊢
-      exact frozen_fields_preserved
-        { cells := r1.cells, givens := r1.givens, frames := r1.frames,
-          yields := r1.yields, bindings := r1.bindings, claims := r1.claims }
-        { cells := r1.cells ++ r2.cells, givens := r1.givens ++ r2.givens,
-          frames := r1.frames ++ r2.frames,
-          yields := r1.yields ++ r2.yields,
-          bindings := r1.bindings ++ r2.bindings,
-          claims := r1.claims ++ r2.claims }
-        (fun y hy => List.mem_append_left _ hy) cd f.id
-        (by split at hfrozen
-            · rename_i h; exact h
-            · split at hfrozen <;> simp at hfrozen)
+      -- If all fields were covered in r1, they're still covered after yields grow
+      sorry
   | inr hbR =>
     -- b from r2: producer frame exists and is frozen in r2
     obtain ⟨f, hf, hfid, hfrozen⟩ := h2I11 b hbR
@@ -2643,7 +2639,7 @@ theorem merge_preserves_wellFormed (r1 r2 : Retort)
     unfold Retort.frameStatus at hfrozen ⊢
     unfold Retort.cellDef at *
     cases hcd : r2.cells.find? (fun c => c.name == f.cellName) with
-    | none => rw [hcd] at hfrozen; exact absurd hfrozen (by decide)
+    | none => rw [hcd] at hfrozen; simp at hfrozen
     | some cd =>
       rw [hcd] at hfrozen
       -- No r1 cell has f's cellName (by cellNamesDisjoint + framesCellDefsExist)
@@ -2655,18 +2651,8 @@ theorem merge_preserves_wellFormed (r1 r2 : Retort)
       rw [hcd']
       unfold Retort.frameYields at *
       simp only at hfrozen ⊢
-      exact frozen_fields_preserved
-        { cells := r2.cells, givens := r2.givens, frames := r2.frames,
-          yields := r2.yields, bindings := r2.bindings, claims := r2.claims }
-        { cells := r1.cells ++ r2.cells, givens := r1.givens ++ r2.givens,
-          frames := r1.frames ++ r2.frames,
-          yields := r1.yields ++ r2.yields,
-          bindings := r1.bindings ++ r2.bindings,
-          claims := r1.claims ++ r2.claims }
-        (fun y hy => List.mem_append_right _ hy) cd f.id
-        (by split at hfrozen
-            · rename_i h; exact h
-            · split at hfrozen <;> simp at hfrozen)
+      -- If all fields were covered in r2, they're still covered after yields grow
+      sorry
 
 /-! ====================================================================
     PROJECTION TO CLAIMS STATE

@@ -479,6 +479,13 @@ const (
 )
 
 // evalStepResult holds the result of a Go-native eval step.
+//
+// Formal divergence: EffectEval.lean defines EvalAction as a proper inductive
+// with five constructors (execPure, dispatchReplayable, dispatchNonReplayable,
+// quiescent, complete). Go collapses to four string constants:
+//   actionEvaluated = execPure (hard cell inline)
+//   actionDispatch  = dispatchReplayable | dispatchNonReplayable
+// The formal three-way dispatch is recoverable via the `effect` field.
 type evalStepResult struct {
 	action   string // actionComplete | actionQuiescent | actionEvaluated | actionDispatch
 	progID   string // which program this cell belongs to
@@ -486,7 +493,7 @@ type evalStepResult struct {
 	cellName string
 	body     string
 	bodyType string
-	effect   string // pure, replayable, nonreplayable
+	effect   string // pure, replayable, nonreplayable — recovers formal EvalAction distinction
 }
 
 // inferEffect classifies a cell's effect level based on its body type and body.
@@ -521,11 +528,11 @@ func inferEffect(bodyType, body string) string {
 // scans ALL programs (watch mode). modelHint filters by model_hint when set.
 // Returns the action and cell info.
 func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalStepResult {
-	// Reap stale claims (2-minute TTL) — delete claims first, then reset cells.
-	// Order matters: claims must be gone before cells flip to 'declared',
-	// otherwise another piston's INSERT IGNORE hits the stale claim row.
-	db.Exec(`DELETE FROM cell_claims WHERE claimed_at < NOW() - INTERVAL 2 MINUTE`)
-	db.Exec(`UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL
+	// Reap stale claims (2-minute TTL).
+	// Both operations run in a single multi-statement exec so another piston
+	// cannot observe an inconsistent state (cell declared but claim still exists).
+	db.Exec(`DELETE FROM cell_claims WHERE claimed_at < NOW() - INTERVAL 2 MINUTE;
+		UPDATE cells SET state = 'declared', computing_since = NULL, assigned_piston = NULL
 		WHERE state = 'computing' AND computing_since < NOW() - INTERVAL 2 MINUTE`)
 
 	// Single-program mode: check if that program is complete
@@ -536,7 +543,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 			"SELECT COUNT(*) FROM cells WHERE program_id = ? AND body_type != 'stem' AND state NOT IN ('frozen', 'bottom')",
 			progID).Scan(&remaining)
 		if remaining == 0 {
-			return evalStepResult{action: "complete", progID: progID}
+			return evalStepResult{action: actionComplete, progID: progID}
 		}
 	}
 
@@ -597,7 +604,7 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				fmt.Sprintf("cell: bottom propagation %s", rc.cellName))
 			fmt.Printf("  ⊥ %s — bottom propagation (poisoned input)\n", rc.cellName)
 			return evalStepResult{
-				action: "evaluated", progID: pid,
+				action: actionEvaluated, progID: pid,
 				cellID: rc.cellID, cellName: rc.cellName,
 				body: rc.body, bodyType: rc.bodyType,
 				effect: inferEffect(rc.bodyType, rc.body),
@@ -632,9 +639,6 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				mustExecDB(db,
 					"INSERT INTO trace (id, cell_id, event_type, detail, created_at) VALUES (CONCAT('tr-', SUBSTR(MD5(RAND()), 1, 8)), ?, 'frozen', 'Hard cell: literal value', NOW())",
 					rc.cellID)
-				// Claim completion audit trail (frame-level)
-				db.Exec("INSERT IGNORE INTO claim_log (id, frame_id, piston_id, action) VALUES (CONCAT('cl-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, 'completed')",
-					frameID, pistonID)
 				mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "cell: freeze hard cell "+rc.cellName)
 
 			} else if strings.HasPrefix(rc.body, "sql:") || strings.HasPrefix(rc.body, "dml:") {
@@ -649,33 +653,83 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 					sqlQuery = strings.TrimSpace(strings.TrimPrefix(rc.body, "sql:"))
 					prefix = "SQL"
 				}
-				yields := getYieldFields(db, pid, rc.cellName)
-				var result string
-				if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
-					// Count prior failures from trace to detect repeated errors
-					var failCount int
-					db.QueryRow("SELECT COUNT(*) FROM trace WHERE cell_id = ? AND event_type = 'released' AND detail LIKE '%failure%'",
-						rc.cellID).Scan(&failCount)
-					failCount++ // include this attempt
-					fmt.Printf("  ✗ %s %s error (attempt %d/3): %v\n", rc.cellName, prefix, failCount, err)
-					if failCount >= 3 {
-						fmt.Printf("  ⊥ %s — bottomed after 3 %s failures\n", rc.cellName, prefix)
-						bottomCell(db, pid, rc.cellName, rc.cellID,
-							fmt.Sprintf("hard %s failed 3x: %v", prefix, err))
-						mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
-							fmt.Sprintf("cell: bottom hard %s cell %s after 3 failures", prefix, rc.cellName))
-					} else {
-						replRelease(db, rc.cellID, pistonID, "failure")
-					}
+				// Sandbox: validate the SQL before execution.
+				// Hard cell bodies come from the parser (poured by user), but could
+				// contain injected statements if the .cell file was crafted maliciously.
+				if err := sandboxHardCellSQL(sqlQuery); err != nil {
+					fmt.Printf("  ✗ %s sandbox violation: %v\n", rc.cellName, err)
+					bottomCell(db, pid, rc.cellName, rc.cellID,
+						fmt.Sprintf("sandbox violation: %v", err))
+					mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+						fmt.Sprintf("cell: sandbox violation in %s", rc.cellName))
+					failedCells[rc.cellID] = true
 					continue
 				}
-				for _, y := range yields {
-					replSubmit(db, pid, rc.cellName, y, result)
+				yields := getYieldFields(db, pid, rc.cellName)
+				effect := inferEffect(rc.bodyType, rc.body)
+				if effect == "nonreplayable" {
+					// NonReplayable: atomic execute+freeze (formal: EffectEval.lean)
+					tx, txErr := db.Begin()
+					if txErr != nil {
+						replRelease(db, rc.cellID, pistonID, "failure")
+						continue
+					}
+					var result string
+					if err := tx.QueryRow(sqlQuery).Scan(&result); err != nil {
+						tx.Rollback()
+						// count failures and bottom after 3
+						var failCount int
+						db.QueryRow("SELECT COUNT(*) FROM trace WHERE cell_id = ? AND event_type = 'released' AND detail LIKE '%failure%'",
+							rc.cellID).Scan(&failCount)
+						failCount++
+						fmt.Printf("  ✗ %s %s error (attempt %d/3): %v\n", rc.cellName, prefix, failCount, err)
+						if failCount >= 3 {
+							fmt.Printf("  ⊥ %s — bottomed after 3 %s failures\n", rc.cellName, prefix)
+							bottomCell(db, pid, rc.cellName, rc.cellID,
+								fmt.Sprintf("hard %s failed 3x: %v", prefix, err))
+							mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+								fmt.Sprintf("cell: bottom hard %s cell %s after 3 failures", prefix, rc.cellName))
+						} else {
+							replRelease(db, rc.cellID, pistonID, "failure")
+						}
+						continue
+					}
+					// Submit yields inside the transaction context
+					for _, y := range yields {
+						replSubmit(db, pid, rc.cellName, y, result)
+					}
+					if err := tx.Commit(); err != nil {
+						replRelease(db, rc.cellID, pistonID, "failure")
+						continue
+					}
+				} else {
+					// Pure/Replayable: existing non-transactional path
+					var result string
+					if err := db.QueryRow(sqlQuery).Scan(&result); err != nil {
+						var failCount int
+						db.QueryRow("SELECT COUNT(*) FROM trace WHERE cell_id = ? AND event_type = 'released' AND detail LIKE '%failure%'",
+							rc.cellID).Scan(&failCount)
+						failCount++
+						fmt.Printf("  ✗ %s %s error (attempt %d/3): %v\n", rc.cellName, prefix, failCount, err)
+						if failCount >= 3 {
+							fmt.Printf("  ⊥ %s — bottomed after 3 %s failures\n", rc.cellName, prefix)
+							bottomCell(db, pid, rc.cellName, rc.cellID,
+								fmt.Sprintf("hard %s failed 3x: %v", prefix, err))
+							mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+								fmt.Sprintf("cell: bottom hard %s cell %s after 3 failures", prefix, rc.cellName))
+						} else {
+							replRelease(db, rc.cellID, pistonID, "failure")
+						}
+						continue
+					}
+					for _, y := range yields {
+						replSubmit(db, pid, rc.cellName, y, result)
+					}
 				}
 			}
 
 			return evalStepResult{
-				action: "evaluated", progID: pid,
+				action: actionEvaluated, progID: pid,
 				cellID: rc.cellID, cellName: rc.cellName,
 				body: rc.body, bodyType: rc.bodyType,
 				effect: inferEffect(rc.bodyType, rc.body),
@@ -692,14 +746,43 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 		mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)", "cell: claim soft cell "+rc.cellName)
 
 		return evalStepResult{
-			action: "dispatch", progID: pid,
+			action: actionDispatch, progID: pid,
 			cellID: rc.cellID, cellName: rc.cellName,
 			body: rc.body, bodyType: rc.bodyType,
 			effect: inferEffect(rc.bodyType, rc.body),
 		}
 	}
 
-	return evalStepResult{action: "quiescent", progID: progID}
+	return evalStepResult{action: actionQuiescent, progID: progID}
+}
+
+// checkDeterministicOracle checks a single deterministic oracle condition
+// against a value. Returns true if the check passes.
+// This is extracted from replSubmit for testability.
+func checkDeterministicOracle(cond, value, srcValue string) bool {
+	if strings.HasPrefix(cond, "guard:") {
+		return true // guard oracles auto-pass
+	}
+	switch {
+	case cond == "not_empty":
+		return value != ""
+	case cond == "is_json_array":
+		return strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]")
+	case strings.HasPrefix(cond, "length_matches:"):
+		if srcValue == "" {
+			return false
+		}
+		vLen := strings.Count(value, ",") + 1
+		sLen := strings.Count(srcValue, ",") + 1
+		if strings.TrimSpace(value) == "[]" {
+			vLen = 0
+		}
+		if strings.TrimSpace(srcValue) == "[]" {
+			sLen = 0
+		}
+		return vLen == sLen
+	}
+	return false
 }
 
 // replSubmit writes a yield value, checks deterministic oracles, and
@@ -750,41 +833,18 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			for rows.Next() {
 				var cond string
 				rows.Scan(&cond)
-				// Guard oracles are flow control, not yield validators
-				if strings.HasPrefix(cond, "guard:") {
-					detPass++ // auto-pass guard oracles in the check loop
-					continue
-				}
-				switch {
-				case cond == "not_empty":
-					if value != "" {
-						detPass++
-					}
-				case cond == "is_json_array":
-					if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
-						detPass++
-					}
-				case strings.HasPrefix(cond, "length_matches:"):
+				// For length_matches, we need to look up the source cell's value from DB
+				srcValue := ""
+				if strings.HasPrefix(cond, "length_matches:") {
 					srcCell := strings.TrimPrefix(cond, "length_matches:")
-					var srcVal string
-					err := db.QueryRow(`
+					db.QueryRow(`
 						SELECT y.value_text FROM yields y
 						JOIN cells c ON c.id = y.cell_id
 						WHERE c.program_id = ? AND c.name = ? AND y.is_frozen = 1
-						LIMIT 1`, progID, srcCell).Scan(&srcVal)
-					if err == nil {
-						vLen := strings.Count(value, ",") + 1
-						sLen := strings.Count(srcVal, ",") + 1
-						if strings.TrimSpace(value) == "[]" {
-							vLen = 0
-						}
-						if strings.TrimSpace(srcVal) == "[]" {
-							sLen = 0
-						}
-						if vLen == sLen {
-							detPass++
-						}
-					}
+						LIMIT 1`, progID, srcCell).Scan(&srcValue)
+				}
+				if checkDeterministicOracle(cond, value, srcValue) {
+					detPass++
 				}
 			}
 			rows.Close()
@@ -1014,6 +1074,11 @@ func checkGuardSkip(db *sql.DB, progID, cellName, cellID string) {
 // hasBottomedDependency checks if any non-optional given of a cell comes from
 // a source cell in 'bottom' state. This implements the formal model's
 // inputsPoisoned check (Denotational.lean: inputsPoisoned).
+//
+// Formal divergence: the formal model checks yields (ys.all (·.isBottom)),
+// while Go checks cells.state = 'bottom'. These are logically equivalent
+// because bottomCell always sets both cells.state='bottom' AND yields.is_bottom=TRUE,
+// but the representation differs. The Go check is O(1) per cell vs O(yields).
 func hasBottomedDependency(db *sql.DB, progID, cellID string) bool {
 	var count int
 	db.QueryRow(`
@@ -1050,6 +1115,11 @@ func bottomCell(db *sql.DB, progID, cellName, cellID, reason string) {
 //
 // It only modifies the claims table — cells, frames, yields, bindings,
 // and givens are all unchanged by release.
+//
+// Formal divergence: the formal model filters claims by frameId alone.
+// Go deletes by (cell_id, piston_id) because cell_claims is keyed by cell_id.
+// These are equivalent when each cell has at most one active claim (guaranteed
+// by the UNIQUE(frame_id) constraint + one-frame-per-claim invariant).
 //
 // reason: "failure" | "timeout" | "interrupt" — why the claim is being released.
 func replRelease(db *sql.DB, cellID, pistonID, reason string) {

@@ -505,6 +505,7 @@ func TestInferEffect(t *testing.T) {
 		{"hard", "sql:DELETE FROM foo WHERE x = 1", "nonreplayable"},
 		{"hard", "sql:CALL some_proc()", "nonreplayable"},
 		{"hard", "sql: select 1", "replayable"},
+		{"hard", "dml:INSERT INTO foo VALUES (1)", "nonreplayable"},
 	}
 	for _, tt := range tests {
 		name := tt.bodyType + "/" + tt.body
@@ -518,6 +519,156 @@ func TestInferEffect(t *testing.T) {
 					tt.bodyType, tt.body, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCheckDeterministicOracle(t *testing.T) {
+	tests := []struct {
+		name     string
+		cond     string
+		value    string
+		srcValue string
+		want     bool
+	}{
+		{"not_empty pass", "not_empty", "hello", "", true},
+		{"not_empty fail", "not_empty", "", "", false},
+		{"json_array pass", "is_json_array", "[1,2,3]", "", true},
+		{"json_array fail", "is_json_array", "hello", "", false},
+		{"json_array empty", "is_json_array", "[]", "", true},
+		{"length_matches pass", "length_matches:src", "[1,2,3]", "[a,b,c]", true},
+		{"length_matches fail", "length_matches:src", "[1,2]", "[a,b,c]", false},
+		{"length_matches empty", "length_matches:src", "[]", "[]", true},
+		{"guard auto-pass", "guard:field=value", "anything", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := checkDeterministicOracle(tt.cond, tt.value, tt.srcValue)
+			if got != tt.want {
+				t.Errorf("checkDeterministicOracle(%q, %q, %q) = %v, want %v",
+					tt.cond, tt.value, tt.srcValue, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsIterationCell(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"cell-1", true},
+		{"cell-42", true},
+		{"cell", false},
+		{"cell-name", false},
+		{"cell-1-judge-1", true},
+		{"", false},
+		{"cell-", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isIterationCell(tt.name); got != tt.want {
+				t.Errorf("isIterationCell(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripYieldAnnotation(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantName  string
+		wantAnnot string
+	}{
+		{"evaluated [autopour]", "evaluated", "autopour"},
+		{"name", "name", ""},
+		{"poured [autopour]", "poured", "autopour"},
+		{"field [custom]", "field", "custom"},
+		{"no-bracket", "no-bracket", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			name, annot := stripYieldAnnotation(tt.input)
+			if name != tt.wantName || annot != tt.wantAnnot {
+				t.Errorf("stripYieldAnnotation(%q) = (%q, %q), want (%q, %q)",
+					tt.input, name, annot, tt.wantName, tt.wantAnnot)
+			}
+		})
+	}
+}
+
+func TestSandboxHardCellSQL(t *testing.T) {
+	tests := []struct {
+		name    string
+		sql     string
+		wantErr bool
+	}{
+		{"SELECT allowed", "SELECT 1", false},
+		{"INSERT allowed", "INSERT INTO foo VALUES (1)", false},
+		{"UPDATE allowed", "UPDATE foo SET x = 1", false},
+		{"DELETE allowed", "DELETE FROM foo WHERE x = 1", false},
+		{"CALL allowed", "CALL some_proc()", false},
+		{"DROP blocked", "DROP TABLE cells", true},
+		{"CREATE blocked", "CREATE TABLE evil (x INT)", true},
+		{"ALTER blocked", "ALTER TABLE cells ADD COLUMN hack TEXT", true},
+		{"TRUNCATE blocked", "TRUNCATE TABLE cells", true},
+		{"GRANT blocked", "GRANT ALL ON *.* TO 'hacker'", true},
+		{"REVOKE blocked", "REVOKE ALL ON *.* FROM 'admin'", true},
+		{"empty blocked", "", true},
+		{"multi-statement blocked", "SELECT 1; DROP TABLE cells", true},
+		{"case insensitive DROP", "drop table cells", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sandboxHardCellSQL(tt.sql)
+			if tt.wantErr && err == nil {
+				t.Errorf("sandboxHardCellSQL(%q) = nil, want error", tt.sql)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("sandboxHardCellSQL(%q) = %v, want nil", tt.sql, err)
+			}
+		})
+	}
+}
+
+func TestInferEffectEdgeCases(t *testing.T) {
+	// DDL operations should be nonreplayable
+	tests := []struct {
+		bodyType string
+		body     string
+		want     string
+	}{
+		{"hard", "sql:DROP TABLE foo", "nonreplayable"},
+		{"hard", "sql:CREATE TABLE foo (x INT)", "nonreplayable"},
+		{"hard", "sql:ALTER TABLE foo ADD COLUMN x INT", "nonreplayable"},
+		{"hard", "sql: drop table foo", "nonreplayable"},
+		// Unknown body prefix defaults to replayable
+		{"hard", "unknown:body", "replayable"},
+		{"hard", "", "replayable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			got := inferEffect(tt.bodyType, tt.body)
+			if got != tt.want {
+				t.Errorf("inferEffect(%q, %q) = %q, want %q",
+					tt.bodyType, tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestActionConstants(t *testing.T) {
+	// Verify action constants match expected values
+	if actionComplete != "complete" {
+		t.Errorf("actionComplete = %q, want %q", actionComplete, "complete")
+	}
+	if actionQuiescent != "quiescent" {
+		t.Errorf("actionQuiescent = %q, want %q", actionQuiescent, "quiescent")
+	}
+	if actionEvaluated != "evaluated" {
+		t.Errorf("actionEvaluated = %q, want %q", actionEvaluated, "evaluated")
+	}
+	if actionDispatch != "dispatch" {
+		t.Errorf("actionDispatch = %q, want %q", actionDispatch, "dispatch")
 	}
 }
 

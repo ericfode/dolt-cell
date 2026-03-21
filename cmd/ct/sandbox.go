@@ -49,6 +49,27 @@ func sandboxSQL(sqlText string) error {
 	return nil
 }
 
+// sandboxHardCellSQL validates that a hard cell's SQL body is safe to execute.
+// Allows SELECT (replayable) and single-statement DML (nonreplayable).
+// Blocks: multi-statement injection, DDL, admin commands.
+func sandboxHardCellSQL(sqlQuery string) error {
+	stmts := splitSQLStatements(sqlQuery)
+	if len(stmts) == 0 {
+		return fmt.Errorf("empty SQL body")
+	}
+	if len(stmts) > 1 {
+		return fmt.Errorf("multi-statement SQL not allowed in hard cells (got %d statements)", len(stmts))
+	}
+	upper := strings.ToUpper(strings.TrimSpace(stmts[0]))
+	blocked := []string{"DROP ", "CREATE ", "ALTER ", "TRUNCATE ", "GRANT ", "REVOKE "}
+	for _, b := range blocked {
+		if strings.HasPrefix(upper, b) {
+			return fmt.Errorf("blocked DDL/admin statement: %s", b)
+		}
+	}
+	return nil
+}
+
 // splitSQLStatements splits on semicolons, handling basic quoting.
 func splitSQLStatements(text string) []string {
 	var stmts []string

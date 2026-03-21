@@ -70,7 +70,10 @@ func autoInitRetort(db *sql.DB) bool {
 		fmt.Fprintf(os.Stderr, "ct: auto-init: cannot find schema/procedures.sql\n")
 		return false
 	}
-	db.Exec("USE retort")
+	if _, err := db.Exec("USE retort"); err != nil {
+		fmt.Fprintf(os.Stderr, "ct: auto-init: USE retort failed: %v\n", err)
+		return false
+	}
 	for _, proc := range parseProcSQL(string(procSQL)) {
 		if _, err := db.Exec(proc); err != nil {
 			fmt.Fprintf(os.Stderr, "ct: auto-init proc: %v\n", err)

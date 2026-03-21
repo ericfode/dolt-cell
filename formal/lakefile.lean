@@ -39,3 +39,6 @@ lean_lib AgentProtocol where
 
 lean_lib PromptTemplates where
   roots := #[`PromptTemplates]
+
+lean_lib HealthPatrol where
+  roots := #[`HealthPatrol]

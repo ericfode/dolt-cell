@@ -90,7 +90,14 @@ theorem sling_assigns_bead (ps : AgentProtocol.ProviderState)
     match bs'.beads opts.beadId with
     | some b' => b'.assignee = some opts.target
     | none => False := by
-  sorry -- needs tracking through update + create
+  simp only [sling, BeadStore.update, hget, BeadStore.create]
+  by_cases hc : opts.convoy = true <;> simp [hc]
+  · -- convoy case: need to resolve nested if for bead lookup
+    by_cases hid : toString "bead-" ++ toString bs.nextId = opts.beadId
+    · -- collision: convoy overwrites, but convoy also has assignee = some opts.target
+      simp [← hid]
+    · -- no collision: the update for opts.beadId survives
+      simp [Ne.symm hid]
 
 /-- Sling records an event. -/
 theorem sling_records_event (ps : AgentProtocol.ProviderState)
@@ -98,7 +105,8 @@ theorem sling_records_event (ps : AgentProtocol.ProviderState)
     (opts : SlingOpts) (ts : Timestamp) :
     let (_, _, el') := sling ps bs el opts ts
     el'.events.length > el.events.length := by
-  sorry
+  simp only [sling, EventBus.record]
+  simp [List.length_append]
 
 -- TODO: formalize derivation claim as a real theorem
 /-- Derivation claim: the CRUD core of sling uses P1, P2, P3, P4.

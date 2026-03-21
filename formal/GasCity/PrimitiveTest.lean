@@ -29,12 +29,16 @@ def isAtomic (c : Capability) : Prop :=
   c.layer = .layer01
 
 /-- Bitter Lesson: true if the capability becomes MORE useful
-    as models improve (pure transport/plumbing). -/
-axiom passesBitterLesson (c : Capability) : Prop
+    as models improve (pure transport/plumbing).
+    Modeled as opaque predicate — not provable from structure alone,
+    requires domain judgment. -/
+opaque passesBitterLesson (_c : Capability) : Prop := True
 
 /-- ZFC: true if the capability involves no judgment calls in Go.
-    Pure data movement, process management, filesystem operations. -/
-axiom passesZFC (c : Capability) : Prop
+    Pure data movement, process management, filesystem operations.
+    Modeled as opaque predicate — not provable from structure alone,
+    requires domain judgment. -/
+opaque passesZFC (_c : Capability) : Prop := True
 
 /-- A capability is a primitive iff all three conditions hold. -/
 def isPrimitive (c : Capability) : Prop :=

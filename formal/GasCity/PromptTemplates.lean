@@ -48,7 +48,7 @@ def mergeEnv (ctx : PromptContext) : List (String × String) :=
 inductive RenderResult where
   | success : String → RenderResult
   | fallback : String → RenderResult  -- raw template text on error
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, Inhabited
 
 /-- Render always produces some output (either success or fallback). -/
 opaque render (template : String) (ctx : PromptContext) : RenderResult
@@ -63,7 +63,18 @@ theorem sdk_override (ctx : PromptContext) (k v : String)
     (henv : (k, v) ∈ ctx.env)
     (hsdk : k ∈ (sdkFields ctx).map (·.1)) :
     ∀ p ∈ mergeEnv ctx, p.1 = k → p ∈ sdkFields ctx := by
-  sorry
+  intro p hp hpk
+  simp only [mergeEnv] at hp
+  rw [List.mem_append] at hp
+  cases hp with
+  | inl hfiltered =>
+    -- p is in the filtered env: but filter removes all SDK keys
+    rw [List.mem_filter] at hfiltered
+    -- hfiltered.2 says p.1 ∉ sdkKeys, but hpk says p.1 = k and hsdk says k ∈ sdkKeys
+    simp only [decide_eq_true_eq] at hfiltered
+    exact absurd (hpk ▸ hsdk) hfiltered.2
+  | inr hsdk_mem =>
+    exact hsdk_mem
 
 /-- Rendering never crashes: it always produces RenderResult. -/
 theorem render_total (t : String) (ctx : PromptContext) :

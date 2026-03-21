@@ -112,11 +112,49 @@ def activationLevel (sections : List ConfigSection) : Fin 9 :=
   else if .agent ∈ sections ∧ .workspace ∈ sections then ⟨1, by omega⟩
   else ⟨0, by omega⟩
 
+/-- Nat-valued activation level, mirroring `activationLevel` without `Fin` wrapping. -/
+private def actLvlN (s : List ConfigSection) : Nat :=
+  if .fullOrch ∈ s then 8 else if .orders ∈ s then 7
+  else if .daemonHealth ∈ s then 6 else if .formulas ∈ s then 5
+  else if .mail ∈ s then 4 else if .agentPool ∈ s then 3
+  else if .daemon ∈ s then 2
+  else if .agent ∈ s ∧ .workspace ∈ s then 1 else 0
+
+private theorem activationLevel_val (s : List ConfigSection) :
+    (activationLevel s).val = actLvlN s := by
+  simp only [activationLevel, actLvlN]; repeat (split <;> try rfl)
+
 /-- Progressive activation is monotonic: adding sections never
     decreases the level. -/
 theorem activation_monotonic (s1 s2 : List ConfigSection)
     (hsub : ∀ x ∈ s1, x ∈ s2) :
     (activationLevel s1).val ≤ (activationLevel s2).val := by
-  sorry
+  rw [activationLevel_val, activationLevel_val]; simp only [actLvlN]
+  -- Case-split on each s1 membership; transfer to s2 via hsub.
+  by_cases h8 : ConfigSection.fullOrch ∈ s1
+  · simp [if_pos h8, if_pos (hsub _ h8)]
+  · simp only [if_neg h8]
+    by_cases h7 : ConfigSection.orders ∈ s1
+    · simp [if_pos h7, if_pos (hsub _ h7)]; split <;> omega
+    · simp only [if_neg h7]
+      by_cases h6 : ConfigSection.daemonHealth ∈ s1
+      · simp [if_pos h6, if_pos (hsub _ h6)]; repeat (split <;> try omega)
+      · simp only [if_neg h6]
+        by_cases h5 : ConfigSection.formulas ∈ s1
+        · simp [if_pos h5, if_pos (hsub _ h5)]; repeat (split <;> try omega)
+        · simp only [if_neg h5]
+          by_cases h4 : ConfigSection.mail ∈ s1
+          · simp [if_pos h4, if_pos (hsub _ h4)]; repeat (split <;> try omega)
+          · simp only [if_neg h4]
+            by_cases h3 : ConfigSection.agentPool ∈ s1
+            · simp [if_pos h3, if_pos (hsub _ h3)]; repeat (split <;> try omega)
+            · simp only [if_neg h3]
+              by_cases h2 : ConfigSection.daemon ∈ s1
+              · simp [if_pos h2, if_pos (hsub _ h2)]; repeat (split <;> try omega)
+              · simp only [if_neg h2]
+                by_cases h1 : ConfigSection.agent ∈ s1 ∧ ConfigSection.workspace ∈ s1
+                · simp [if_pos h1, if_pos (And.intro (hsub _ h1.1) (hsub _ h1.2))]
+                  repeat (split <;> try omega)
+                · simp [if_neg h1]
 
 end GasCity.Layering

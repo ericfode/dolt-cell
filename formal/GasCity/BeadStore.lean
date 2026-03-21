@@ -110,6 +110,42 @@ theorem StoreState.ext {s1 s2 : StoreState}
   simp_all
 
 -- ═══════════════════════════════════════════════════════════════
+-- String helpers for ID uniqueness proofs
+-- ═══════════════════════════════════════════════════════════════
+
+private theorem Nat.toDigitsCore_append (base fuel n : Nat) (ds : List Char) :
+    Nat.toDigitsCore base fuel n ds = Nat.toDigitsCore base fuel n [] ++ ds := by
+  induction fuel generalizing n ds with
+  | zero => simp [Nat.toDigitsCore]
+  | succ fuel ih =>
+    simp only [Nat.toDigitsCore]; split
+    · simp
+    · rw [ih, ih (ds := [_])]; simp [List.append_assoc, List.cons_append]
+
+private theorem Nat.toDigitsCore_getLast? (base fuel n : Nat) :
+    List.getLast? (Nat.toDigitsCore base (fuel + 1) n [])
+      = some (Nat.digitChar (n % base)) := by
+  simp only [Nat.toDigitsCore]; split
+  · simp [List.getLast?]
+  · rw [Nat.toDigitsCore_append]; exact List.getLast?_concat ..
+
+private theorem Nat.repr_ne_succ (n : Nat) : Nat.repr n ≠ Nat.repr (n + 1) := by
+  intro h; unfold Nat.repr at h
+  have h1 : Nat.toDigits 10 n = Nat.toDigits 10 (n + 1) := by
+    have := congrArg String.toList h; simp [String.toList_ofList] at this; exact this
+  unfold Nat.toDigits at h1
+  have ln := Nat.toDigitsCore_getLast? 10 n n
+  rw [h1, Nat.toDigitsCore_getLast? 10 (n + 1) (n + 1)] at ln
+  have hinj := Option.some.inj ln
+  have h_dc : ∀ k, k < 10 → (Nat.digitChar k).toNat = 48 + k := by
+    intro k hk; rcases k with _ | _ | _ | _ | _ | _ | _ | _ | _ | _ | k
+    all_goals (first | rfl | omega)
+  have := congrArg Char.toNat hinj
+  have := h_dc _ (Nat.mod_lt n (by omega))
+  have := h_dc _ (Nat.mod_lt (n + 1) (by omega))
+  omega
+
+-- ═══════════════════════════════════════════════════════════════
 -- Conformance Suite Theorems (15 invariants)
 -- ═══════════════════════════════════════════════════════════════
 
@@ -117,8 +153,10 @@ theorem StoreState.ext {s1 s2 : StoreState}
 theorem create_unique_id (s : StoreState) (b : Bead) :
     let (_, newBead) := create s b
     newBead.id ≠ "" := by
-  simp only [create]
-  sorry
+  simp only [create, toString]
+  intro h
+  have : ("bead-" ++ Nat.repr s.nextId).length = ("").length := congrArg String.length h
+  simp (config := { decide := true }) [String.length_append] at this
 
 /-- C2: Create sets Status = open regardless of input. -/
 theorem create_status_open (s : StoreState) (b : Bead) :
@@ -131,26 +169,57 @@ theorem create_ids_differ (s : StoreState) (b1 b2 : Bead) :
     let (s', bead1) := create s b1
     let (_, bead2) := create s' b2
     bead1.id ≠ bead2.id := by
-  simp only [create]
-  sorry
+  simp only [create, toString]
+  intro h
+  have := congrArg String.toList h
+  simp [String.toList_append] at this
+  exact absurd (String.ext this) (Nat.repr_ne_succ s.nextId)
 
 /-- C6: Close is idempotent. -/
 theorem close_idempotent (s : StoreState) (id : BeadId) :
     close (close s id) id = close s id := by
-  sorry
+  rcases hs : s.beads id with _ | b
+  · simp [close, hs]
+  · have hclose : close s id =
+        { beads := fun n => if n = id then some { b with status := Status.closed }
+            else s.beads n, nextId := s.nextId } := by
+      unfold close; simp [hs]
+    rw [hclose]; unfold close; simp
+    funext n; split <;> rfl
 
-/-- C7: Close removes from Ready. -/
+/-- C7: Close removes from Ready.
+    Requires store consistency: beads are stored at their own ID key. -/
 theorem close_removes_from_ready (s : StoreState) (id : BeadId) (allIds : List BeadId)
-    (h : id ∈ allIds) :
+    (_ : id ∈ allIds)
+    (hc : ∀ aid b, s.beads aid = some b → b.id = aid) :
     ∀ b ∈ ready (close s id) allIds, b.id ≠ id := by
-  intro b hb
-  simp [ready, close] at hb
-  sorry -- depends on store structure details
+  intro b hb; simp only [ready, List.mem_filterMap] at hb
+  obtain ⟨aid, _, haid_eq⟩ := hb
+  rcases hs_id : s.beads id with _ | ob
+  · -- close is no-op
+    rw [show close s id = s by unfold close; simp [hs_id]] at haid_eq
+    rcases hs_aid : s.beads aid with _ | b' <;> simp [hs_aid] at haid_eq
+    obtain ⟨_, rfl⟩ := haid_eq
+    intro heq; have : aid = id := (hc _ _ hs_aid).symm.trans heq
+    rw [this] at hs_aid; rw [hs_aid] at hs_id; exact absurd hs_id (by simp)
+  · -- close sets status to closed
+    have hcb : (close s id).beads = fun n =>
+        if n = id then some { ob with status := Status.closed } else s.beads n := by
+      unfold close; simp [hs_id]
+    by_cases haid_id : aid = id
+    · subst haid_id; simp [hcb] at haid_eq
+    · simp [hcb, haid_id] at haid_eq
+      rcases hs_aid : s.beads aid with _ | b' <;> simp [hs_aid] at haid_eq
+      obtain ⟨_, rfl⟩ := haid_eq
+      exact fun heq => haid_id ((hc _ _ hs_aid).symm.trans heq)
 
 /-- C8: Update with all-none opts is no-op. -/
 theorem update_nil_noop (s : StoreState) (id : BeadId) :
     update s id {} = s := by
-  sorry
+  unfold update; split
+  · rfl
+  · rename_i b hb; simp only [Option.getD]; congr 1; funext n
+    split <;> simp_all
 
 /-- C9: Labels only append, never replace. -/
 theorem labels_append (s : StoreState) (id : BeadId) (newLabels : List Label)
@@ -159,6 +228,7 @@ theorem labels_append (s : StoreState) (id : BeadId) (newLabels : List Label)
     match s'.beads id with
     | some b' => b.labels ++ newLabels = b'.labels
     | none => False := by
-  sorry
+  simp only [update, hget, Option.getD]
+  simp
 
 end GasCity.BeadStore

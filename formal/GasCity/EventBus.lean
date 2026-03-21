@@ -106,7 +106,7 @@ theorem append_only (log : EventLog) (e : Event) :
 /-- Empty filter matches all events. -/
 theorem empty_filter_matches_all (e : Event) :
     e.matchesFilter {} = true := by
-  sorry
+  simp [Event.matchesFilter]
 
 /-- LatestSeq returns 0 for empty log. -/
 theorem latestSeq_empty : latestSeq EventLog.empty = 0 := by
@@ -124,6 +124,6 @@ theorem watch_cursor_correct (log : EventLog) (afterSeq : Seq) :
 theorem seq_persistence (log : EventLog) (e : Event) :
     let log' := record log e
     (log'.events.getLast?).map (·.seq) = some log.nextSeq := by
-  sorry
+  simp [record, List.getLast?_append]
 
 end GasCity.EventBus

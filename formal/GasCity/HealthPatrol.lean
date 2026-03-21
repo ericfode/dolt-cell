@@ -98,7 +98,13 @@ theorem quarantine_auto_expires (h : CrashHistory) (cfg : PatrolConfig)
     (hq : isQuarantined h now cfg = true)
     (hfuture : ∀ ts ∈ h.restarts, futureNow - ts ≥ cfg.restartWindow) :
     isQuarantined h futureNow cfg = false := by
-  sorry
+  simp only [isQuarantined, prune]
+  suffices hfilt : List.filter (fun ts => decide (futureNow - ts < cfg.restartWindow)) h.restarts = [] by
+    simp [hfilt]
+  rw [List.filter_eq_nil_iff]
+  intro ts hts
+  simp only [decide_eq_true_eq, Nat.not_lt]
+  exact hfuture ts hts
 
 /-- One-for-one restart: applying agent A's reconcile action
     does not change the session state for agent B. -/
@@ -112,8 +118,8 @@ theorem one_for_one (ps : AgentProtocol.ProviderState)
     (AgentProtocol.stop ps nameA).sessions nameB = ps.sessions nameB := by
   constructor
   · simp [AgentProtocol.start]
-    split <;> simp [hne]
-  · simp [AgentProtocol.stop, hne]
+    split <;> simp [Ne.symm hne]
+  · simp [AgentProtocol.stop, Ne.symm hne]
 
 /-- Reconciliation is idempotent: a healthy agent stays skipped. -/
 theorem reconcile_healthy_skip (ps : AgentProtocol.ProviderState)

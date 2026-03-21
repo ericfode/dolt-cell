@@ -11,31 +11,27 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-const usage = `ct — Cell Tool (plumbing for Cell runtime pistons)
+const usage = `ct — Cell Tool (Lua runtime for the Cell dataflow language)
 
 Usage:
-  ct piston                                            Autonomous piston loop (ct next → think → ct submit)
+  ct pour <name> <file.lua>                           Load a Lua cell program into the retort
+  ct run <name> <file.lua>                            Pour + run a cell program (everything in Lua)
+  ct lint <file.lua>                                  Validate a Lua cell program
+  ct piston                                           Autonomous piston loop
   ct piston <program-id>                              Piston for one program
-  ct next [--wait] [--model <hint>] [<program-id>]      Claim next ready cell, print prompt, exit
-  ct next --wait                                      Block until a cell is ready (polls every 2s)
-  ct next --model claude                              Only claim cells matching model_hint
-  ct watch                                            Live dashboard: all programs, all cells (2s refresh)
-  ct watch <program-id>                               Live dashboard for one program
-  ct pour <name> <file.cell>                          Load a program
-  ct eval <name> <file.cell>                          Submit .cell to cell-zero-eval for parsing + evaluation
-  ct run <program-id>                                 Eval loop: hard cells inline, soft cells print prompt
-  ct run-lua <name> <file.lua>                        Pour + run a Lua program (everything in Lua)
+  ct next [--wait] [--model <hint>] [<program-id>]    Claim next ready cell, print prompt, exit
   ct submit <program-id> <cell> <field> <value>       Submit a soft cell result
+  ct watch [<program-id>]                             Live dashboard (2s refresh)
   ct status <program-id>                              Show program state
   ct frames <program-id>                              Show frames (generation, status)
   ct yields <program-id>                              Show frozen yields
   ct history <program-id>                             Show execution history
-  ct graph <program-id>                               Show DAG (dependency graph from bindings)
-  ct thaw <program-id> <cell>                          Thaw cell + transitive dependents (gen N+1)
+  ct graph <program-id>                               Show DAG (dependency graph)
+  ct thaw <program-id> <cell>                         Thaw cell + dependents
   ct reset <program-id>                               Reset program
 
-The piston is YOU (the LLM session using this tool) or a polecat you sling to.
-ct handles the plumbing. You handle the thinking.
+Cell programs are Lua. See examples/cell-zero.lua.
+Design doc: docs/plans/2026-03-21-lua-substrate-design.md
 
 Environment:
   RETORT_DSN   Dolt DSN (default: root@tcp(127.0.0.1:3308)/retort)
@@ -84,7 +80,7 @@ func main() {
 
 	// Commands that don't need a DB connection
 	if cmd == "lint" {
-		need(args, 1, "ct lint <file.cell>")
+		need(args, 1, "ct lint <file.lua>")
 		cmdLint(args[0])
 		return
 	}
@@ -118,16 +114,10 @@ func main() {
 		}
 		cmdWatch(db, progID)
 	case "pour":
-		need(args, 2, "ct pour <name> <file.cell>")
+		need(args, 2, "ct pour <name> <file.lua>")
 		cmdPour(db, args[0], args[1])
-	case "eval":
-		need(args, 2, "ct eval <name> <file.cell>")
-		cmdEval(db, args[0], args[1])
 	case "run":
-		need(args, 1, "ct run <program-id>")
-		cmdRun(db, args[0])
-	case "run-lua":
-		need(args, 2, "ct run-lua <name> <file.lua>")
+		need(args, 2, "ct run <name> <file.lua>")
 		cmdRunLua(db, args[0], args[1])
 	case "submit":
 		need(args, 4, "ct submit <program-id> <cell> <field> <value>")

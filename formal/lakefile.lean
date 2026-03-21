@@ -39,3 +39,7 @@ lean_lib AgentProtocol where
 
 lean_lib PromptTemplates where
   roots := #[`PromptTemplates]
+
+lean_lib Dispatch where
+  roots := #[`Dispatch]
+  extraDepTargets := #[`Core]

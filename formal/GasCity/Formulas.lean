@@ -71,11 +71,6 @@ def instantiate (s : BeadStore.StoreState) (formulaName : String)
 -- Theorems
 -- ═══════════════════════════════════════════════════════════════
 
-/-- Resolution is deterministic: same sources → same winners. -/
-theorem resolve_deterministic (sources : List FormulaSource) :
-    resolve sources = resolve sources := by
-  rfl
-
 /-- Resolution is idempotent: resolving resolved sources gives same result. -/
 theorem resolve_idempotent (sources : List FormulaSource) :
     resolve (resolve sources) = resolve sources := by
@@ -112,6 +107,7 @@ theorem molecule_steps_parent (s : BeadStore.StoreState) (name : String)
       | none => False := by
   sorry -- needs tracking through fold
 
+-- TODO: formalize derivation claim as a real theorem
 /-- Derivation: formulas use only Config (layer priority) and
     BeadStore (molecule instantiation). -/
 theorem derivation_from_p2_p4 : True := by trivial

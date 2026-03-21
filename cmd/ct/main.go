@@ -24,6 +24,7 @@ Usage:
   ct pour <name> <file.cell>                          Load a program
   ct eval <name> <file.cell>                          Submit .cell to cell-zero-eval for parsing + evaluation
   ct run <program-id>                                 Eval loop: hard cells inline, soft cells print prompt
+  ct run-lua <name> <file.lua>                        Pour + run a Lua program (everything in Lua)
   ct submit <program-id> <cell> <field> <value>       Submit a soft cell result
   ct status <program-id>                              Show program state
   ct frames <program-id>                              Show frames (generation, status)
@@ -125,6 +126,9 @@ func main() {
 	case "run":
 		need(args, 1, "ct run <program-id>")
 		cmdRun(db, args[0])
+	case "run-lua":
+		need(args, 2, "ct run-lua <name> <file.lua>")
+		cmdRunLua(db, args[0], args[1])
 	case "submit":
 		need(args, 4, "ct submit <program-id> <cell> <field> <value>")
 		cmdSubmit(db, args[0], args[1], args[2], args[3])

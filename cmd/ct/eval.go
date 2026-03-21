@@ -710,21 +710,9 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 		return "error", "yield already frozen"
 	}
 
-	// Write value into existing unfrozen yield slot (created at pour or respawn time)
-	res, uerr := db.Exec(
-		"UPDATE yields SET value_text = ?, frame_id = COALESCE(frame_id, ?) WHERE cell_id = ? AND field_name = ? AND is_frozen = FALSE",
-		value, frameID, cellID, fieldName)
-	if uerr != nil {
-		return "error", fmt.Sprintf("update yield: %v", uerr)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// No unfrozen slot exists — create one (backward compat with old programs)
-		mustExecDB(db,
-			"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, ?, FALSE, NULL)",
-			cellID, frameID, fieldName, value)
-	}
-
-	// Check deterministic oracles
+	// Validate-before-write: check deterministic oracles BEFORE persisting.
+	// If an oracle fails the tuple space is unchanged (no partial write).
+	// Formal model: EffectEval.lean vtw_preserves_yields.
 	var detCount int
 	db.QueryRow(
 		"SELECT COUNT(*) FROM oracles WHERE cell_id = ? AND oracle_type = 'deterministic'",
@@ -806,6 +794,21 @@ func replSubmit(db *sql.DB, progID, cellName, fieldName, value string) (string, 
 			}
 			semRows.Close()
 		}
+	}
+
+	// Write value into existing unfrozen yield slot (created at pour or respawn time)
+	// Oracles have already passed — safe to persist.
+	res, uerr := db.Exec(
+		"UPDATE yields SET value_text = ?, frame_id = COALESCE(frame_id, ?) WHERE cell_id = ? AND field_name = ? AND is_frozen = FALSE",
+		value, frameID, cellID, fieldName)
+	if uerr != nil {
+		return "error", fmt.Sprintf("update yield: %v", uerr)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// No unfrozen slot exists — create one (backward compat with old programs)
+		mustExecDB(db,
+			"INSERT INTO yields (id, cell_id, frame_id, field_name, value_text, is_frozen, frozen_at) VALUES (CONCAT('y-', SUBSTR(MD5(RAND()), 1, 8)), ?, ?, ?, ?, FALSE, NULL)",
+			cellID, frameID, fieldName, value)
 	}
 
 	// Freeze the yield — scope to current frame to avoid freezing old-frame yield slots

@@ -27,7 +27,14 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 	}
 
 	// Phase B: deterministic parser (instant, no LLM)
-	cells, parseErr := parseCellFile(string(data))
+	// Lua files use the GopherLua bridge; .cell files use the old parser
+	var cells []parsedCell
+	var parseErr error
+	if strings.HasSuffix(cellFile, ".lua") {
+		cells, parseErr = LoadLuaProgram(cellFile)
+	} else {
+		cells, parseErr = parseCellFile(string(data))
+	}
 	if parseErr != nil {
 		fatal("parse %s: %v", cellFile, parseErr)
 	}

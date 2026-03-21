@@ -60,3 +60,6 @@ lean_lib Layering where
 lean_lib PrimitiveTest where
   roots := #[`PrimitiveTest]
   extraDepTargets := #[`Core]
+
+lean_lib Formulas where
+  roots := #[`GasCity.Formulas]

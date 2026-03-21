@@ -7,24 +7,17 @@ import (
 )
 
 func cmdLint(filename string) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		fatal("read %s: %v", filename, err)
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		fatal("file not found: %s", filename)
 	}
 
-	var cells []parsedCell
-	var parseErr error
-	if strings.HasSuffix(filename, ".lua") {
-		cells, parseErr = LoadLuaProgram(filename)
-	} else {
-		cells, parseErr = parseCellFile(string(data))
-	}
+	cells, parseErr := LoadLuaProgram(filename)
 	if parseErr != nil {
 		fmt.Printf("✗ %s: %v\n", filename, parseErr)
 		os.Exit(1)
 	}
-	if cells == nil {
-		fmt.Printf("✗ %s: parse failed (not valid syntax)\n", filename)
+	if cells == nil || len(cells) == 0 {
+		fmt.Printf("✗ %s: no cells found\n", filename)
 		os.Exit(1)
 	}
 

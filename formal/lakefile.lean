@@ -30,5 +30,5 @@ lean_lib EffectEval where
 lean_lib Autopour where
   roots := #[`Autopour]
 
-lean_lib ZygoSemantics where
-  roots := #[`ZygoSemantics]
+lean_lib ExprSemantics where
+  roots := #[`ExprSemantics]

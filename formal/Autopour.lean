@@ -18,9 +18,10 @@
   - Parse failure = bottom
   - Effect monotonicity: poured program ≤ parent effect level
 
-  Zygo substrate (dc-jo2): ProgramText now holds S-expression source.
-  The parsed form is ZygoSemantics.SExpr. Static effect checking
-  (ZygoSemantics.checkEffects) replaces runtime body-type classification.
+  Substrate (dc-jo2): ProgramText holds source text (Lua or any future
+  substrate). Static effect checking (ExprSemantics.checkEffects on
+  abstract AST) + runtime sandbox (Lua setfenv) replaces body-type
+  classification.
 
   Effect taxonomy: Uses the CANONICAL taxonomy (Pure < Replayable < NonReplayable)
   aligned with EffectEval.lean and TupleSpace.lean. Core.lean's EffectLevel
@@ -28,7 +29,7 @@
   deprecated for new code.
 
   Author: Sussmind (2026-03-19, migrated to canonical effects 2026-03-20)
-  Updated: Glassblower (2026-03-21, Zygo S-expression substrate dc-rgt)
+  Updated: Glassblower (2026-03-21, Lua substrate generalization)
 -/
 
 import Core
@@ -82,22 +83,22 @@ def autopourEffLevel : EffLevel := .nonReplayable
     EXTENDED VALUE DOMAIN
     ==================================================================== -/
 
-/-- ProgramText holds Zygo S-expression source text.
-    The runtime parses this into ZygoSemantics.SExpr for evaluation.
-    Programs are data (homoiconicity): the source IS the AST serialized
-    as an S-expression string.
+/-- ProgramText holds source text for the computation substrate.
+    Currently Lua; previously S-expressions (Zygo). The formal model
+    is agnostic to the source language — effect checking operates on
+    the abstract AST (ExprSemantics.SExpr) that any substrate maps to.
 
-    Previous design: opaque string (could be anything).
-    Zygo design (dc-jo2): source is always a valid S-expression.
-    The parsed form is ZygoSemantics.SExpr (defined in ZygoSemantics.lean). -/
+    For Lua: the runtime parses source via GopherLua, then the Go
+    bridge maps the Lua AST to the abstract representation for
+    static effect checking. Runtime enforcement is via setfenv. -/
 structure ProgramText where
-  source : String    -- S-expression source text
+  source : String    -- substrate source text (Lua, S-expression, etc.)
   deriving Repr, DecidableEq, BEq
 
 /-- Values in the Cell language, extended with program values.
-    The .program variant carries S-expression source (ProgramText).
-    See ZygoSemantics.ZVal for the extended value domain with
-    numbers, lists, and the parsed SExpr program representation. -/
+    The .program variant carries substrate source (ProgramText).
+    See ExprSemantics.ZVal for the extended value domain with
+    numbers, lists, and the abstract expression representation. -/
 inductive Val where
   | str     : String → Val
   | none    : Val

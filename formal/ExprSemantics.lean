@@ -1,36 +1,50 @@
 /-
-  ZygoSemantics: Denotational Semantics of Zygo S-Expressions
+  ExprSemantics: Language-Agnostic Expression Semantics for Cell Computation
 
-  Formalizes the Pure tier of the Zygo expression language:
-  arithmetic, strings, lists, conditionals, let-bindings.
+  Formalizes the Pure tier of the cell expression language — the
+  denotational model is independent of surface syntax (Lua, S-expressions,
+  or any future substrate). The abstract Expr AST represents the common
+  structure: symbols, literals, compound expressions.
 
   Key results:
-  1. SExpr — S-expression AST (the cell computation substrate)
-  2. ZVal — extended value domain (strings, ints, lists, programs)
+  1. Expr — abstract expression AST (language-agnostic)
+  2. ZVal — extended value domain (strings, ints, bools, lists, hashes, programs)
   3. Built-in function effect classification (Pure/Replayable/NonReplayable)
   4. Static checkEffects: walk AST, verify all symbols ≤ tier
   5. Big-step eval with effect tracking
   6. effect_safety theorem: checkEffects(ast, tier) = true →
-     eval produces no effects above tier
+     eval produces no effects above tier (PROVEN, zero sorries)
+
+  The abstract model maps to concrete substrates:
+  - Lua (current): static scan for restricted globals + setfenv sandbox
+  - S-expressions (previous): AST walk over homoiconic structure
+  The formal guarantees hold for any substrate that correctly maps to
+  the abstract Expr representation.
 
   Imports Core.lean for identity types and Autopour.lean for EffLevel.
 
-  Author: Glassblower (2026-03-21)
-  Bead: dc-rgt
+  History:
+  - ZygoSemantics.lean (Glassblower, 2026-03-21, dc-rgt) — original
+  - Effect bugs fixed + ZygoExpr reconciliation (Glassblower, 2026-03-21, dc-wkw)
+  - effect_safety proved (Sussmind, 2026-03-21)
+  - Generalized to ExprSemantics (Glassblower, 2026-03-21) — Lua substrate change
 -/
 
 import Core
 import Autopour
 
-namespace ZygoSemantics
+namespace ExprSemantics
 
 open Autopour (EffLevel)
 
 /-! ====================================================================
-    S-EXPRESSION AST
+    ABSTRACT EXPRESSION AST
     ==================================================================== -/
 
-/-- The S-expression AST. Cell bodies are Zygo programs. -/
+/-- Abstract expression AST for cell computation.
+    Language-agnostic: represents the common structure of any expression
+    language (Lua, S-expressions, etc.) at the level needed for effect
+    checking and denotational semantics. -/
 inductive SExpr where
   | sym   : String → SExpr              -- symbol (function name, variable)
   | str   : String → SExpr              -- string literal
@@ -42,15 +56,14 @@ inductive SExpr where
     EXTENDED VALUE DOMAIN
     ==================================================================== -/
 
-/-- Values produced by Zygo evaluation. Extends Autopour.Val with
-    structured data needed for computation tiers.
-    Incorporates ZygoExpr.ZVal's bool and hash types. -/
+/-- Values produced by expression evaluation. Extends Autopour.Val with
+    structured data needed for computation tiers. -/
 inductive ZVal where
   | str     : String → ZVal
   | num     : Int → ZVal
-  | bool    : Bool → ZVal               -- from ZygoExpr: truthiness support
+  | bool    : Bool → ZVal               -- truthiness support
   | vlist   : List ZVal → ZVal
-  | hash    : List (String × ZVal) → ZVal  -- from ZygoExpr: key-value maps
+  | hash    : List (String × ZVal) → ZVal  -- key-value maps
   | none    : ZVal
   | error   : String → ZVal
   | program : SExpr → ZVal              -- a program is a value (homoiconicity)
@@ -61,14 +74,14 @@ def ZVal.isError : ZVal → Bool
   | _ => false
 
 /-- Truthiness: nil, false, and error are falsy; everything else is truthy.
-    From ZygoExpr. Used by conditionals. -/
+    Used by conditionals. -/
 def ZVal.truthy : ZVal → Bool
   | .none     => false
   | .bool b   => b
   | .error _  => false
   | _         => true
 
-/-- Coerce a ZVal to a string for yield output. From ZygoExpr. -/
+/-- Coerce a ZVal to a string for yield output. -/
 def ZVal.toStr : ZVal → String
   | .str s    => s
   | .num n    => toString n
@@ -252,7 +265,7 @@ def maxEffect : List EffLevel → EffLevel :=
 def mergeEffects (results : List EvalResult) : List EffLevel :=
   (results.map (·.effects)).flatten
 
-/-- Big-step evaluation of Zygo S-expressions.
+/-- Big-step evaluation of abstract expressions.
     Fuel-bounded for termination in Lean.
     Tracks actual effects performed (for the safety theorem).
 
@@ -260,7 +273,10 @@ def mergeEffects (results : List EvalResult) : List EffLevel :=
     tag). Effectful built-ins (Replayable, NonReplayable) produce a
     placeholder value and tag their effect level. This lets the safety
     theorem distinguish "actually pure evaluation" from "evaluation
-    that performed effects." -/
+    that performed effects."
+
+    Language-agnostic: maps to Lua (loadstring+setfenv), S-expressions,
+    or any substrate whose expressions can be represented as this AST. -/
 def eval (fuel : Nat) (env : ZEnv) (expr : SExpr) : EvalResult :=
   match fuel with
   | 0 => EvalResult.pure (.error "fuel exhausted")
@@ -274,7 +290,7 @@ def eval (fuel : Nat) (env : ZEnv) (expr : SExpr) : EvalResult :=
     -- quote: return AST as program value
     | .slist [.sym "quote", arg] => EvalResult.pure (.program arg)
 
-    -- if: conditional (uses truthy semantics from ZygoExpr)
+    -- if: conditional (uses truthy semantics)
     | .slist [.sym "if", cond, thenBr, elseBr] =>
       let cr := eval fuel' env cond
       match cr.val with
@@ -479,7 +495,7 @@ private theorem eval_map_respectsTier (n : Nat) (env : ZEnv) (args : List SExpr)
     the expression produces only effects at or below that tier.
 
     This is the static effect checking soundness theorem from
-    Zygo substrate design Section 9.
+    the substrate design (Section 9).
 
     The proof is by induction on fuel, then case analysis matching eval's
     pattern-match arms. Each arm either returns pure (empty effects) or
@@ -656,4 +672,4 @@ theorem checkEffects_accepts_llm_at_replayable (fuel : Nat) (hf : fuel > 0) :
     simp [checkEffects, symbolAllowed, resolveBuiltin, Builtin.effLevel,
           EffLevel.le, EffLevel.toNat]
 
-end ZygoSemantics
+end ExprSemantics

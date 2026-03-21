@@ -7,6 +7,7 @@
 | `⊢ NAME` | `cell NAME` | |
 | `⊢= sql: QUERY` | `cell NAME` + `sql: QUERY` in body | Unified under `cell` |
 | `⊢∘ NAME × N` | `cell NAME` + `recur until GUARD (max N)` | Guarded recursion |
+| `⊢∘ NAME × N` (no guard) | `iterate NAME N` | Sugar for `cell NAME` + `recur (max N)` |
 | `yield NAME ≡ VALUE` | `yield NAME = VALUE` | |
 | `yield NAME` | `yield NAME` | Unchanged |
 | `given SOURCE→FIELD` | `given SOURCE.FIELD` | Dot notation |
@@ -32,6 +33,8 @@ cell NAME [(stem)]
   given SOURCE[*].FIELD            -- gather all iterations
   given SOURCE[N].FIELD            -- specific iteration
   recur until GUARD_EXPR (max N)   -- guarded recursion
+  -- OR use shorthand:
+  -- iterate NAME N                -- sugar for cell NAME + recur (max N)
   ---
   Body text here. Freeform natural language for soft cells.
   SQL for hard computed cells: sql: SELECT ...
@@ -48,9 +51,13 @@ cell NAME [(stem)]
 - **Soft**: has a `---` body with natural language
 - **Stem**: declared with `(stem)` — permanently soft, never crystallizes
 
-## Guarded Recursion
+## Recursion
 
-Replaces `⊢∘ NAME × N`. The cell recurses until a guard on one of its yields is satisfied:
+Replaces `⊢∘ NAME × N`. Cell supports two forms of recursion:
+
+### Guarded Recursion
+
+The cell recurses until a guard on one of its yields is satisfied:
 
 ```
 cell reflect (stem)
@@ -75,6 +82,36 @@ Guard expressions (SQL-checkable):
 - `FIELD in ["A", "B", "C"]` — set membership
 - `FIELD > N` — numeric comparison
 - `FIELD is not empty` — non-empty check
+
+### Bounded Iteration (`iterate`)
+
+When you need fixed-count recursion without a guard, use `iterate`:
+
+```
+iterate refine 3
+  given compose.poem
+  yield poem
+  ---
+  Polish this draft: «poem»
+  ---
+```
+
+This is syntactic sugar. The parser desugars it to:
+
+```
+cell refine
+  given compose.poem
+  yield poem
+  recur (max 3)
+  ---
+  Polish this draft: «poem»
+  ---
+```
+
+`iterate` is recursion, not classical iteration — each step is a
+nondeterministic transformation whose output feeds the next step.
+There is no loop variable, no mutation, no break. See
+`docs/research/iterate-is-sugar.md` for the full rationale.
 
 ## Yield Output Format (for piston responses)
 
@@ -118,6 +155,17 @@ cell count-words
        FROM yields p JOIN cells c ON p.cell_id = c.id
        WHERE c.program_id = 'haiku' AND c.name = 'compose'
        AND p.field_name = 'poem' AND p.is_frozen = 1
+  ---
+```
+
+### Bounded iteration
+```
+iterate polish 5
+  given compose.poem
+  yield poem
+  ---
+  Improve clarity and rhythm of this haiku: «poem»
+  Keep 5-7-5 syllable structure.
   ---
 ```
 

@@ -1,5 +1,5 @@
 /-
-  ZygoExpr: Formal Semantics of the Zygo Expression Language (Pure Tier)
+  Pure Tier Expression Semantics (Language-Agnostic)
 
   This file defines the denotational semantics of the Pure tier of the
   Zygo S-expression language that replaces sql: cell bodies.
@@ -16,16 +16,16 @@
   4. The Pure tier is a sublanguage of the full Zygo language —
      every Pure expression is also valid at Replayable and NonReplayable
 
-  Design doc: docs/plans/2026-03-21-zygo-substrate-design.md
+  Design doc: docs/plans/2026-03-21-lua-substrate-design.md
   Bead: dc-rgt (formal model), dc-cg1 (sussmind standing)
 
-  Author: Sussmind (2026-03-21)
+  Author: Sussmind (2026-03-21) (renamed from ZygoExpr.lean, generalized for Lua substrate)
 -/
 
 import Core
 import Autopour
 
-namespace ZygoExpr
+namespace PureExprSemantics
 
 /-! ====================================================================
     VALUE DOMAIN (extends Denotational.lean / Autopour.lean Val)
@@ -459,7 +459,7 @@ def ZVal.toCellVal : ZVal → Autopour.Val
   | .error e => .error e
 
 /-- A Pure cell body is an Expr evaluated in the Pure tier.
-    This connects ZygoExpr to the CellBody type in Autopour.lean. -/
+    This connects PureExprSemantics to the CellBody type in Autopour.lean. -/
 def pureCellBody (expr : Expr) (outputField : FieldName) :
     Autopour.CellBody Id :=
   fun (env : Autopour.Env) =>
@@ -476,4 +476,4 @@ def pureCellBody (expr : Expr) (outputField : FieldName) :
     let cellVal := result.toCellVal
     Id.run (pure ([(outputField, cellVal)], Autopour.Continue.done))
 
-end ZygoExpr
+end PureExprSemantics

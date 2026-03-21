@@ -1,13 +1,16 @@
 /-
   BeadStore: Formal model of the bead (issue) tracking store
 
-  Models the core CRUD invariants for the Gas Town bead system:
+  Models the CRUD invariants and query interface for the Gas Town bead system:
   - Unique ID generation (counter-based, injective)
   - Status machine (open → in_progress → closed)
   - Close idempotence
   - Ready set correctness
   - Update nil-field preservation
   - Label append semantics
+  - Metadata set/batch operations
+  - Dependency graph (add/remove/list)
+  - Query by label and assignee
 
   Self-contained: imports only Core.lean (identity types).
 -/
@@ -39,12 +42,28 @@ instance : LawfulBEq BeadId where
     cases a; cases b; simp_all
   rfl {a} := beq_self_eq_true a.val
 
+/-- A bead (work item) with full field set matching the Go interface. -/
 structure Bead where
-  id       : BeadId
-  title    : String
-  status   : Status
-  assignee : Option String
-  labels   : List String
+  id          : BeadId
+  title       : String
+  description : String := ""
+  status      : Status
+  assignee    : Option String
+  labels      : List String
+  metadata    : List (String × String) := []
+  origin      : Option String := none     -- who filed this bead
+  ref_        : Option String := none     -- external reference
+  deriving Repr, DecidableEq, BEq
+
+/-! ====================================================================
+    DEPENDENCY TYPE
+    ==================================================================== -/
+
+/-- A dependency edge between two beads. -/
+structure Dep where
+  source : BeadId    -- the dependent bead
+  target : BeadId    -- the bead being depended on
+  kind   : String    -- "blocks", "discovered-from", etc.
   deriving Repr, DecidableEq, BEq
 
 /-! ====================================================================
@@ -54,12 +73,13 @@ structure Bead where
 structure Store where
   beads   : List Bead
   counter : Nat
+  deps    : List Dep := []
   deriving Repr
 
 def Store.empty : Store := { beads := [], counter := 0 }
 
 /-! ====================================================================
-    OPERATIONS
+    CORE OPERATIONS
     ==================================================================== -/
 
 /-- Generate a unique bead ID from the counter. -/
@@ -71,7 +91,7 @@ def create (st : Store) (title : String) (labels : List String := []) : Store ×
   let bead : Bead := {
     id := id, title := title, status := .open, assignee := none, labels := labels
   }
-  ({ beads := st.beads ++ [bead], counter := st.counter + 1 }, id)
+  ({ beads := st.beads ++ [bead], counter := st.counter + 1, deps := st.deps }, id)
 
 /-- Close a bead by ID. -/
 def close (st : Store) (id : BeadId) : Store :=
@@ -91,6 +111,52 @@ def update (st : Store) (id : BeadId) (assignee : Option String := none)
 /-- Ready beads: open status and not assigned. -/
 def ready (st : Store) : List Bead :=
   st.beads.filter (fun b => decide (b.status = .open ∧ b.assignee = none))
+
+/-! ====================================================================
+    METADATA OPERATIONS
+    ==================================================================== -/
+
+/-- Set a single metadata key-value pair on a bead.
+    Replaces any existing value for that key. -/
+def setMetadata (st : Store) (id : BeadId) (key : String) (value : String) : Store :=
+  { st with beads := st.beads.map (fun b =>
+      if b.id = id then
+        { b with metadata := (b.metadata.filter (fun kv => kv.1 ≠ key)) ++ [(key, value)] }
+      else b) }
+
+/-- Set multiple metadata key-value pairs (sequential application). -/
+def setMetadataBatch (st : Store) (id : BeadId)
+    (entries : List (String × String)) : Store :=
+  entries.foldl (fun s kv => setMetadata s id kv.1 kv.2) st
+
+/-! ====================================================================
+    DEPENDENCY OPERATIONS
+    ==================================================================== -/
+
+/-- Add a dependency edge. -/
+def addDep (st : Store) (dep : Dep) : Store :=
+  { st with deps := st.deps ++ [dep] }
+
+/-- Remove all dependency edges between source and target. -/
+def removeDep (st : Store) (source target : BeadId) : Store :=
+  { st with deps := st.deps.filter (fun d =>
+      ¬(d.source = source ∧ d.target = target)) }
+
+/-- List dependencies where the given bead is the source (depends on). -/
+def listDeps (st : Store) (id : BeadId) : List Dep :=
+  st.deps.filter (fun d => decide (d.source = id))
+
+/-! ====================================================================
+    QUERY OPERATIONS
+    ==================================================================== -/
+
+/-- List beads that have a specific label. -/
+def listByLabel (st : Store) (label : String) : List Bead :=
+  st.beads.filter (fun b => b.labels.any (· == label))
+
+/-- List beads assigned to a specific assignee. -/
+def listByAssignee (st : Store) (assignee : String) : List Bead :=
+  st.beads.filter (fun b => b.assignee == some assignee)
 
 /-! ====================================================================
     PROPERTY 1: create_unique_id — generated IDs are positive after first
@@ -126,15 +192,11 @@ theorem close_idempotent (st : Store) (id : BeadId) :
   unfold close
   simp only [List.map_map]
   let f : Bead → Bead := fun b =>
-    if b.id = id then
-      { id := b.id, title := b.title, status := Status.closed, assignee := b.assignee, labels := b.labels }
-    else b
+    if b.id = id then { b with status := Status.closed } else b
   have hf : f ∘ f = f := by
     funext b
-    dsimp only [f]
-    by_cases h : b.id = id
-    · simp [h]
-    · simp [h]
+    dsimp only [f, Function.comp]
+    by_cases h : b.id = id <;> simp [h]
   rw [show st.beads.map (f ∘ f) = st.beads.map f by rw [hf]]
 
 /-! ====================================================================
@@ -162,22 +224,21 @@ theorem close_removes_from_ready (st : Store) (id : BeadId) :
     PROPERTY 5: update_nil_noop — update with no changes is identity
     ==================================================================== -/
 
+/-- Struct eta: updating a bead with its own field values is identity. -/
+private theorem bead_with_eta (b : Bead) :
+    { b with assignee := b.assignee, labels := b.labels } = b := by
+  cases b; rfl
+
 /-- Update with no assignee and no labels is identity. -/
 theorem update_nil_noop (st : Store) (bid : BeadId) :
     update st bid none [] = st := by
-  unfold update
-  simp only [Option.orElse, List.append_nil]
-  suffices h : st.beads.map (fun (b : Bead) =>
-      if b.id = bid then
-        { id := b.id, title := b.title, status := b.status, assignee := b.assignee, labels := b.labels }
-      else b) = st.beads by
-    cases st; simp only [Store.mk.injEq, and_true]; exact h
-  induction st.beads with
+  cases st with | mk beads counter deps =>
+  simp only [update, Option.orElse, List.append_nil, Store.mk.injEq, and_true]
+  induction beads with
   | nil => rfl
   | cons x xs ih =>
-    simp only [List.map]
-    have : (if x.id = bid then x else x) = x := by split <;> rfl
-    rw [this, ih]
+    simp only [List.map_cons, List.cons.injEq]
+    exact ⟨by split <;> (first | (cases x; rfl) | rfl), ih⟩
 
 /-! ====================================================================
     PROPERTY 6: labels_append — update with labels appends
@@ -194,5 +255,134 @@ theorem labels_append (st : Store) (id : BeadId) (newLabels : List String)
     exact ⟨b, hb, by simp [hid]⟩
   · exact hid
   · rfl
+
+/-! ====================================================================
+    PROPERTY 7: METADATA — set preserves other keys
+    ==================================================================== -/
+
+/-- setMetadata preserves the bead list length. -/
+theorem setMetadata_preserves_length (st : Store) (id : BeadId)
+    (key value : String) :
+    (setMetadata st id key value).beads.length = st.beads.length := by
+  simp [setMetadata]
+
+/-- setMetadata does not change the dependency graph. -/
+theorem setMetadata_preserves_deps (st : Store) (id : BeadId)
+    (key value : String) :
+    (setMetadata st id key value).deps = st.deps := by
+  simp [setMetadata]
+
+/-- After setMetadata, the target bead has the key-value pair in its metadata. -/
+theorem setMetadata_contains (st : Store) (id : BeadId)
+    (key value : String) (b : Bead) (hb : b ∈ st.beads) (hid : b.id = id) :
+    ∃ b' ∈ (setMetadata st id key value).beads,
+      b'.id = id ∧ (key, value) ∈ b'.metadata := by
+  simp only [setMetadata]
+  refine ⟨{ b with metadata := (b.metadata.filter (fun kv => kv.1 ≠ key)) ++ [(key, value)] },
+    ?_, ?_, ?_⟩
+  · exact List.mem_map.mpr ⟨b, hb, by simp [hid]⟩
+  · exact hid
+  · exact List.mem_append.mpr (Or.inr (List.Mem.head _))
+
+/-! ====================================================================
+    PROPERTY 8: DEPENDENCY — add/remove correctness
+    ==================================================================== -/
+
+/-- addDep does not change the bead list. -/
+theorem addDep_preserves_beads (st : Store) (dep : Dep) :
+    (addDep st dep).beads = st.beads := by
+  simp [addDep]
+
+/-- The added dep is in the resulting dep list. -/
+theorem addDep_contains (st : Store) (dep : Dep) :
+    dep ∈ (addDep st dep).deps := by
+  simp [addDep]
+
+/-- addDep preserves all existing deps. -/
+theorem addDep_preserves (st : Store) (dep : Dep) :
+    ∀ d ∈ st.deps, d ∈ (addDep st dep).deps := by
+  intro d hd
+  simp only [addDep]
+  exact List.mem_append_left _ hd
+
+/-- removeDep does not change the bead list. -/
+theorem removeDep_preserves_beads (st : Store) (source target : BeadId) :
+    (removeDep st source target).beads = st.beads := by
+  simp [removeDep]
+
+/-- removeDep actually removes the matching deps. -/
+theorem removeDep_removes (st : Store) (source target : BeadId) :
+    ∀ d ∈ (removeDep st source target).deps,
+      ¬(d.source = source ∧ d.target = target) := by
+  intro d hd
+  simp only [removeDep, List.mem_filter, decide_eq_true_eq] at hd
+  exact hd.2
+
+/-- listDeps returns only deps with the matching source. -/
+theorem listDeps_correct (st : Store) (id : BeadId) :
+    ∀ d ∈ listDeps st id, d.source = id := by
+  intro d hd
+  simp only [listDeps, List.mem_filter, decide_eq_true_eq] at hd
+  exact hd.2
+
+/-! ====================================================================
+    PROPERTY 9: QUERY — listByLabel / listByAssignee correctness
+    ==================================================================== -/
+
+/-- listByLabel results are a subset of all beads. -/
+theorem listByLabel_subset (st : Store) (label : String) :
+    ∀ b ∈ listByLabel st label, b ∈ st.beads := by
+  intro b hb
+  simp only [listByLabel, List.mem_filter] at hb
+  exact hb.1
+
+/-- listByLabel results all have the matching label. -/
+theorem listByLabel_correct (st : Store) (label : String) :
+    ∀ b ∈ listByLabel st label, b.labels.any (· == label) = true := by
+  intro b hb
+  simp only [listByLabel, List.mem_filter] at hb
+  exact hb.2
+
+/-- listByAssignee results are a subset of all beads. -/
+theorem listByAssignee_subset (st : Store) (assignee : String) :
+    ∀ b ∈ listByAssignee st assignee, b ∈ st.beads := by
+  intro b hb
+  simp only [listByAssignee, List.mem_filter] at hb
+  exact hb.1
+
+/-- listByAssignee results all have the matching assignee. -/
+theorem listByAssignee_correct (st : Store) (assignee : String) :
+    ∀ b ∈ listByAssignee st assignee, b.assignee = some assignee := by
+  intro b hb
+  simp only [listByAssignee, List.mem_filter] at hb
+  exact eq_of_beq hb.2
+
+/-! ====================================================================
+    VERDICT
+    ====================================================================
+
+  PROVEN (zero sorries):
+
+  Core (carried forward):
+  1. create_unique_id / create_id_eq_counter
+  2. create_ids_differ / mkId_injective
+  3. close_idempotent
+  4. close_removes_from_ready
+  5. update_nil_noop
+  6. labels_append
+
+  New — Metadata:
+  7. setMetadata_preserves_length / setMetadata_preserves_deps
+  8. setMetadata_contains
+
+  New — Dependencies:
+  9.  addDep_preserves_beads / addDep_contains / addDep_preserves
+  10. removeDep_preserves_beads / removeDep_removes
+  11. listDeps_correct
+
+  New — Queries:
+  12. listByLabel_subset / listByLabel_correct
+  13. listByAssignee_subset / listByAssignee_correct
+-/
 
 end BeadStore

@@ -29,3 +29,6 @@ lean_lib EffectEval where
 
 lean_lib Autopour where
   roots := #[`Autopour]
+
+lean_lib Config where
+  roots := #[`Config]

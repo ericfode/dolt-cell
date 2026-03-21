@@ -30,15 +30,11 @@ def isAtomic (c : Capability) : Prop :=
 
 /-- Bitter Lesson: true if the capability becomes MORE useful
     as models improve (pure transport/plumbing). -/
-def passesBitterLesson (c : Capability) : Prop :=
-  -- Abstract: transport primitives pass, judgment calls fail
-  sorry
+axiom passesBitterLesson (c : Capability) : Prop
 
 /-- ZFC: true if the capability involves no judgment calls in Go.
     Pure data movement, process management, filesystem operations. -/
-def passesZFC (c : Capability) : Prop :=
-  -- Abstract: no "if stuck then X" patterns
-  sorry
+axiom passesZFC (c : Capability) : Prop
 
 /-- A capability is a primitive iff all three conditions hold. -/
 def isPrimitive (c : Capability) : Prop :=

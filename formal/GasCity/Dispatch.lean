@@ -35,9 +35,7 @@ structure SlingOpts where
   convoy : Bool := true
 
 /-- Placeholder substitution: replace {} with bead ID. -/
-def substitute (template : String) (beadId : BeadId) : String :=
-  -- Abstract: replace all occurrences of "{}" with beadId
-  sorry
+opaque substitute (template : String) (beadId : BeadId) : String
 
 /-- Route a bead: the core sling pipeline.
     Returns updated states for all four substrates. -/
@@ -83,11 +81,6 @@ def sling (ps : AgentProtocol.ProviderState)
 -- Theorems
 -- ═══════════════════════════════════════════════════════════════
 
-/-- Placeholder substitution is deterministic. -/
-theorem substitute_deterministic (t : String) (id : BeadId) :
-    substitute t id = substitute t id := by
-  rfl
-
 /-- Sling updates the bead's assignee. -/
 theorem sling_assigns_bead (ps : AgentProtocol.ProviderState)
     (bs : BeadStore.StoreState) (el : EventBus.EventLog)
@@ -107,6 +100,7 @@ theorem sling_records_event (ps : AgentProtocol.ProviderState)
     el'.events.length > el.events.length := by
   sorry
 
+-- TODO: formalize derivation claim as a real theorem
 /-- Derivation claim: the CRUD core of sling uses P1, P2, P3, P4.
     NOTE: The full Go sling pipeline also depends on formula compilation,
     shell execution (sling_query), and controller socket I/O — these are

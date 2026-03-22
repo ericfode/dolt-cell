@@ -7,6 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/lipgloss/v2 v2.0.2
 	github.com/go-sql-driver/mysql v1.9.3
+	github.com/yuin/gopher-lua v1.1.1
 )
 
 require (

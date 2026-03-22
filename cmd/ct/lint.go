@@ -7,19 +7,35 @@ import (
 )
 
 func cmdLint(filename string) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		fatal("read %s: %v", filename, err)
-	}
+	var cells []parsedCell
 
-	cells, parseErr := parseCellFile(string(data))
-	if parseErr != nil {
-		fmt.Printf("✗ %s: %v\n", filename, parseErr)
-		os.Exit(1)
-	}
-	if cells == nil {
-		fmt.Printf("✗ %s: parse failed (not valid v1 or v2 syntax)\n", filename)
-		os.Exit(1)
+	if strings.HasSuffix(filename, ".lua") {
+		var err error
+		cells, err = loadLuaProgram(filename)
+		if err != nil {
+			fmt.Printf("✗ %s: %v\n", filename, err)
+			os.Exit(1)
+		}
+		if len(cells) == 0 {
+			fmt.Printf("✗ %s: no cells defined\n", filename)
+			os.Exit(1)
+		}
+	} else {
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			fatal("read %s: %v", filename, err)
+		}
+
+		var parseErr error
+		cells, parseErr = parseCellFile(string(data))
+		if parseErr != nil {
+			fmt.Printf("✗ %s: %v\n", filename, parseErr)
+			os.Exit(1)
+		}
+		if cells == nil {
+			fmt.Printf("✗ %s: parse failed (not valid v1 or v2 syntax)\n", filename)
+			os.Exit(1)
+		}
 	}
 
 	errors := lintCells(cells)

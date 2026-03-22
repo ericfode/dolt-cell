@@ -26,6 +26,26 @@ func cmdPour(db *sql.DB, name, cellFile string) {
 		fatal("program %q already has %d cells — pour is additive, not destructive.\n  To overwrite, first run: ct reset %s", name, existing, name)
 	}
 
+	// Lua path: .lua files are loaded via GopherLua, not the .cell parser
+	if strings.HasSuffix(cellFile, ".lua") {
+		cells, err := loadLuaProgram(cellFile)
+		if err != nil {
+			fatal("lua: %v", err)
+		}
+		if len(cells) == 0 {
+			fatal("no cells defined in %s", cellFile)
+		}
+		sqlText := cellsToSQL(name, cells)
+		if _, err := db.Exec(sqlText); err != nil && !strings.Contains(err.Error(), "nothing to commit") {
+			fatal("load lua program: %v", err)
+		}
+		var n int
+		db.QueryRow("SELECT COUNT(*) FROM cells WHERE program_id = ?", name).Scan(&n)
+		ensureFrames(db, name)
+		fmt.Printf("✓ %s: %d cells (Lua)\n", name, n)
+		return
+	}
+
 	// Phase B: deterministic parser (instant, no LLM)
 	cells, parseErr := parseCellFile(string(data))
 	if parseErr != nil {

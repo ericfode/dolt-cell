@@ -568,7 +568,18 @@ func cmdNext(db *sql.DB, progID string, wait bool, modelHint string) {
 
 		// Resolved inputs
 		inputs := resolveInputs(db, es.progID, es.cellName)
-		prompt := interpolateBody(es.body, inputs)
+		var prompt string
+		if isLuaBody(es.body) {
+			// Lua soft cell: call body_fn(env) to get the prompt string
+			var luaErr error
+			prompt, luaErr = evalLuaSoftPrompt(es.body, inputs)
+			if luaErr != nil {
+				fmt.Printf("  ✗ %s Lua soft prompt error: %v\n", es.cellName, luaErr)
+				prompt = fmt.Sprintf("[Lua soft prompt error: %v]", luaErr)
+			}
+		} else {
+			prompt = interpolateBody(es.body, inputs)
+		}
 		for k, v := range inputs {
 			if !strings.Contains(k, "→") {
 				continue
@@ -953,6 +964,31 @@ func replEvalStep(db *sql.DB, progID, pistonID string, modelHint string) evalSte
 				}
 				for _, y := range yields {
 					replSubmit(db, pid, rc.cellName, y, result)
+				}
+			} else if isLuaBody(rc.body) {
+				// Lua compute cell: evaluate function with resolved givens
+				env := resolveInputs(db, pid, rc.cellName)
+				result, err := evalLuaCompute(rc.body, env)
+				if err != nil {
+					fmt.Printf("  ✗ %s Lua compute error: %v\n", rc.cellName, err)
+					bottomCell(db, pid, rc.cellName, rc.cellID,
+						fmt.Sprintf("lua compute failed: %v", err))
+					mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+						fmt.Sprintf("cell: bottom lua compute cell %s", rc.cellName))
+					continue
+				}
+				yields := getYieldFields(db, pid, rc.cellName)
+				for _, y := range yields {
+					if v, ok := result[y]; ok {
+						replSubmit(db, pid, rc.cellName, y, v)
+					} else {
+						// Yield not in result: bottom
+						bottomCell(db, pid, rc.cellName, rc.cellID,
+							fmt.Sprintf("lua compute: missing yield %q", y))
+						mustExecDB(db, "CALL DOLT_COMMIT('-Am', ?)",
+							fmt.Sprintf("cell: bottom lua compute cell %s (missing yield)", rc.cellName))
+						break
+					}
 				}
 			}
 

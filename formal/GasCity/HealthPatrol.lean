@@ -98,7 +98,24 @@ theorem quarantine_auto_expires (h : CrashHistory) (cfg : PatrolConfig)
     (hq : isQuarantined h now cfg = true)
     (hfuture : ∀ ts ∈ h.restarts, futureNow - ts ≥ cfg.restartWindow) :
     isQuarantined h futureNow cfg = false := by
-  sorry
+  simp only [isQuarantined, prune]
+  -- The filter keeps only timestamps where futureNow - ts < cfg.restartWindow.
+  -- But hfuture says futureNow - ts ≥ cfg.restartWindow for ALL ts in h.restarts.
+  -- So the filter keeps nothing → length = 0 → ¬(0 > maxRestarts).
+  suffices hnil : List.filter (fun ts => decide (futureNow - ts < cfg.restartWindow)) h.restarts = [] by
+    simp [hnil]
+  have hpred : ∀ ts ∈ h.restarts, decide (futureNow - ts < cfg.restartWindow) = false := by
+    intro ts hts
+    simp only [decide_eq_false_iff_not, Nat.not_lt]
+    exact hfuture ts hts
+  -- Induct on the list to show filter returns []
+  generalize h.restarts = l at hpred
+  induction l with
+  | nil => rfl
+  | cons a t ih =>
+    simp only [List.filter]
+    rw [hpred a (List.Mem.head t)]
+    exact ih (fun ts hts => hpred ts (List.Mem.tail a hts))
 
 /-- One-for-one restart: applying agent A's reconcile action
     does not change the session state for agent B. -/
@@ -110,10 +127,11 @@ theorem one_for_one (ps : AgentProtocol.ProviderState)
     (AgentProtocol.start ps nameA cfg).1.sessions nameB = ps.sessions nameB ∧
     -- Stopping A doesn't change B's session
     (AgentProtocol.stop ps nameA).sessions nameB = ps.sessions nameB := by
+  have hne' : nameB ≠ nameA := Ne.symm hne
   constructor
   · simp [AgentProtocol.start]
-    split <;> simp [hne]
-  · simp [AgentProtocol.stop, hne]
+    split <;> simp [hne']
+  · simp [AgentProtocol.stop, hne']
 
 /-- Reconciliation is idempotent: a healthy agent stays skipped. -/
 theorem reconcile_healthy_skip (ps : AgentProtocol.ProviderState)

@@ -72,8 +72,10 @@ def sling (ps : AgentProtocol.ProviderState)
     type := "bead.slung"
     ts := ts
     actor := "controller"
-    subject := opts.beadId
-    message := s!"Slung to {opts.target}"
+    subject := some opts.beadId
+    message := some s!"Slung to {opts.target}"
+    payload := none
+    visibility := .feed
   }
   (ps, bs'', el')
 
@@ -81,24 +83,41 @@ def sling (ps : AgentProtocol.ProviderState)
 -- Theorems
 -- ═══════════════════════════════════════════════════════════════
 
-/-- Sling updates the bead's assignee. -/
+/-- Sling updates the bead's assignee.
+    Requires that the bead ID doesn't collide with the auto-generated
+    convoy bead ID (a reasonable invariant: existing beads never share
+    IDs with the next-to-be-created bead). -/
 theorem sling_assigns_bead (ps : AgentProtocol.ProviderState)
     (bs : BeadStore.StoreState) (el : EventBus.EventLog)
     (opts : SlingOpts) (ts : Timestamp)
-    (b : BeadStore.Bead) (hget : bs.beads opts.beadId = some b) :
+    (b : BeadStore.Bead) (hget : bs.beads opts.beadId = some b)
+    (hnocollision : opts.beadId ≠ s!"bead-{bs.nextId}") :
     let (_, bs', _) := sling ps bs el opts ts
     match bs'.beads opts.beadId with
     | some b' => b'.assignee = some opts.target
     | none => False := by
-  sorry -- needs tracking through update + create
+  unfold sling
+  simp only [BeadStore.update, hget]
+  -- Split on the convoy flag
+  by_cases hc : opts.convoy
+  · -- convoy = true: create a convoy bead at a generated ID
+    simp only [hc, ite_true, BeadStore.create]
+    -- The generated ID differs from opts.beadId
+    simp [hnocollision]
+  · -- convoy = false: no create, just the update result
+    simp only [hc, ite_false]
+    simp
 
-/-- Sling records an event. -/
+/-- Sling records an event.
+    Requires the event log to be open (closed logs reject records). -/
 theorem sling_records_event (ps : AgentProtocol.ProviderState)
     (bs : BeadStore.StoreState) (el : EventBus.EventLog)
-    (opts : SlingOpts) (ts : Timestamp) :
+    (opts : SlingOpts) (ts : Timestamp)
+    (hopen : el.closed = false) :
     let (_, _, el') := sling ps bs el opts ts
     el'.events.length > el.events.length := by
-  sorry
+  unfold sling
+  simp [EventBus.record, hopen]
 
 -- TODO: formalize derivation claim as a real theorem
 /-- Derivation claim: the CRUD core of sling uses P1, P2, P3, P4.

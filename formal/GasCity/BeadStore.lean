@@ -137,20 +137,44 @@ theorem create_ids_differ (s : StoreState) (b1 b2 : Bead) :
 /-- C6: Close is idempotent. -/
 theorem close_idempotent (s : StoreState) (id : BeadId) :
     close (close s id) id = close s id := by
-  sorry
+  simp only [close]
+  cases h : s.beads id with
+  | none => simp [h]
+  | some b =>
+    simp only [h]
+    apply StoreState.ext
+    · funext n
+      by_cases hn : n = id
+      · subst hn; simp
+      · simp [hn]
+    · rfl
 
-/-- C7: Close removes from Ready. -/
+/-- C7: Close removes from Ready.
+    NOTE: Requires well-formedness: s.beads id' = some b → b.id = id'.
+    Without this invariant, b.id ≠ id cannot be proved from the store alone
+    (the beads field is an abstract function with no injectivity guarantee).
+    The invariant is established by construction (create always sets b.id to the key),
+    but tracking it through the store would require a separate invariant theorem. -/
 theorem close_removes_from_ready (s : StoreState) (id : BeadId) (allIds : List BeadId)
-    (h : id ∈ allIds) :
+    (h : id ∈ allIds)
+    (hwf : ∀ id' b, s.beads id' = some b → b.id = id') :
     ∀ b ∈ ready (close s id) allIds, b.id ≠ id := by
-  intro b hb
-  simp [ready, close] at hb
-  sorry -- depends on store structure details
+  sorry -- proof needs: b came from id' ≠ id → b.id = id' (hwf) → b.id ≠ id
 
 /-- C8: Update with all-none opts is no-op. -/
 theorem update_nil_noop (s : StoreState) (id : BeadId) :
     update s id {} = s := by
-  sorry
+  simp only [update]
+  cases h : s.beads id with
+  | none => rfl
+  | some b =>
+    simp only [h]
+    apply StoreState.ext
+    · funext n
+      by_cases hn : n = id
+      · subst hn; simp [h]
+      · simp [hn]
+    · rfl
 
 /-- C9: Labels only append, never replace. -/
 theorem labels_append (s : StoreState) (id : BeadId) (newLabels : List Label)
@@ -159,6 +183,7 @@ theorem labels_append (s : StoreState) (id : BeadId) (newLabels : List Label)
     match s'.beads id with
     | some b' => b.labels ++ newLabels = b'.labels
     | none => False := by
-  sorry
+  simp only [update, hget]
+  simp
 
 end GasCity.BeadStore

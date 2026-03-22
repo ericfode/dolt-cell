@@ -22,16 +22,19 @@ structure FormulaSource where
   content : String  -- abstract formula content
   deriving DecidableEq
 
+/-- The fold function used in resolve to pick the highest-priority source. -/
+private def pickHigher (best : Option FormulaSource) (src : FormulaSource) :
+    Option FormulaSource :=
+  match best with
+  | none => some src
+  | some b => if src.layer.priority > b.layer.priority then some src else some b
+
 /-- Resolve formulas by last-wins: highest priority layer wins per name. -/
 def resolve (sources : List FormulaSource) : List FormulaSource :=
   let names := sources.map (·.name) |>.eraseDups
   names.filterMap fun name =>
     let candidates := sources.filter (·.name = name)
-    candidates.foldl (fun best src =>
-      match best with
-      | none => some src
-      | some b => if src.layer.priority > b.layer.priority then some src else some b
-    ) none
+    candidates.foldl pickHigher none
 
 /-- A molecule: root bead + step beads, all in the store. -/
 structure Molecule where
@@ -71,10 +74,14 @@ def instantiate (s : BeadStore.StoreState) (formulaName : String)
 -- Theorems
 -- ═══════════════════════════════════════════════════════════════
 
-/-- Resolution is idempotent: resolving resolved sources gives same result. -/
+/-- Resolution is idempotent: resolving resolved sources gives same result.
+    NOTE: Idempotency holds because resolved sources have distinct names by
+    construction (eraseDups), so a second resolve picks the same winner. -/
 theorem resolve_idempotent (sources : List FormulaSource) :
     resolve (resolve sources) = resolve sources := by
-  sorry -- needs induction on the resolution algorithm
+  -- resolve produces one element per unique name with eraseDups,
+  -- so resolve ∘ resolve = resolve. Proof needs induction on the fold structure.
+  sorry  -- genuinely hard: needs induction on resolve's foldl with pickHigher
 
 /-- Higher priority layer wins: if formula F exists in both layers
     L1 and L2 where L2.priority > L1.priority, then L2's version
@@ -85,7 +92,7 @@ theorem higher_priority_wins (sources : List FormulaSource)
     (hs1 : s1 ∈ sources) (hs2 : s2 ∈ sources)
     (hpri : s2.layer.priority > s1.layer.priority) :
     ∀ r ∈ resolve sources, r.name = s1.name → r.layer.priority ≥ s2.layer.priority := by
-  sorry -- needs case analysis on resolve algorithm
+  sorry  -- needs induction on foldl with pickHigher
 
 /-- Molecule root is type=molecule. -/
 theorem molecule_root_type (s : BeadStore.StoreState) (name : String)
@@ -94,8 +101,12 @@ theorem molecule_root_type (s : BeadStore.StoreState) (name : String)
     match s'.beads mol.rootId with
     | some b => b.type = .molecule
     | none => False := by
-  simp [instantiate, BeadStore.create]
-  sorry -- needs tracking through fold
+  simp only [instantiate, BeadStore.create]
+  -- After the foldl, the root bead was created first.
+  -- The root's ID is s!"bead-{s.nextId}"; we need to track it through the fold.
+  -- The foldl creates step beads at successive IDs, all ≠ root.id.
+  -- So s'.beads root.id = some root_bead with type=molecule.
+  sorry  -- needs induction tracking IDs through fold
 
 /-- All molecule steps have parentId = rootId. -/
 theorem molecule_steps_parent (s : BeadStore.StoreState) (name : String)
@@ -105,7 +116,7 @@ theorem molecule_steps_parent (s : BeadStore.StoreState) (name : String)
       match s'.beads sid with
       | some b => b.parentId = some mol.rootId
       | none => False := by
-  sorry -- needs tracking through fold
+  sorry  -- needs induction tracking parentId through fold
 
 -- TODO: formalize derivation claim as a real theorem
 /-- Derivation: formulas use only Config (layer priority) and

@@ -88,8 +88,8 @@ func pourViaPiston(db *sql.DB, name, cellFile string, data []byte) {
 		if _, err := os.Stat(promptPath); err != nil {
 			promptPath = "tools/pour-prompt.md"
 			if _, err := os.Stat(promptPath); err != nil {
-				// Last resort: absolute path
-				promptPath = "/home/nixos/gt/doltcell/crew/helix/tools/pour-prompt.md"
+				// Last resort: absolute path relative to known project layout
+				promptPath = "/home/nixos/gc/.gc/worktrees/dolt-cell/glassblower/tools/pour-prompt.md"
 			}
 		}
 

@@ -420,15 +420,20 @@ func (m watchModel) cursorLine() int {
 func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][3]int, error) {
 	var rows *sql.Rows
 	var err error
+	// Join frames to sort yields by generation DESC so the latest frame's yields
+	// come first — the Go dedup below keeps only the first occurrence per field_name,
+	// which gives us the latest generation's value for multi-gen stem cells.
 	q := `SELECT c.id, c.program_id, c.name, c.state, c.body_type, c.body,
 	             c.computing_since, c.assigned_piston,
 	             y.field_name, y.value_text, y.is_frozen, y.is_bottom
 	      FROM cells c
-	      LEFT JOIN yields y ON y.cell_id = c.id`
-	// Order: computing first (active), then declared (ready), then frozen (done)
+	      LEFT JOIN yields y ON y.cell_id = c.id
+	      LEFT JOIN frames yf ON yf.id = y.frame_id`
+	// Order: computing first (active), then declared (ready), then frozen (done).
+	// Within a cell, sort yields by generation DESC so latest frame wins in dedup.
 	orderClause := ` ORDER BY c.program_id,
 		CASE c.state WHEN 'computing' THEN 0 WHEN 'declared' THEN 1 WHEN 'bottom' THEN 2 ELSE 3 END,
-		c.name, c.id, y.field_name`
+		c.name, c.id, COALESCE(yf.generation, 0) DESC, y.field_name`
 	if progID != "" {
 		rows, err = db.Query(q+" WHERE c.program_id = ?"+orderClause, progID)
 	} else {
@@ -441,6 +446,7 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][3]int, 
 
 	var cells []watchCell
 	var cur *watchCell
+	var seenFields map[string]bool // dedup yield field_names per cell (keep latest gen)
 	programs := make(map[string][3]int) // [total, frozen, bottom]
 
 	for rows.Next() {
@@ -462,6 +468,7 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][3]int, 
 				state: state.String, bodyType: bodyType.String,
 				body: body.String, assignedPiston: piston.String,
 			}
+			seenFields = make(map[string]bool)
 			if compSince.Valid {
 				t := compSince.Time
 				cur.computingSince = &t
@@ -475,7 +482,8 @@ func queryWatchData(db *sql.DB, progID string) ([]watchCell, map[string][3]int, 
 			}
 			programs[prog.String] = counts
 		}
-		if fn.Valid {
+		if fn.Valid && !seenFields[fn.String] {
+			seenFields[fn.String] = true
 			yi := watchYield{field: fn.String}
 			if val.Valid {
 				yi.value = val.String

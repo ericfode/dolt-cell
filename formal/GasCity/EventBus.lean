@@ -17,9 +17,9 @@
   Go source reference: internal/events/events.go
 -/
 
-import Core
+import GasCity.Basic
 
-namespace EventBus
+namespace GasCity.EventBus
 
 /-! ====================================================================
     EVENT TYPES
@@ -36,14 +36,21 @@ instance : LawfulBEq EventType where
     cases a; cases b; simp_all
   rfl {a} := beq_self_eq_true a.val
 
+/-- Event visibility tier: audit log vs real-time feed. -/
+inductive Visibility where
+  | audit  -- persisted audit trail; written to durable log
+  | feed   -- real-time feed; may be ephemeral
+  deriving Repr, DecidableEq, BEq
+
 /-- An event in the log. seq is assigned by the provider on Record. -/
 structure Event where
-  seq       : Nat
-  eventType : EventType
-  cellName  : Option CellName    -- filter field: which cell
-  frameId   : Option FrameId     -- filter field: which frame
-  pistonId  : Option PistonId    -- filter field: which piston
-  payload   : String             -- opaque payload
+  seq        : Nat
+  eventType  : EventType
+  cellName   : Option CellName    -- filter field: which cell
+  frameId    : Option FrameId     -- filter field: which frame
+  pistonId   : Option PistonId    -- filter field: which piston
+  payload    : Option String      -- JSON payload (none = empty)
+  visibility : Visibility := .audit  -- default: audit log
   deriving Repr, DecidableEq, BEq
 
 /-! ====================================================================
@@ -102,14 +109,16 @@ def seqsUnique (p : Provider) : Prop :=
 /-- Record an event. Assigns the next seq and appends to the log. -/
 def record (p : Provider) (eventType : EventType)
     (cellName : Option CellName) (frameId : Option FrameId)
-    (pistonId : Option PistonId) (payload : String) : Provider × Event :=
+    (pistonId : Option PistonId) (payload : Option String)
+    (vis : Visibility := .audit) : Provider × Event :=
   let e : Event := {
-    seq := p.nextSeq
-    eventType := eventType
-    cellName := cellName
-    frameId := frameId
-    pistonId := pistonId
-    payload := payload
+    seq        := p.nextSeq
+    eventType  := eventType
+    cellName   := cellName
+    frameId    := frameId
+    pistonId   := pistonId
+    payload    := payload
+    visibility := vis
   }
   ({ log := p.log ++ [e], nextSeq := p.nextSeq + 1 }, e)
 
@@ -141,8 +150,8 @@ theorem latestSeq_empty : latestSeq Provider.empty = 0 := by
 /-- Recording preserves all existing events. -/
 theorem record_preserves_log (p : Provider) (et : EventType)
     (cn : Option CellName) (fid : Option FrameId)
-    (pid : Option PistonId) (pl : String) :
-    ∀ e ∈ p.log, e ∈ (record p et cn fid pid pl).1.log := by
+    (pid : Option PistonId) (pl : Option String) {vis : Visibility} :
+    ∀ e ∈ p.log, e ∈ (record p et cn fid pid pl vis).1.log := by
   intro e he
   simp only [record]
   exact List.mem_append_left _ he
@@ -150,8 +159,8 @@ theorem record_preserves_log (p : Provider) (et : EventType)
 /-- The new event is in the resulting log. -/
 theorem record_adds_event (p : Provider) (et : EventType)
     (cn : Option CellName) (fid : Option FrameId)
-    (pid : Option PistonId) (pl : String) :
-    (record p et cn fid pid pl).2 ∈ (record p et cn fid pid pl).1.log := by
+    (pid : Option PistonId) (pl : Option String) {vis : Visibility} :
+    (record p et cn fid pid pl vis).2 ∈ (record p et cn fid pid pl vis).1.log := by
   simp only [record]
   apply List.mem_append_right
   exact List.Mem.head _
@@ -163,24 +172,24 @@ theorem record_adds_event (p : Provider) (et : EventType)
 /-- The new event gets the current nextSeq. -/
 theorem record_seq_eq (p : Provider) (et : EventType)
     (cn : Option CellName) (fid : Option FrameId)
-    (pid : Option PistonId) (pl : String) :
-    (record p et cn fid pid pl).2.seq = p.nextSeq := by
+    (pid : Option PistonId) (pl : Option String) {vis : Visibility} :
+    (record p et cn fid pid pl vis).2.seq = p.nextSeq := by
   rfl
 
 /-- nextSeq increases after record. -/
 theorem record_nextSeq_increases (p : Provider) (et : EventType)
     (cn : Option CellName) (fid : Option FrameId)
-    (pid : Option PistonId) (pl : String) :
-    p.nextSeq < (record p et cn fid pid pl).1.nextSeq := by
+    (pid : Option PistonId) (pl : Option String) {vis : Visibility} :
+    p.nextSeq < (record p et cn fid pid pl vis).1.nextSeq := by
   simp only [record]
   omega
 
 /-- Recording preserves seqsBounded. -/
 theorem record_preserves_bounded (p : Provider) (et : EventType)
     (cn : Option CellName) (fid : Option FrameId)
-    (pid : Option PistonId) (pl : String)
+    (pid : Option PistonId) (pl : Option String) {vis : Visibility}
     (hwf : seqsBounded p) :
-    seqsBounded (record p et cn fid pid pl).1 := by
+    seqsBounded (record p et cn fid pid pl vis).1 := by
   intro e he
   simp only [record] at he ⊢
   rw [List.mem_append] at he
@@ -197,9 +206,10 @@ theorem record_preserves_bounded (p : Provider) (et : EventType)
 /-- Two successive records produce strictly increasing seqs. -/
 theorem successive_records_monotone (p : Provider) (et1 et2 : EventType)
     (cn1 cn2 : Option CellName) (fid1 fid2 : Option FrameId)
-    (pid1 pid2 : Option PistonId) (pl1 pl2 : String) :
-    let r1 := record p et1 cn1 fid1 pid1 pl1
-    let r2 := record r1.1 et2 cn2 fid2 pid2 pl2
+    (pid1 pid2 : Option PistonId) (pl1 pl2 : Option String)
+    {vis1 vis2 : Visibility} :
+    let r1 := record p et1 cn1 fid1 pid1 pl1 vis1
+    let r2 := record r1.1 et2 cn2 fid2 pid2 pl2 vis2
     r1.2.seq < r2.2.seq := by
   simp only [record]
   omega
@@ -211,10 +221,10 @@ theorem successive_records_monotone (p : Provider) (et1 et2 : EventType)
 /-- Recording preserves seqsUnique. -/
 theorem record_preserves_unique (p : Provider) (et : EventType)
     (cn : Option CellName) (fid : Option FrameId)
-    (pid : Option PistonId) (pl : String)
+    (pid : Option PistonId) (pl : Option String) {vis : Visibility}
     (hbnd : seqsBounded p)
     (huniq : seqsUnique p) :
-    seqsUnique (record p et cn fid pid pl).1 := by
+    seqsUnique (record p et cn fid pid pl vis).1 := by
   intro e1 e2 he1 he2 hseq
   simp only [record] at he1 he2
   rw [List.mem_append] at he1 he2
@@ -307,14 +317,15 @@ def always (P : Provider → Prop) (t : Trace) : Prop :=
 
 /-- Valid trace step: each state follows from a record operation. -/
 structure RecordStep where
-  eventType : EventType
-  cellName  : Option CellName
-  frameId   : Option FrameId
-  pistonId  : Option PistonId
-  payload   : String
+  eventType  : EventType
+  cellName   : Option CellName
+  frameId    : Option FrameId
+  pistonId   : Option PistonId
+  payload    : Option String
+  visibility : Visibility := .audit
 
 def applyStep (p : Provider) (s : RecordStep) : Provider :=
-  (record p s.eventType s.cellName s.frameId s.pistonId s.payload).1
+  (record p s.eventType s.cellName s.frameId s.pistonId s.payload s.visibility).1
 
 structure ValidTrace where
   trace   : Trace
@@ -372,6 +383,39 @@ theorem always_log_preserved (vt : ValidTrace) :
   exact record_preserves_log _ _ _ _ _ _ e he
 
 /-! ====================================================================
+    CLOSE (provider shutdown)
+    ==================================================================== -/
+
+/-- Provider with a closed flag. Once closed, no more events are recorded. -/
+structure ClosedProvider where
+  inner  : Provider
+  closed : Bool := false
+
+/-- Close the provider — idempotent. -/
+def ClosedProvider.close (cp : ClosedProvider) : ClosedProvider :=
+  { cp with closed := true }
+
+/-- Record is a no-op on a closed provider. -/
+def ClosedProvider.tryRecord (cp : ClosedProvider) (et : EventType)
+    (cn : Option CellName) (fi : Option FrameId) (pi : Option PistonId)
+    (payload : Option String) (vis : Visibility := .audit) : ClosedProvider :=
+  if cp.closed then cp
+  else { cp with inner := (GasCity.EventBus.record cp.inner et cn fi pi payload vis).1 }
+
+/-- Close is idempotent. -/
+theorem close_idempotent (cp : ClosedProvider) :
+    cp.close.close = cp.close := by
+  simp [ClosedProvider.close]
+
+/-- tryRecord after close is a no-op. -/
+theorem tryRecord_after_close (cp : ClosedProvider) (et : EventType)
+    (cn : Option CellName) (fi : Option FrameId) (pi : Option PistonId)
+    (payload : Option String) :
+    let cp' := cp.close
+    cp'.tryRecord et cn fi pi payload = cp' := by
+  simp [ClosedProvider.close, ClosedProvider.tryRecord]
+
+/-! ====================================================================
     VERDICT
     ====================================================================
 
@@ -408,4 +452,4 @@ theorem always_log_preserved (vt : ValidTrace) :
      Restart (reload from persisted log) preserves all state.
 -/
 
-end EventBus
+end GasCity.EventBus

@@ -21,9 +21,9 @@
   Self-contained: imports only Core.lean (identity types).
 -/
 
-import Core
+import GasCity.Basic
 
-namespace HealthPatrol
+namespace GasCity.HealthPatrol
 
 /-! ====================================================================
     IDENTITY TYPES (reused from AgentProtocol pattern)
@@ -530,4 +530,4 @@ theorem fullReconcile_preserves_count (st : ReconcilerState) (h : ConfigHash)
      - fullReconcile_preserves_count — session count preserved
 -/
 
-end HealthPatrol
+end GasCity.HealthPatrol

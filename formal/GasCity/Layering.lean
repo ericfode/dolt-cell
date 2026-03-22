@@ -13,7 +13,7 @@
     L6: Controller drives all SDK initialization in layer order
 
   Also formalizes the progressive capability model: subsystem capabilities
-  are gated by Config.ActivationLevel, and enabling more subsystems never
+  are gated by GasCity.Config.ActivationLevel, and enabling more subsystems never
   decreases the required activation level.
 
   Imports from all P1-P5 formal modules:
@@ -28,14 +28,14 @@
   Architecture: docs/architecture/layering.md
 -/
 
-import Core
-import Config
-import BeadStore
-import EventBus
-import AgentProtocol
-import PromptTemplates
+import GasCity.Basic
+import GasCity.Config
+import GasCity.BeadStore
+import GasCity.EventBus
+import GasCity.AgentProtocol
+import GasCity.PromptTemplates
 
-namespace Layering
+namespace GasCity.Layering
 
 /-! ====================================================================
     LAYER HIERARCHY
@@ -171,15 +171,15 @@ theorem infra_deps_infra (m : Module) (h : m.layer = Layer.infrastructure)
     This is by construction — PersistOp is defined solely in terms of
     BeadStore types, ensuring all persistence routes through one substrate. -/
 inductive PersistOp where
-  | create  : String → BeadStore.BeadType → PersistOp
-  | update  : BeadStore.BeadId → BeadStore.UpdateOpts → PersistOp
-  | close   : BeadStore.BeadId → PersistOp
-  | setMeta : BeadStore.BeadId → String → String → PersistOp
-  | addDep  : BeadStore.BeadId → BeadStore.BeadId → String → PersistOp
+  | create  : String → GasCity.BeadStore.BeadType → PersistOp
+  | update  : GasCity.BeadStore.BeadId → GasCity.BeadStore.UpdateOpts → PersistOp
+  | close   : GasCity.BeadStore.BeadId → PersistOp
+  | setMeta : GasCity.BeadStore.BeadId → String → String → PersistOp
+  | addDep  : GasCity.BeadStore.BeadId → GasCity.BeadStore.BeadId → String → PersistOp
   deriving Repr
 
 /-- Every persistence operation produces a BeadStore state transition. -/
-def PersistOp.apply (op : PersistOp) (s : BeadStore.Store) : BeadStore.Store :=
+def PersistOp.apply (op : PersistOp) (s : GasCity.BeadStore.Store) : GasCity.BeadStore.Store :=
   match op with
   | .create title bt   => (s.create title (some bt)).1
   | .update id opts    => (s.update id opts).1
@@ -189,13 +189,13 @@ def PersistOp.apply (op : PersistOp) (s : BeadStore.Store) : BeadStore.Store :=
 
 /-- L2: All persistence operations route through BeadStore —
     every PersistOp is a function Store → Store by construction. -/
-theorem persistence_through_beadstore (op : PersistOp) (s : BeadStore.Store) :
-    ∃ (s' : BeadStore.Store), op.apply s = s' :=
+theorem persistence_through_beadstore (op : PersistOp) (s : GasCity.BeadStore.Store) :
+    ∃ (s' : GasCity.BeadStore.Store), op.apply s = s' :=
   ⟨op.apply s, rfl⟩
 
 /-- Persistence via create preserves store well-formedness. -/
-theorem persist_create_preserves_wf (s : BeadStore.Store) (title : String)
-    (bt : BeadStore.BeadType) (wf : BeadStore.wellFormed s) :
+theorem persist_create_preserves_wf (s : GasCity.BeadStore.Store) (title : String)
+    (bt : GasCity.BeadStore.BeadType) (wf : BeadStore.wellFormed s) :
     BeadStore.wellFormed (PersistOp.apply (.create title bt) s) := by
   simp [PersistOp.apply]
   exact BeadStore.create_preserves_wellFormed s title (some bt) "" "" none [] "" wf
@@ -205,29 +205,29 @@ theorem persist_create_preserves_wf (s : BeadStore.Store) (title : String)
     ==================================================================== -/
 
 /-- An observation query is an EventBus filter. -/
-abbrev ObservationQuery := EventBus.Filter
+abbrev ObservationQuery := GasCity.EventBus.Filter
 
 /-- Observe events by querying the EventBus provider. -/
-def observe (p : EventBus.Provider) (q : ObservationQuery) : List EventBus.Event :=
+def observe (p : GasCity.EventBus.Provider) (q : ObservationQuery) : List GasCity.EventBus.Event :=
   EventBus.query p q
 
 /-- L3: All observed events match the query filter — observation is sound.
     Every event returned by observe satisfies the filter predicate. -/
-theorem observation_sound (p : EventBus.Provider) (q : ObservationQuery) :
-    ∀ (e : EventBus.Event), e ∈ observe p q →
-      EventBus.Filter.matches q e = true :=
+theorem observation_sound (p : GasCity.EventBus.Provider) (q : ObservationQuery) :
+    ∀ (e : GasCity.EventBus.Event), e ∈ observe p q →
+      GasCity.EventBus.Filter.matches q e = true :=
   EventBus.query_all_match p q
 
 /-- Observation is a pure projection: it doesn't modify the provider. -/
-theorem observation_pure (p : EventBus.Provider) (q : ObservationQuery) :
+theorem observation_pure (p : GasCity.EventBus.Provider) (q : ObservationQuery) :
     observe p q = EventBus.query p q :=
   rfl
 
 /-- Cursor-based observation yields only events after the cursor.
     This enables incremental observation without replay. -/
-theorem observation_cursor_sound (p : EventBus.Provider) (q : ObservationQuery)
+theorem observation_cursor_sound (p : GasCity.EventBus.Provider) (q : ObservationQuery)
     (cursor : Nat) :
-    ∀ (e : EventBus.Event), e ∈ EventBus.watch p q cursor →
+    ∀ (e : GasCity.EventBus.Event), e ∈ EventBus.watch p q cursor →
       e.seq > cursor :=
   fun e he => EventBus.watch_above_cursor p q cursor e he
 
@@ -235,7 +235,7 @@ theorem observation_cursor_sound (p : EventBus.Provider) (q : ObservationQuery)
     L4: CONFIG IS UNIVERSAL ACTIVATION MECHANISM
     ==================================================================== -/
 
-/-- Subsystem capabilities gated by Config.ActivationLevel.
+/-- Subsystem capabilities gated by GasCity.Config.ActivationLevel.
     Each section corresponds to a formal module's runtime capability. -/
 inductive ConfigSection where
   | beadStore       -- persistence operations
@@ -257,18 +257,18 @@ def sectionLevel : ConfigSection → Nat
   | .healthPatrol    => 4
   | .dispatch        => 5
 
-/-- Convert section level to Config.ActivationLevel (safe: all values ≤ 8). -/
-def sectionActivation (s : ConfigSection) : Config.ActivationLevel :=
+/-- Convert section level to GasCity.Config.ActivationLevel (safe: all values ≤ 8). -/
+def sectionActivation (s : ConfigSection) : GasCity.Config.ActivationLevel :=
   ⟨⟨sectionLevel s, by cases s <;> simp [sectionLevel] <;> omega⟩⟩
 
 /-- Whether a section is available at a given activation level. -/
-def sectionAvailable (s : ConfigSection) (level : Config.ActivationLevel) : Bool :=
+def sectionAvailable (s : ConfigSection) (level : GasCity.Config.ActivationLevel) : Bool :=
   decide (sectionActivation s ≤ level)
 
 /-- L4: Section availability is progressive — if a section is available
     at level N, it remains available at any higher level.
     Connects to Config.progressive_activation. -/
-theorem section_progressive (s : ConfigSection) (cur cur' : Config.ActivationLevel)
+theorem section_progressive (s : ConfigSection) (cur cur' : GasCity.Config.ActivationLevel)
     (havail : sectionAvailable s cur = true)
     (hle : cur ≤ cur') :
     sectionAvailable s cur' = true := by
@@ -328,7 +328,7 @@ theorem all_sections_within_bounds (s : ConfigSection) :
 
 /-- Full activation (level 8) enables all sections. -/
 theorem full_enables_all (s : ConfigSection) :
-    sectionAvailable s Config.ActivationLevel.full = true := by
+    sectionAvailable s GasCity.Config.ActivationLevel.full = true := by
   cases s <;> decide
 
 /-! ====================================================================
@@ -402,17 +402,17 @@ theorem deps_init_before (m dep : Module)
     ==================================================================== -/
 
 /-- A system state: tracks which sections are currently active
-    and the current Config.ActivationLevel. -/
+    and the current GasCity.Config.ActivationLevel. -/
 structure SystemState where
   activeSections : List ConfigSection
-  currentLevel : Config.ActivationLevel
+  currentLevel : GasCity.Config.ActivationLevel
   /-- All active sections must be available at the current level. -/
   valid : ∀ s, s ∈ activeSections → sectionAvailable s currentLevel = true
 
 /-- Raising the activation level preserves all existing capabilities.
     Follows from Config.progressive_activation. -/
 theorem raise_preserves_capabilities (st : SystemState)
-    (newLevel : Config.ActivationLevel)
+    (newLevel : GasCity.Config.ActivationLevel)
     (hle : st.currentLevel ≤ newLevel) :
     ∀ s, s ∈ st.activeSections → sectionAvailable s newLevel = true := by
   intro s hs
@@ -421,12 +421,12 @@ theorem raise_preserves_capabilities (st : SystemState)
 /-- The dormant state: nothing active at level 0. -/
 def SystemState.dormant : SystemState :=
   { activeSections := []
-    currentLevel := Config.ActivationLevel.dormant
+    currentLevel := GasCity.Config.ActivationLevel.dormant
     valid := nofun }
 
 /-- At full activation, all sections can be enabled. -/
 theorem full_activation_enables_all :
-    ∀ (s : ConfigSection), sectionAvailable s Config.ActivationLevel.full = true :=
+    ∀ (s : ConfigSection), sectionAvailable s GasCity.Config.ActivationLevel.full = true :=
   full_enables_all
 
 /-! ====================================================================
@@ -435,28 +435,28 @@ theorem full_activation_enables_all :
 
 /-- AgentProtocol stop is idempotent — demonstrates that protocol-layer
     operations (Layer 1) compose cleanly. -/
-theorem protocol_stop_idempotent (s : AgentProtocol.RuntimeState)
-    (name : AgentProtocol.SessionName) :
+theorem protocol_stop_idempotent (s : GasCity.AgentProtocol.RuntimeState)
+    (name : GasCity.AgentProtocol.SessionName) :
     AgentProtocol.stop (AgentProtocol.stop s name) name =
     AgentProtocol.stop s name :=
   AgentProtocol.stop_idempotent s name
 
 /-- PromptTemplates rendering is deterministic — demonstrates that
     template-layer operations (Layer 2) are pure. -/
-theorem templates_render_deterministic (ctx : PromptTemplates.PromptContext)
-    (t : PromptTemplates.Template) :
+theorem templates_render_deterministic (ctx : GasCity.PromptTemplates.PromptContext)
+    (t : GasCity.PromptTemplates.Template) :
     PromptTemplates.renderTemplate ctx t = PromptTemplates.renderTemplate ctx t :=
   rfl
 
 /-- EventBus empty filter matches all events — the universal observation
     property at the infrastructure layer. -/
-theorem eventbus_empty_matches_all (e : EventBus.Event) :
-    EventBus.Filter.matches {} e = true :=
+theorem eventbus_empty_matches_all (e : GasCity.EventBus.Event) :
+    GasCity.EventBus.Filter.matches {} e = true :=
   EventBus.empty_filter_matches_all e
 
 /-- BeadStore init is well-formed — the initial infrastructure state
     satisfies all invariants. -/
-theorem beadstore_init_wf : BeadStore.wellFormed BeadStore.Store.init :=
+theorem beadstore_init_wf : BeadStore.wellFormed GasCity.BeadStore.Store.init :=
   BeadStore.init_wellFormed
 
-end Layering
+end GasCity.Layering

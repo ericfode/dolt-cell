@@ -18,9 +18,9 @@
   Both properties are proven by concrete witnesses, not axioms.
 -/
 
-import Core
+import GasCity.Basic
 
-namespace PrimitiveTest
+namespace GasCity.PrimitiveTest
 
 /-! ====================================================================
     PRIMITIVE ENUMERATION
@@ -242,4 +242,4 @@ theorem passesZFC :
       #print axioms passesZFC
     ==================================================================== -/
 
-end PrimitiveTest
+end GasCity.PrimitiveTest

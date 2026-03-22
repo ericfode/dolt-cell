@@ -26,9 +26,9 @@
   Architecture: docs/architecture/dispatch.md
 -/
 
-import Core
+import GasCity.Basic
 
-namespace Dispatch
+namespace GasCity.Dispatch
 
 /-! ====================================================================
     IDENTITY TYPES
@@ -554,4 +554,4 @@ theorem sling_deterministic (s : DispatchState) (beadId : BeadId) (agent : Agent
   19. sling_deterministic — same inputs → same outputs
 -/
 
-end Dispatch
+end GasCity.Dispatch

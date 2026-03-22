@@ -14,9 +14,9 @@
   Self-contained: imports only Core.lean (identity types).
 -/
 
-import Core
+import GasCity.Basic
 
-namespace PromptTemplates
+namespace GasCity.PromptTemplates
 
 /-! ====================================================================
     VALUE DOMAIN (local copy, matches Denotational/Autopour pattern)
@@ -288,4 +288,59 @@ theorem pipeline_cases (ctx : PromptContext) (raw : String) (parsed : Option Tem
   | some t => left; exact ⟨renderTemplate ctx t, rfl⟩
   | none   => right; exact ⟨raw, rfl⟩
 
-end PromptTemplates
+/-! ====================================================================
+    TEMPLATE DISCOVERY: Multi-level fallback chain
+
+    Template lookup proceeds: SDK → custom → defaults → error.
+    Formalizes the layered resolution in templates.go.
+    ==================================================================== -/
+
+/-- Template source tier (ordered by priority, highest first). -/
+inductive TemplateTier where
+  | sdk      -- built-in SDK templates (highest priority)
+  | custom   -- user-supplied custom templates
+  | defaults -- built-in defaults
+  deriving Repr, DecidableEq
+
+/-- A template registry: list of (name, tier, raw-string) entries. -/
+structure TemplateRegistry where
+  entries : List (String × TemplateTier × String)
+
+/-- Tier numeric rank (lower = higher priority). -/
+def tierRank : TemplateTier → Nat
+  | .sdk => 0 | .custom => 1 | .defaults => 2
+
+/-- Look up a template name, returning the highest-priority match. -/
+def TemplateRegistry.find (reg : TemplateRegistry) (name : String)
+    : Option (TemplateTier × String) :=
+  let hits := reg.entries.filterMap fun (n, t, s) =>
+    if n == name then some (t, s) else none
+  match hits with
+  | []      => none
+  | h :: rest => some (rest.foldl (fun best c =>
+      if tierRank c.1 < tierRank best.1 then c else best) h)
+
+/-- Discovery result: found at a tier or absent entirely. -/
+inductive DiscoveryResult where
+  | found  : TemplateTier → String → DiscoveryResult
+  | absent : DiscoveryResult
+  deriving Repr
+
+def TemplateRegistry.discover (reg : TemplateRegistry) (name : String)
+    : DiscoveryResult :=
+  match reg.find name with
+  | some (t, s) => .found t s
+  | none        => .absent
+
+/-- If no entries exist, discovery returns absent. -/
+theorem absent_if_empty (name : String) :
+    TemplateRegistry.discover { entries := [] } name = .absent := by
+  simp [TemplateRegistry.discover, TemplateRegistry.find]
+
+/-- A single-entry registry always finds that entry. -/
+theorem single_entry_found (name raw : String) (t : TemplateTier) :
+    TemplateRegistry.discover { entries := [(name, t, raw)] } name =
+      .found t raw := by
+  simp [TemplateRegistry.discover, TemplateRegistry.find]
+
+end GasCity.PromptTemplates

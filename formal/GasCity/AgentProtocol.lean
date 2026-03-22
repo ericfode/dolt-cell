@@ -22,9 +22,9 @@
   Architecture: docs/architecture/agent-protocol.md
 -/
 
-import Core
+import GasCity.Basic
 
-namespace AgentProtocol
+namespace GasCity.AgentProtocol
 
 /-! ====================================================================
     IDENTITY TYPES
@@ -608,4 +608,4 @@ theorem pendingInteraction_after_push (s : RuntimeState) (sess : SessionName) (p
   Remaining: SendKeys (subsumed by Nudge), platform-specific ProcessAlive.
 -/
 
-end AgentProtocol
+end GasCity.AgentProtocol

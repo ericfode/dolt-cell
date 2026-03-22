@@ -22,7 +22,7 @@
     P11: applyPatch preserves DAG structure (if patch is cycle-free)
 -/
 
-namespace Config
+namespace GasCity.Config
 
 /-! ====================================================================
     IDENTITY TYPES
@@ -588,4 +588,4 @@ def workDirsUnique (city : City) : Prop :=
   ∀ a ∈ city.allAgents, ∀ b ∈ city.allAgents,
     a.workDir = b.workDir → a.id = b.id
 
-end Config
+end GasCity.Config

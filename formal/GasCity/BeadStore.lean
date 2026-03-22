@@ -20,7 +20,7 @@
   Go source: github.com/gastownhall/gascity/internal/beads
 -/
 
-namespace BeadStore
+namespace GasCity.BeadStore
 
 /-! ====================================================================
     IDENTITY AND STATUS TYPES
@@ -659,4 +659,4 @@ theorem listByAssignee_subset (s : Store) (assignee : String) (status : BeadStat
   simp only [Store.listByAssignee, List.mem_filter] at hb
   exact hb.1
 
-end BeadStore
+end GasCity.BeadStore

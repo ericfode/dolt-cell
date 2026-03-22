@@ -73,7 +73,7 @@ Read the result row:
 2. Read `body` — this is the cell's instruction. Given values are bound
    as variables in the cell's evaluation environment. In soft cell prompts,
    they appear as interpolated text. Given values use namespaced binding:
-   `source/field` in Zygo. In soft cell prompts, they're interpolated as
+   `source/field` syntax. In soft cell prompts, they're interpolated as
    string values.
 
 3. **Think carefully and produce the output.** You are a full Claude Code
@@ -216,7 +216,7 @@ a stem cell with instructions for finding and evaluating work. Follow them:
 
 1. **Find work** — run the SQL to find a ready cell in any non-cell-zero program
 2. **Claim it** — INSERT into cell_claims, UPDATE state to computing
-3. **Evaluate it** — handle Pure tier cells inline via Zygo expression
+3. **Evaluate it** — handle Pure tier cells inline via Lua expression
    evaluation, soft cells by thinking about the prompt with resolved inputs
 4. **Submit results** — use `ct submit` for the target cell's yield fields
 5. **Submit eval-one's yields** — report what you did (cell_name, program_id, status)
@@ -229,7 +229,7 @@ manually INSERT a successor — just submit your yields and the next
 **Key differences from normal mode:**
 - You evaluate cells from ALL programs, not just one
 - The eval-one body contains SQL templates — follow them literally
-- Pure tier cells (Zygo expressions) are evaluated inline without LLM
+- Pure tier cells (Lua expressions) are evaluated inline without LLM
 - When quiescent, still submit eval-one yields — respawn continues the loop
 
 ## Using ct Commands

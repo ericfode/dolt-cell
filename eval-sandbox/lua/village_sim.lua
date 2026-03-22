@@ -63,8 +63,7 @@ local assemble = rt.compute(
     "world_constructor.seeds_of_conflict", "person_constructor.people" },
   { "initial_state" },
   function(env)
-    -- In real runtime, this would be a Zygo record expression.
-    -- Here we build a Lua table representing the initial world state.
+    -- Build a Lua table representing the initial world state.
     return {
       initial_state = {
         day = 0,

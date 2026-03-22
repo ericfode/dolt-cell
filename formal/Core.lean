@@ -73,7 +73,7 @@ instance : LawfulBEq FieldName where
     This is the shared definition used by EffectEval, Autopour, TupleSpace,
     and (via bridge) Denotational. -/
 inductive EffLevel where
-  | pure          -- deterministic: literal, Zygo expression, arithmetic
+  | pure          -- deterministic: literal, Lua expression, arithmetic
   | replayable    -- bounded nondeterminism: LLM oracle, auto-retry safe
   | nonReplayable -- world-mutating: DML, external API, thaw, autopour
   deriving Repr, DecidableEq, BEq
@@ -186,7 +186,7 @@ theorem EffLevel.join_mono_right (a b c : EffLevel) (h : b ≤ c) :
     Use EffLevel (pure/replayable/nonReplayable) for new code.
     Kept for backward compatibility with Denotational.lean. -/
 inductive EffectLevel where
-  | pure       -- hard cells: Pure tier Zygo expression, deterministic
+  | pure       -- hard cells: deterministic, no LLM
   | semantic   -- soft cells: Replayable tier, LLM-evaluated
   | divergent  -- stem cells: NonReplayable tier, perpetual cycles
   deriving Repr, DecidableEq, BEq
@@ -203,7 +203,7 @@ def EffectLevel.toCanonical : EffectLevel → EffLevel
     ==================================================================== -/
 
 inductive BodyType where
-  | hard     -- Pure tier: Zygo expression evaluated inline (was: SQL/literal)
+  | hard     -- Pure tier: Lua expression evaluated inline
   | soft     -- Replayable tier: LLM piston evaluates string body
   | stem     -- NonReplayable tier: perpetual, cycles through generations
   deriving Repr, DecidableEq, BEq

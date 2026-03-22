@@ -4,11 +4,6 @@
 **Model**: Claude Haiku (claude -p --model haiku)
 **Test corpus**: 6 programs (1 canonical + 5 corpus)
 
-> **Note (2026-03-21):** This research predates the Zygo S-expression
-> substrate (dc-jo2). Code examples use the old cell syntax. The
-> analysis and conclusions remain valid — only the surface syntax has
-> changed. See `docs/plans/2026-03-21-zygo-substrate-design.md` for
-> the current syntax.
 **Parent bead**: do-vii
 
 > **Note (2026-03-21):** This research predates the Lua substrate design.

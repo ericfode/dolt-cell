@@ -7,7 +7,7 @@
 -- The runtime does the rest.
 --
 -- Key Lua mechanism: loadstring(src) + setfenv(fn, sandbox)
---   loadstring compiles a string into a function (like Zygo's read-string)
+--   loadstring compiles a string into a function (like Lisp's read-string)
 --   setfenv replaces the function's global environment (sandbox enforcement)
 --
 -- Run with: ~/go/bin/glua cell_zero.lua

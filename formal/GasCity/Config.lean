@@ -1,3 +1,4 @@
+import GasCity.Basic
 /-
   Config: Formal Model of Gas Town Configuration
 

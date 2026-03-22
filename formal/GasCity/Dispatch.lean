@@ -26,7 +26,7 @@
   Architecture: docs/architecture/dispatch.md
 -/
 
-import Core
+import GasCity.Basic
 
 namespace Dispatch
 

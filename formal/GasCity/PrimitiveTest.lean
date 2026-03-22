@@ -18,7 +18,7 @@
   Both properties are proven by concrete witnesses, not axioms.
 -/
 
-import Core
+import GasCity.Basic
 
 namespace PrimitiveTest
 

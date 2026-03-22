@@ -21,7 +21,7 @@
   Self-contained: imports only Core.lean (identity types).
 -/
 
-import Core
+import GasCity.Basic
 
 namespace HealthPatrol
 

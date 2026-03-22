@@ -22,7 +22,7 @@
   Architecture: docs/architecture/agent-protocol.md
 -/
 
-import Core
+import GasCity.Basic
 
 namespace AgentProtocol
 

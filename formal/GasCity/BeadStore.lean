@@ -1,3 +1,4 @@
+import GasCity.Basic
 /-
   BeadStore: Formal model of the beads.Store interface
 

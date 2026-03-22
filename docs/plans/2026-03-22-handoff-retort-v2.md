@@ -243,10 +243,17 @@ The BEAM VM is a tuple space runtime. It was built for this:
 | Hot code swap | **Native** — crystallize a cell body without restarting |
 | Observation | **Process tracing** — built-in, low overhead |
 | Notification | **Process monitoring** — watch for changes, receive messages |
+| AST manipulation | **Macro.postwalk** — walk code as data, find soft() calls |
 
 The retort doesn't need Dolt, or NATS, or Redis, or Kafka.
 ETS is the tuple space. Mnesia is the persistent distributed
-tuple space. OTP is the runtime. It's all built in.
+tuple space. OTP is the runtime. Macro.postwalk is the
+crystallization engine's core operation. It's all built in.
+
+Why Elixir over Erlang: both compile to BEAM (same runtime).
+Elixir has `Macro.postwalk` for AST walking (vs manual recursion
+over `erl_syntax`), better string handling for prompt construction,
+and more LLM training data (agents generate fewer syntax errors).
 
 ---
 
